@@ -1,0 +1,9 @@
+.DS_Store
+.screenshots/
+.trae-html-share-packages/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+knowweave/.venv/
+knowweave/data/

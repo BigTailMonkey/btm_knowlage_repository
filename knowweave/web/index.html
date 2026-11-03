@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>知织 KnoWeave</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#dashboard" aria-label="知织 KnoWeave">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 40 40" fill="none">
+            <path d="M7 20c5-9 9-9 13 0s8 9 13 0" stroke="currentColor" stroke-width="2.2"/>
+            <path d="M7 27c5-9 9-9 13 0s8 9 13 0" stroke="currentColor" stroke-width="2.2" opacity=".55"/>
+            <path d="M7 13c5-9 9-9 13 0s8 9 13 0" stroke="currentColor" stroke-width="2.2" opacity=".3"/>
+          </svg>
+        </span>
+        <span class="brand-type">
+          <strong>知织</strong>
+          <small>KnoWeave</small>
+        </span>
+      </a>
+
+      <nav class="nav" id="nav">
+        <button class="nav-item active" data-page="dashboard">
+          <span class="nav-ico">◱</span><span>概览</span>
+        </button>
+        <button class="nav-item" data-page="library">
+          <span class="nav-ico">▤</span><span>知识库</span>
+        </button>
+        <button class="nav-item" data-page="ask">
+          <span class="nav-ico">⌕</span><span>研究台</span>
+        </button>
+        <button class="nav-item" data-page="entities">
+          <span class="nav-ico">◈</span><span>实体图谱</span>
+        </button>
+        <button class="nav-item" data-page="review">
+          <span class="nav-ico">⚖</span><span>审阅队列</span>
+          <span class="nav-badge" id="nav-review-count" hidden>0</span>
+        </button>
+        <button class="nav-item" data-page="ops">
+          <span class="nav-ico">⌁</span><span>运维台</span>
+        </button>
+        <button class="nav-item" data-page="settings">
+          <span class="nav-ico">⚙</span><span>设置</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="harness-pill" id="harness-pill">
+          <span class="dot" id="harness-dot"></span>
+          <span id="harness-label">检测模型运行时…</span>
+        </div>
+        <div class="sidebar-meta">v0.1.0</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="page-title">概览</h1>
+        </div>
+        <div class="top-actions">
+          <label class="token-select">
+            <select id="token-select">
+              <option value="owner-token">何道伟 · Owner</option>
+              <option value="viewer-token">林澈 · Viewer</option>
+              <option value="outsider-token">外部访客 · 受限</option>
+              <option value="agent-token">研究 Agent</option>
+            </select>
+          </label>
+        </div>
+      </header>
+
+      <div class="page-wrap">
+        <!-- ============ 概览 ============ -->
+        <section class="page active" id="page-dashboard">
+          <div class="stat-grid" id="stat-grid">
+            <div class="stat-card"><span class="stat-label">文档</span><strong data-stat="documents">—</strong></div>
+            <div class="stat-card"><span class="stat-label">检索单元</span><strong data-stat="chunks">—</strong></div>
+            <div class="stat-card"><span class="stat-label">实体</span><strong data-stat="entities">—</strong></div>
+            <div class="stat-card"><span class="stat-label">活跃事实</span><strong data-stat="facts_active">—</strong></div>
+            <div class="stat-card accent"><span class="stat-label">7 日拒答率</span><strong data-stat="refusal_rate_7d">—</strong></div>
+            <div class="stat-card"><span class="stat-label">累计成本</span><strong data-stat="spend_cny">—</strong></div>
+          </div>
+
+          <div class="grid-2">
+            <section class="panel">
+              <header class="panel-head"><h3>最近接入</h3><button class="link-btn" data-goto="library">查看全部 →</button></header>
+              <div class="list-stack" id="recent-docs"><div class="empty">正在读取…</div></div>
+            </section>
+            <section class="panel">
+              <header class="panel-head"><h3>最近轨迹</h3><button class="link-btn" data-goto="ops">运维台 →</button></header>
+              <div class="list-stack" id="recent-traces"><div class="empty">正在读取…</div></div>
+            </section>
+          </div>
+
+          <div class="grid-2">
+            <section class="panel compact dial">
+              <header class="panel-head"><h3>知识健康</h3><span class="pill" id="budget-pill">预算</span></header>
+              <div class="ring-wrap">
+                <div class="ring" id="health-ring"><span id="health-score">—</span></div>
+                <div class="ring-legend">
+                  <div><i class="swatch ok"></i>证据绑定 <strong id="leg-evidence">—</strong></div>
+                  <div><i class="swatch warn"></i>待审冲突 <strong data-stat="reviews_open">—</strong></div>
+                  <div><i class="swatch gap"></i>知识缺口 <strong data-stat="gaps_open">—</strong></div>
+                </div>
+              </div>
+              <div class="budget-bar"><span id="budget-bar-fill"></span></div>
+              <p class="tiny" id="budget-copy">本月预算 —</p>
+            </section>
+            <section class="panel compact">
+              <header class="panel-head"><h3>索引状态</h3></header>
+              <ul class="check-list" id="pipeline-checks">
+                <li><span>结构解析</span><em>就绪</em></li>
+                <li><span>稠密 + 稀疏召回</span><em>就绪</em></li>
+                <li><span>RRF + 重排</span><em>就绪</em></li>
+                <li><span>权限前置过滤</span><em>就绪</em></li>
+                <li><span>事实抽取</span><em>后台</em></li>
+              </ul>
+            </section>
+          </div>
+        </section>
+
+        <!-- ============ 知识库 ============ -->
+        <section class="page" id="page-library">
+          <div class="toolbar">
+            <div class="segmented" id="ingest-tabs">
+              <button class="active" data-ingest="file">文件</button>
+              <button data-ingest="text">粘贴</button>
+              <button data-ingest="url">网页</button>
+            </div>
+            <div class="toolbar-right">
+              <input class="input search" id="doc-search" placeholder="按标题搜索…" />
+              <select class="input" id="doc-source-filter">
+                <option value="">全部来源</option>
+                <option value="pdf">PDF</option>
+                <option value="docx">DOCX</option>
+                <option value="web">网页</option>
+                <option value="text">文本</option>
+              </select>
+              <button class="btn" id="refresh-docs">刷新</button>
+            </div>
+          </div>
+
+          <div class="ingest-panel panel" id="ingest-panel">
+            <div class="ingest-form" data-pane="file">
+              <label class="dropzone" id="dropzone">
+                <input type="file" id="file-input" accept=".pdf,.docx,.md,.markdown,.txt,.html,.htm,.csv,.json,.yaml,.yml" hidden />
+                <span class="drop-ico">⇪</span>
+                <strong>拖拽文件到这里，或点击选择</strong>
+                <small>PDF / DOCX / MD / HTML / TXT，≤ 30MB</small>
+              </label>
+              <div class="inline-fields">
+                <input class="input" id="upload-title" placeholder="标题（可选）" />
+                <input class="input" id="upload-acl" placeholder="ACL（可选）" />
+                <button class="btn primary" id="upload-btn" disabled>开始解析</button>
+              </div>
+            </div>
+            <div class="ingest-form" data-pane="text" hidden>
+              <input class="input" id="text-title" placeholder="标题" />
+              <textarea class="input area" id="text-body" rows="7" placeholder="Markdown 或纯文本"></textarea>
+              <div class="inline-fields">
+                <input class="input" id="text-acl" placeholder="ACL（可选）" />
+                <button class="btn primary" id="text-btn">写入知识库</button>
+              </div>
+            </div>
+            <div class="ingest-form" data-pane="url" hidden>
+              <input class="input" id="url-title" placeholder="标题（可选）" />
+              <input class="input" id="url-body" placeholder="https://example.com/article" />
+              <div class="inline-fields">
+                <input class="input" id="url-acl" placeholder="ACL（可选）" />
+                <button class="btn primary" id="url-btn">抓取并解析</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="library-summary" id="library-summary"></div>
+          <div class="doc-grid" id="doc-list"><div class="empty">正在读取文档…</div></div>
+        </section>
+
+        <!-- ============ 研究台 ============ -->
+        <section class="page" id="page-ask">
+          <div class="ask-layout">
+            <div class="ask-main">
+              <div class="ask-composer panel">
+                <div class="mode-row" id="mode-row">
+                  <button class="mode-chip active" data-mode="quick">快速</button>
+                  <button class="mode-chip" data-mode="deep">深度</button>
+                  <button class="mode-chip" data-mode="graph">图谱</button>
+                  <button class="mode-chip" data-mode="timeline">时间线</button>
+                  <button class="mode-chip" data-mode="compare">对比</button>
+                </div>
+                <div class="composer-row">
+                  <textarea class="input ask-input" id="question" rows="2" placeholder="输入问题"></textarea>
+                  <button class="btn primary ask-submit" id="ask-btn">提问</button>
+                </div>
+                <div class="composer-meta">
+                  <label>截至 <input type="date" class="input mini" id="as-of" /></label>
+                  <div class="suggestions">
+                    <button class="chip" data-suggest="KnoWeave 的架构铁律是什么？">架构铁律</button>
+                    <button class="chip" data-suggest="为什么从 pgvector 迁移到 Qdrant？">迁移原因</button>
+                    <button class="chip" data-suggest="一条事实的可见性如何计算？">事实权限</button>
+                  </div>
+                </div>
+              </div>
+
+              <div id="ask-result">
+                <div class="empty" style="margin-top:16px">输入问题开始检索</div>
+              </div>
+
+              <section class="panel conversations">
+                <header class="panel-head"><h3>最近会话</h3><button class="link-btn" id="refresh-conversations">刷新</button></header>
+                <div class="list-stack" id="conversation-list"><div class="empty">暂无会话</div></div>
+              </section>
+            </div>
+
+            <aside class="ask-side">
+              <section class="panel evidence-panel" id="evidence-panel">
+                <header class="panel-head"><h3>证据与轨迹</h3><span class="pill muted" id="evidence-count">0 条</span></header>
+                <div id="evidence-body"><div class="empty">暂无证据</div></div>
+              </section>
+              <section class="panel">
+                <header class="panel-head"><h3>模型运行时</h3></header>
+                <div class="kv" id="harness-kv"><span>检测中…</span></div>
+              </section>
+            </aside>
+          </div>
+        </section>
+
+        <!-- ============ 实体图谱 ============ -->
+        <section class="page" id="page-entities">
+          <div class="entities-layout">
+            <section class="panel entity-list-panel">
+              <header class="panel-head">
+                <h3>实体</h3>
+                <input class="input search mini" id="entity-search" placeholder="搜索实体…" />
+              </header>
+              <div class="entity-list" id="entity-list"><div class="empty">正在读取…</div></div>
+            </section>
+            <section class="panel entity-detail-panel">
+              <div id="entity-detail"><div class="empty">选择实体</div></div>
+            </section>
+            <section class="panel graph-panel">
+              <header class="panel-head"><h3>局部图谱</h3></header>
+              <svg id="graph-canvas" viewBox="0 0 640 420" aria-label="知识图谱"></svg>
+            </section>
+          </div>
+        </section>
+
+        <!-- ============ 审阅 ============ -->
+        <section class="page" id="page-review">
+          <div class="review-head panel">
+            <div class="review-stats">
+              <div><strong data-stat="reviews_open">—</strong><span>待审</span></div>
+              <div><strong data-stat="facts_disputed">—</strong><span>争议事实</span></div>
+            </div>
+          </div>
+          <div id="review-list" class="review-list"><div class="empty">正在读取审阅队列…</div></div>
+        </section>
+
+        <!-- ============ 运维 ============ -->
+        <section class="page" id="page-ops">
+          <div class="segmented ops-tabs" id="ops-tabs">
+            <button class="active" data-ops="traces">轨迹</button>
+            <button data-ops="costs">成本</button>
+            <button data-ops="gaps">缺口</button>
+            <button data-ops="eval">评测</button>
+          </div>
+          <div id="ops-body"></div>
+        </section>
+
+        <!-- ============ 设置 ============ -->
+        <section class="page" id="page-settings">
+          <div class="grid-2">
+            <section class="panel">
+              <header class="panel-head"><h3>当前身份</h3><span class="pill" id="settings-role">—</span></header>
+              <div class="kv" id="settings-identity"></div>
+            </section>
+            <section class="panel">
+              <header class="panel-head"><h3>DeepSeek Harness</h3></header>
+              <div class="kv" id="settings-harness"></div>
+              <div class="hr"></div>
+              <div class="button-row">
+                <button class="btn" id="run-reflection">立即运行反思</button>
+                <button class="btn ghost" id="refresh-health">刷新状态</button>
+              </div>
+            </section>
+          </div>
+          <section class="panel">
+            <header class="panel-head"><h3>模型单价</h3></header>
+            <div class="table-wrap"><table class="table" id="price-table"><thead><tr><th>Provider</th><th>Model</th><th>输入 / 1M</th><th>输出 / 1M</th><th>生效</th></tr></thead><tbody></tbody></table></div>
+          </section>
+          <section class="panel">
+            <header class="panel-head"><h3>MCP 接入</h3><span class="pill muted">JSON-RPC</span></header>
+            <p class="tiny"><code>POST /api/v1/mcp</code> · Bearer 令牌</p>
+            <pre class="code-block" id="mcp-example"></pre>
+          </section>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <dialog class="dialog" id="doc-dialog">
+    <div class="dialog-head">
+      <div>
+        <span class="eyebrow">Document</span>
+        <h3 id="dialog-title">文档</h3>
+      </div>
+      <button class="icon-btn" id="dialog-close" aria-label="关闭">×</button>
+    </div>
+    <div class="dialog-body" id="dialog-body"></div>
+  </dialog>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>
