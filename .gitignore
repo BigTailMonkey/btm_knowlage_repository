@@ -1,9 +1,17 @@
 .DS_Store
+.env
+.env.*
 .screenshots/
 .trae-html-share-packages/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 *.egg-info/
+node_modules/
+dist/
+build/
+*.log
+*.db
+*.sqlite3
 knowweave/.venv/
 knowweave/data/
