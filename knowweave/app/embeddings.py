@@ -1,19 +1,19 @@
-"""Embedding port and the dependency-free local implementation.
+"""Embedding port and the OpenAI-compatible remote implementation.
 
-Production deployments can swap in a cloud BGE-M3 / Qwen3-Embedding adapter.
-The local adapter uses signed feature hashing over character n-grams and words,
-plus a sparse lexical vector. It is deterministic, fast, needs no GPU and keeps
-the index rebuildable.
+Dense vectors always come from the configured model service. Sparse lexical
+weights are still derived locally from tokens so hybrid retrieval keeps its
+keyword path.
 """
 from __future__ import annotations
 
-import hashlib
 import math
 import re
+import threading
 from collections import Counter
 from dataclasses import dataclass
 from typing import Protocol
 
+import httpx
 import numpy as np
 
 from .config import settings
@@ -49,26 +49,6 @@ def tokenize(text: str) -> list[str]:
     return tokens
 
 
-def _signed_hash(token: str) -> tuple[int, float]:
-    digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
-    value = int.from_bytes(digest, "big")
-    index = value % settings.embedding_dim
-    sign = 1.0 if (value >> 63) & 1 else -1.0
-    return index, sign
-
-
-def dense_vector(tokens: list[str]) -> list[float]:
-    vec = np.zeros(settings.embedding_dim, dtype=np.float32)
-    for token in tokens:
-        index, sign = _signed_hash(token)
-        vec[index] += sign
-    norm = float(np.linalg.norm(vec))
-    if norm == 0:
-        return vec.tolist()
-    vec /= norm
-    return vec.astype(np.float32).tolist()
-
-
 def sparse_vector(tokens: list[str], limit: int = 96) -> dict[str, float]:
     counts = Counter(tokens)
     values = {
@@ -86,31 +66,181 @@ class Embedding:
     dim: int
 
 
+class EmbeddingError(RuntimeError):
+    """Raised when the configured provider cannot produce a usable vector."""
+
+
 class Embedder(Protocol):
     model: str
     dim: int
 
     def embed(self, text: str) -> Embedding: ...
 
+    def embed_many(self, texts: list[str]) -> list[Embedding]: ...
+
     def embed_query(self, text: str) -> Embedding: ...
 
 
-class LocalHashEmbedder:
-    """BGE-M3-shaped port implemented with hashing (dense + sparse)."""
+def _auth_headers() -> dict[str, str]:
+    key = settings.embedding_api_key
+    return {"Authorization": f"Bearer {key}"} if key else {}
 
-    model = settings.embedding_model
-    dim = settings.embedding_dim
+
+def _post_json(url: str, payload: dict) -> dict:
+    try:
+        response = httpx.post(
+            url,
+            headers=_auth_headers(),
+            json=payload,
+            timeout=settings.embedding_timeout_seconds,
+        )
+        response.raise_for_status()
+        return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise EmbeddingError(
+            f"向量服务返回 {exc.response.status_code}: {exc.response.text[:300]}"
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise EmbeddingError(f"向量服务不可用: {exc}") from exc
+    except ValueError as exc:
+        raise EmbeddingError("向量服务返回的不是合法 JSON") from exc
+
+
+class RemoteEmbedder:
+    """OpenAI-compatible ``/embeddings`` client.
+
+    Dense vectors come from the provider. Sparse vectors are still built locally
+    from tokens so the hybrid retrieval keeps its lexical path.
+    """
+
+    def __init__(self):
+        self.model = settings.embedding_model
+        self.dim = settings.embedding_dim
+        self._lock = threading.Lock()
+
+    def _url(self) -> str:
+        return settings.embedding_base_url.rstrip("/") + settings.embedding_path
+
+    def _request(self, texts: list[str]) -> list[list[float]]:
+        if not settings.embedding_base_url:
+            raise EmbeddingError("未配置 embedding.base_url，无法调用向量服务")
+        if not self.model:
+            raise EmbeddingError("未配置 embedding.model")
+        payload = {"model": self.model, "input": texts, "encoding_format": "float"}
+        body = _post_json(self._url(), payload)
+
+        items = body.get("data")
+        if items is None:
+            items = body.get("embeddings")
+        if not isinstance(items, list) or not items:
+            raise EmbeddingError(f"向量服务未返回 vectors: {str(body)[:200]}")
+
+        vectors: list[list[float]] = []
+        for item in items:
+            vector = item.get("embedding") if isinstance(item, dict) else item
+            if not isinstance(vector, list) or not vector:
+                raise EmbeddingError("向量服务返回的 embedding 格式不正确")
+            vectors.append([float(value) for value in vector])
+        if len(vectors) != len(texts):
+            raise EmbeddingError(f"请求 {len(texts)} 条，返回 {len(vectors)} 条")
+        return vectors
+
+    def _lock_dim(self, width: int) -> None:
+        with self._lock:
+            if self.dim and width != self.dim:
+                raise EmbeddingError(
+                    f"向量维度不一致：EMBEDDING_DIM={self.dim}，模型返回 {width}"
+                )
+            self.dim = width
+
+    def embed_many(self, texts: list[str]) -> list[Embedding]:
+        if not texts:
+            return []
+        size = max(1, settings.embedding_batch_size)
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), size):
+            vectors.extend(self._request(texts[start : start + size]))
+        self._lock_dim(len(vectors[0]))
+        return [
+            Embedding(vector, sparse_vector(tokenize(text)), self.model, len(vector))
+            for text, vector in zip(texts, vectors)
+        ]
 
     def embed(self, text: str) -> Embedding:
-        tokens = tokenize(text)
-        return Embedding(dense_vector(tokens), sparse_vector(tokens), self.model, self.dim)
+        return self.embed_many([text])[0]
+
+    def embed_query(self, text: str) -> Embedding:
+        return self.embed(text)
+
+
+class ArkEmbedder:
+    """Volcengine Ark multimodal embeddings for ``doubao-embedding-vision``.
+
+    Ark's multimodal endpoint accepts one multimodal input per request and
+    returns a single vector, so "batching" here is a loop over texts.
+    """
+
+    def __init__(self):
+        self.model = settings.embedding_model
+        self.dim = settings.embedding_dim
+        self._lock = threading.Lock()
+
+    def _url(self) -> str:
+        return settings.embedding_base_url.rstrip("/") + settings.embedding_path
+
+    def _request(self, text: str) -> list[float]:
+        if not settings.embedding_base_url:
+            raise EmbeddingError("未配置 embedding.base_url，无法调用向量服务")
+        if not self.model:
+            raise EmbeddingError("未配置 embedding.model")
+        payload: dict = {
+            "model": self.model,
+            "encoding_format": "float",
+            "input": [{"type": "text", "text": text}],
+        }
+        if self.dim:
+            payload["dimensions"] = self.dim
+        if settings.embedding_instructions:
+            payload["instructions"] = settings.embedding_instructions
+        body = _post_json(self._url(), payload)
+
+        data = body.get("data")
+        if isinstance(data, list) and data:
+            data = data[0]
+        if not isinstance(data, dict):
+            raise EmbeddingError(f"向量服务未返回 vectors: {str(body)[:200]}")
+        vector = data.get("embedding")
+        if not isinstance(vector, list) or not vector:
+            raise EmbeddingError("向量服务返回的 embedding 格式不正确")
+        return [float(value) for value in vector]
+
+    def _lock_dim(self, width: int) -> None:
+        with self._lock:
+            if self.dim and width != self.dim:
+                raise EmbeddingError(
+                    f"向量维度不一致：embedding.dim={self.dim}，模型返回 {width}"
+                )
+            self.dim = width
+
+    def embed_many(self, texts: list[str]) -> list[Embedding]:
+        if not texts:
+            return []
+        vectors = [self._request(text) for text in texts]
+        self._lock_dim(len(vectors[0]))
+        return [
+            Embedding(vector, sparse_vector(tokenize(text)), self.model, len(vector))
+            for text, vector in zip(texts, vectors)
+        ]
+
+    def embed(self, text: str) -> Embedding:
+        return self.embed_many([text])[0]
 
     def embed_query(self, text: str) -> Embedding:
         return self.embed(text)
 
 
 def cosine(a: list[float], b: list[float]) -> float:
-    if not a or not b:
+    if not a or not b or len(a) != len(b):
         return 0.0
     va = np.asarray(a, dtype=np.float32)
     vb = np.asarray(b, dtype=np.float32)
@@ -138,4 +268,10 @@ def keyword_overlap(query_tokens: list[str], text: str) -> float:
     return len(q & d) / len(q)
 
 
-embedder: Embedder = LocalHashEmbedder()
+def build_embedder() -> Embedder:
+    if settings.embedding_provider.strip().lower() == "openai":
+        return RemoteEmbedder()
+    return ArkEmbedder()
+
+
+embedder: Embedder = build_embedder()

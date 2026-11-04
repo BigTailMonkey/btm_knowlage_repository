@@ -149,15 +149,28 @@ def ingest_parsed(
         )
 
     chunks = chunk_blocks(parsed.blocks)
+    embedding_inputs: list[tuple[str, str]] = []
+    for item in chunks:
+        if item["is_parent"]:
+            continue
+        embedding_inputs.append(
+            (
+                item["id"],
+                f"标题：{document.title}｜章节：{' / '.join(item['heading_path'])}\n{item['text']}",
+            )
+        )
+    embeddings = dict(
+        zip(
+            [chunk_id for chunk_id, _ in embedding_inputs],
+            embedder.embed_many([text for _, text in embedding_inputs]),
+        )
+    )
     for item in chunks:
         item_text = item["text"]
-        embedding_text = (
-            f"标题：{document.title}｜章节：{' / '.join(item['heading_path'])}\n{item_text}"
-        )
-        if item["is_parent"]:
+        embedding = embeddings.get(item["id"])
+        if embedding is None:
             dense, sparse, model, dim = [], {}, "", 0
         else:
-            embedding = embedder.embed(embedding_text)
             dense, sparse, model, dim = (
                 embedding.dense,
                 embedding.sparse,

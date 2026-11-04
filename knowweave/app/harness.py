@@ -156,33 +156,25 @@ class DshHarness:
         }
 
 
-def _load_env_key() -> str:
-    key = os.getenv("DEEPSEEK_API_KEY", "")
-    if key:
-        return key
-    env_file = Path.home() / ".dsh" / ".env"
-    if env_file.exists():
-        for line in env_file.read_text(errors="ignore").splitlines():
-            if line.strip().startswith("DEEPSEEK_API_KEY="):
-                return line.split("=", 1)[1].strip()
-    return ""
+def _load_api_key() -> str:
+    return settings.model_api_key
 
 
 class DeepSeekApiHarness:
     """Fallback adapter for an OpenAI-compatible DeepSeek endpoint."""
 
     provider = "deepseek-official"
-    model = os.getenv("FALLBACK_MODEL", "deepseek-chat")
+    model = settings.fallback_model
 
     def available(self) -> bool:
-        return bool(_load_env_key())
+        return bool(_load_api_key())
 
     def complete(self, prompt: str, system: str | None = None, max_tokens: int = 2048) -> HarnessResult:
         started = time.time()
-        key = _load_env_key()
+        key = _load_api_key()
         if not key:
-            return HarnessResult("", error="未配置 DeepSeek API Key", model=self.model)
-        base = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+            return HarnessResult("", error="未配置 model.api_key", model=self.model)
+        base = settings.model_base_url
         messages = []
         if system:
             messages.append({"role": "system", "content": system})

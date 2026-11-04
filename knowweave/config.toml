@@ -1,0 +1,57 @@
+[storage]
+# 相对路径以项目根目录为基准
+data_dir = "data"
+
+[database]
+# 留空则使用 storage.data_dir 下的 knowweave.db
+url = ""
+seed = true
+
+[model]
+provider = "volcengine-ark"
+model = "deepseek-v4.1-flash"
+harness_enabled = true
+dsh_repo = "~/projects/deepseek-harness"
+dsh_profile = "headless"
+dsh_command = "pnpm"
+dsh_timeout_seconds = 120
+# DSH 不可用时的直连备用通道
+api_key = ""
+base_url = "https://api.deepseek.com"
+fallback_model = "deepseek-chat"
+
+[embedding]
+# provider: "volcengine-ark"（多模态接口）或 "openai"（标准批量接口）
+provider = "volcengine-ark"
+base_url = "https://ark.cn-beijing.volces.com/api/v3"
+# 留空由你填写
+api_key = ""
+model = "doubao-embedding-vision-251215"
+# 该模型支持 1024 或 2048
+dim = 1024
+path = "/embeddings/multimodal"
+# 检索场景指令，留空则使用服务默认值
+instructions = "Target_modality: text.\nInstruction: Compress the text into one dense vector for semantic retrieval.\nQuery:"
+# 仅 openai provider 生效；Ark 多模态接口逐条请求
+batch_size = 32
+timeout_seconds = 30
+
+[retrieval]
+rerank_threshold = 0.36
+
+[reflection]
+enabled = true
+interval_seconds = 21600
+
+[tenant]
+default_id = "tn_knowweave"
+
+[prices."deepseek-v4.1-flash"]
+input_per_1m = 2.0
+output_per_1m = 8.0
+currency = "CNY"
+
+[prices."deepseek-chat"]
+input_per_1m = 2.0
+output_per_1m = 8.0
+currency = "CNY"

@@ -17,6 +17,7 @@ from .api_learn import router as knowledge_router
 from .api_mcp import router as mcp_router
 from .api_ops import router as ops_router
 from .config import WEB_DIR, settings
+from .embeddings import embedder
 from .learning import run_reflection
 from .security import Principal, get_principal
 
@@ -107,7 +108,8 @@ def create_app() -> FastAPI:
             ],
             "rerank_threshold": settings.rerank_threshold,
             "model": settings.model,
-            "embedding_model": settings.embedding_model,
+            "embedding_model": embedder.model,
+            "embedding_dim": embedder.dim,
             "source_types": ["text", "md", "markdown", "pdf", "docx", "html", "web", "csv", "json", "yaml"],
         }
 
