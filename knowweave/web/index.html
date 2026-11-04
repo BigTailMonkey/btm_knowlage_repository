@@ -7,14 +7,13 @@
   <link rel="stylesheet" href="/assets/styles.css" />
 </head>
 <body>
-  <div class="app-shell">
-    <aside class="sidebar">
-      <a class="brand" href="#dashboard" aria-label="知织 KnoWeave">
+  <div class="frame">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="#" data-goto="dashboard" aria-label="知织 KnoWeave">
         <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 40 40" fill="none">
-            <path d="M7 20c5-9 9-9 13 0s8 9 13 0" stroke="currentColor" stroke-width="2.2"/>
-            <path d="M7 27c5-9 9-9 13 0s8 9 13 0" stroke="currentColor" stroke-width="2.2" opacity=".55"/>
-            <path d="M7 13c5-9 9-9 13 0s8 9 13 0" stroke="currentColor" stroke-width="2.2" opacity=".3"/>
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M3 9c4.5 0 4.5-5 9-5s4.5 5 9 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <path d="M3 15c4.5 0 4.5 5 9 5s4.5-5 9-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
           </svg>
         </span>
         <span class="brand-type">
@@ -23,299 +22,429 @@
         </span>
       </a>
 
-      <nav class="nav" id="nav">
-        <button class="nav-item active" data-page="dashboard">
-          <span class="nav-ico">◱</span><span>概览</span>
+      <nav class="nav" aria-label="主导航">
+        <button class="nav-item active" data-page="chat" aria-current="page">
+          <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M13.5 8.6a5.2 5.2 0 0 1-5.6 5.1L3 15l.9-3.4A5.2 5.2 0 1 1 13.5 8.6Z"/></svg></span>
+          <span>对话</span>
+        </button>
+        <button class="nav-item" data-page="dashboard">
+          <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg></span>
+          <span>概览</span>
         </button>
         <button class="nav-item" data-page="library">
-          <span class="nav-ico">▤</span><span>知识库</span>
+          <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3 3.5h6.5A3.5 3.5 0 0 1 13 7v5.5H6.5A3.5 3.5 0 0 1 3 9V3.5Z"/><path d="M3 9a3.5 3.5 0 0 1 3.5-3.5H13"/></svg></span>
+          <span>知识库</span>
         </button>
         <button class="nav-item" data-page="ask">
-          <span class="nav-ico">⌕</span><span>研究台</span>
+          <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3 12.5V9a5 5 0 1 1 10 0v3.5"/><path d="M5.5 13h5"/></svg></span>
+          <span>研究台</span>
         </button>
         <button class="nav-item" data-page="entities">
-          <span class="nav-ico">◈</span><span>实体图谱</span>
+          <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><circle cx="4" cy="4" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="8" cy="12" r="2"/><path d="M5.6 5.1 10.4 5.6M4.6 5.9l2.8 4.3M11.4 6.7l-2.6 3.5"/></svg></span>
+          <span>实体图谱</span>
         </button>
         <button class="nav-item" data-page="review">
-          <span class="nav-ico">⚖</span><span>审阅队列</span>
-          <span class="nav-badge" id="nav-review-count" hidden>0</span>
+          <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M2.5 4.5h11v7h-11z"/><path d="M2.5 9.5h3l1 1.5h3l1-1.5h3"/></svg></span>
+          <span>审阅队列</span>
+          <span class="nav-count" id="nav-review-count" hidden>0</span>
         </button>
         <button class="nav-item" data-page="ops">
-          <span class="nav-ico">⌁</span><span>运维台</span>
+          <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M2.5 8h3l2-4.5 3 9 2-4.5h3"/></svg></span>
+          <span>运维台</span>
         </button>
         <button class="nav-item" data-page="settings">
-          <span class="nav-ico">⚙</span><span>设置</span>
+          <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M2.5 5h11M2.5 11h11"/><circle cx="6" cy="5" r="1.7"/><circle cx="10.5" cy="11" r="1.7"/></svg></span>
+          <span>设置</span>
         </button>
       </nav>
 
       <div class="sidebar-foot">
-        <div class="harness-pill" id="harness-pill">
-          <span class="dot" id="harness-dot"></span>
-          <span id="harness-label">检测模型运行时…</span>
+        <button class="text-btn sidebar-help" id="open-tour" type="button">使用说明</button>
+        <div class="account">
+          <span class="avatar" id="who-avatar">知</span>
+          <select id="token-select" aria-label="当前身份">
+            <option value="owner-token">何道伟 · owner</option>
+          </select>
         </div>
-        <div class="sidebar-meta">v0.1.0</div>
       </div>
     </aside>
 
-    <main class="main">
+    <div class="stage">
       <header class="topbar">
-        <div>
-          <h1 id="page-title">概览</h1>
-        </div>
-        <div class="top-actions">
-          <label class="token-select">
-            <select id="token-select">
-              <option value="owner-token">何道伟 · Owner</option>
-              <option value="viewer-token">林澈 · Viewer</option>
-              <option value="outsider-token">外部访客 · 受限</option>
-              <option value="agent-token">研究 Agent</option>
-            </select>
-          </label>
+        <button class="icon-btn nav-toggle" id="nav-toggle" aria-label="打开导航" aria-expanded="false">
+          <svg viewBox="0 0 16 16" fill="none"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg>
+        </button>
+        <span class="topbar-title" id="topbar-title">对话</span>
+        <form class="global-search" id="global-search" role="search">
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.2 10.2 3 3"/></svg>
+          <input id="global-search-input" type="search" placeholder="搜索文档" aria-label="搜索文档" autocomplete="off" />
+        </form>
+        <div class="topbar-right">
+          <span class="stamp" id="freshness"></span>
+          <button class="icon-btn" id="refresh-page" aria-label="刷新">
+            <svg viewBox="0 0 16 16" fill="none"><path d="M13 8a5 5 0 1 1-1.7-3.7"/><path d="M13 2.5v3h-3"/></svg>
+          </button>
         </div>
       </header>
 
-      <div class="page-wrap">
-        <!-- ============ 概览 ============ -->
-        <section class="page active" id="page-dashboard">
-          <div class="stat-grid" id="stat-grid">
-            <div class="stat-card"><span class="stat-label">文档</span><strong data-stat="documents">—</strong></div>
-            <div class="stat-card"><span class="stat-label">检索单元</span><strong data-stat="chunks">—</strong></div>
-            <div class="stat-card"><span class="stat-label">实体</span><strong data-stat="entities">—</strong></div>
-            <div class="stat-card"><span class="stat-label">活跃事实</span><strong data-stat="facts_active">—</strong></div>
-            <div class="stat-card accent"><span class="stat-label">7 日拒答率</span><strong data-stat="refusal_rate_7d">—</strong></div>
-            <div class="stat-card"><span class="stat-label">累计成本</span><strong data-stat="spend_cny">—</strong></div>
-          </div>
+      <main class="sheet" id="sheet">
+        <div class="stage-wrap">
+          <header class="page-head">
+            <div>
+              <h1 id="page-title">对话</h1>
+              <p class="sub" id="page-sub"></p>
+            </div>
+            <div class="page-head-actions">
+              <button class="btn primary" id="open-ingest" hidden>添加文档</button>
+            </div>
+          </header>
 
-          <div class="grid-2">
-            <section class="panel">
-              <header class="panel-head"><h3>最近接入</h3><button class="link-btn" data-goto="library">查看全部 →</button></header>
-              <div class="list-stack" id="recent-docs"><div class="empty">正在读取…</div></div>
-            </section>
-            <section class="panel">
-              <header class="panel-head"><h3>最近轨迹</h3><button class="link-btn" data-goto="ops">运维台 →</button></header>
-              <div class="list-stack" id="recent-traces"><div class="empty">正在读取…</div></div>
-            </section>
-          </div>
-
-          <div class="grid-2">
-            <section class="panel compact dial">
-              <header class="panel-head"><h3>知识健康</h3><span class="pill" id="budget-pill">预算</span></header>
-              <div class="ring-wrap">
-                <div class="ring" id="health-ring"><span id="health-score">—</span></div>
-                <div class="ring-legend">
-                  <div><i class="swatch ok"></i>证据绑定 <strong id="leg-evidence">—</strong></div>
-                  <div><i class="swatch warn"></i>待审冲突 <strong data-stat="reviews_open">—</strong></div>
-                  <div><i class="swatch gap"></i>知识缺口 <strong data-stat="gaps_open">—</strong></div>
+          <!-- 对话 -->
+          <section class="page active" id="page-chat">
+            <div class="chat-layout">
+              <aside class="chat-rail" aria-label="会话">
+                <div class="chat-rail-head">
+                  <button class="text-btn" id="chat-new" type="button">新对话</button>
                 </div>
+                <div class="chat-list" id="chat-list"></div>
+              </aside>
+
+              <section class="chat-main" aria-label="对话内容">
+                <div class="chat-thread" id="chat-thread"></div>
+                <form class="chat-composer" id="chat-form">
+                  <textarea id="chat-input" rows="1" aria-label="输入问题"></textarea>
+                  <div class="chat-composer-bar">
+                    <select id="chat-mode-select" class="chat-mode-select" aria-label="回答模式">
+                      <option value="quick">快速</option>
+                      <option value="deep">深度</option>
+                      <option value="graph">图谱</option>
+                      <option value="timeline">时间线</option>
+                      <option value="compare">对比</option>
+                    </select>
+                    <button class="btn primary" id="chat-send" type="submit">发送</button>
+                  </div>
+                </form>
+              </section>
+            </div>
+          </section>
+
+          <!-- 概览 -->
+          <section class="page" id="page-dashboard">
+
+            <section class="attention" aria-labelledby="attention-title">
+              <div class="attention-main">
+                <span class="label" id="attention-title">待审冲突</span>
+                <strong class="attention-value" id="stat-reviews">0</strong>
               </div>
-              <div class="budget-bar"><span id="budget-bar-fill"></span></div>
-              <p class="tiny" id="budget-copy">本月预算 —</p>
+              <div class="attention-cells">
+                <div class="attention-cell"><span>争议事实</span><strong id="stat-disputed">0</strong></div>
+                <div class="attention-cell"><span>知识缺口</span><strong id="stat-gaps">0</strong></div>
+                <div class="attention-cell"><span>近 7 日提问</span><strong id="stat-asks">0</strong></div>
+              </div>
+              <button class="btn" data-goto="review">进入审阅队列</button>
             </section>
-            <section class="panel compact">
-              <header class="panel-head"><h3>索引状态</h3></header>
-              <ul class="check-list" id="pipeline-checks">
-                <li><span>结构解析</span><em>就绪</em></li>
-                <li><span>稠密 + 稀疏召回</span><em>就绪</em></li>
-                <li><span>RRF + 重排</span><em>就绪</em></li>
-                <li><span>权限前置过滤</span><em>就绪</em></li>
-                <li><span>事实抽取</span><em>后台</em></li>
-              </ul>
+
+            <section class="kpis" aria-label="知识库规模">
+              <div class="kpi"><span class="kpi-label">文档</span><strong class="kpi-value" id="stat-documents">0</strong></div>
+              <div class="kpi"><span class="kpi-label">检索单元</span><strong class="kpi-value" id="stat-chunks">0</strong></div>
+              <div class="kpi"><span class="kpi-label">实体</span><strong class="kpi-value" id="stat-entities">0</strong></div>
+              <div class="kpi"><span class="kpi-label">活跃事实</span><strong class="kpi-value" id="stat-facts">0</strong></div>
+              <div class="kpi"><span class="kpi-label">7 日拒答率</span><strong class="kpi-value" id="stat-refusal">0%</strong></div>
             </section>
-          </div>
-        </section>
 
-        <!-- ============ 知识库 ============ -->
-        <section class="page" id="page-library">
-          <div class="toolbar">
-            <div class="segmented" id="ingest-tabs">
-              <button class="active" data-ingest="file">文件</button>
-              <button data-ingest="text">粘贴</button>
-              <button data-ingest="url">网页</button>
-            </div>
-            <div class="toolbar-right">
-              <input class="input search" id="doc-search" placeholder="按标题搜索…" />
-              <select class="input" id="doc-source-filter">
-                <option value="">全部来源</option>
-                <option value="pdf">PDF</option>
-                <option value="docx">DOCX</option>
-                <option value="web">网页</option>
-                <option value="text">文本</option>
-              </select>
-              <button class="btn" id="refresh-docs">刷新</button>
-            </div>
-          </div>
-
-          <div class="ingest-panel panel" id="ingest-panel">
-            <div class="ingest-form" data-pane="file">
-              <label class="dropzone" id="dropzone">
-                <input type="file" id="file-input" accept=".pdf,.docx,.md,.markdown,.txt,.html,.htm,.csv,.json,.yaml,.yml" hidden />
-                <span class="drop-ico">⇪</span>
-                <strong>拖拽文件到这里，或点击选择</strong>
-                <small>PDF / DOCX / MD / HTML / TXT，≤ 30MB</small>
-              </label>
-              <div class="inline-fields">
-                <input class="input" id="upload-title" placeholder="标题（可选）" />
-                <input class="input" id="upload-acl" placeholder="ACL（可选）" />
-                <button class="btn primary" id="upload-btn" disabled>开始解析</button>
-              </div>
-            </div>
-            <div class="ingest-form" data-pane="text" hidden>
-              <input class="input" id="text-title" placeholder="标题" />
-              <textarea class="input area" id="text-body" rows="7" placeholder="Markdown 或纯文本"></textarea>
-              <div class="inline-fields">
-                <input class="input" id="text-acl" placeholder="ACL（可选）" />
-                <button class="btn primary" id="text-btn">写入知识库</button>
-              </div>
-            </div>
-            <div class="ingest-form" data-pane="url" hidden>
-              <input class="input" id="url-title" placeholder="标题（可选）" />
-              <input class="input" id="url-body" placeholder="https://example.com/article" />
-              <div class="inline-fields">
-                <input class="input" id="url-acl" placeholder="ACL（可选）" />
-                <button class="btn primary" id="url-btn">抓取并解析</button>
-              </div>
-            </div>
-          </div>
-
-          <div class="library-summary" id="library-summary"></div>
-          <div class="doc-grid" id="doc-list"><div class="empty">正在读取文档…</div></div>
-        </section>
-
-        <!-- ============ 研究台 ============ -->
-        <section class="page" id="page-ask">
-          <div class="ask-layout">
-            <div class="ask-main">
-              <div class="ask-composer panel">
-                <div class="mode-row" id="mode-row">
-                  <button class="mode-chip active" data-mode="quick">快速</button>
-                  <button class="mode-chip" data-mode="deep">深度</button>
-                  <button class="mode-chip" data-mode="graph">图谱</button>
-                  <button class="mode-chip" data-mode="timeline">时间线</button>
-                  <button class="mode-chip" data-mode="compare">对比</button>
+            <div class="split">
+              <section class="block">
+                <div class="block-head">
+                  <h2>最近接入</h2>
+                  <button class="text-btn" data-goto="library">全部文档</button>
                 </div>
-                <div class="composer-row">
-                  <textarea class="input ask-input" id="question" rows="2" placeholder="输入问题"></textarea>
-                  <button class="btn primary ask-submit" id="ask-btn">提问</button>
+                <div class="rows" id="recent-docs"></div>
+              </section>
+              <section class="block">
+                <div class="block-head">
+                  <h2>最近轨迹</h2>
+                  <button class="text-btn" data-goto="ops">运行记录</button>
                 </div>
-                <div class="composer-meta">
-                  <label>截至 <input type="date" class="input mini" id="as-of" /></label>
-                  <div class="suggestions">
-                    <button class="chip" data-suggest="KnoWeave 的架构铁律是什么？">架构铁律</button>
-                    <button class="chip" data-suggest="为什么从 pgvector 迁移到 Qdrant？">迁移原因</button>
-                    <button class="chip" data-suggest="一条事实的可见性如何计算？">事实权限</button>
+                <div class="rows" id="recent-traces"></div>
+              </section>
+            </div>
+
+            <div class="split split-even">
+              <section class="block">
+                <div class="block-head"><h2>预算</h2><span class="muted" id="budget-period">本月</span></div>
+                <div class="budget">
+                  <div class="budget-line"><strong id="budget-used">¥0.00</strong><span class="muted" id="budget-limit">/ ¥100.00</span></div>
+                  <div class="bar"><div class="bar-fill" id="budget-bar" style="width:0%"></div></div>
+                  <p class="muted small" id="budget-note"></p>
+                  <div id="budget-breakdown" style="margin-top:12px"></div>
+                </div>
+              </section>
+              <section class="block">
+                <div class="block-head"><h2>检索配置</h2><button class="text-btn" data-goto="settings">设置</button></div>
+                <dl class="kv" id="dash-config"></dl>
+              </section>
+            </div>
+          </section>
+
+          <!-- 知识库 -->
+          <section class="page" id="page-library">
+            <div class="tabs" id="doc-tabs" role="tablist" aria-label="按来源筛选">
+              <button class="tab active" data-source="" role="tab" aria-selected="true">全部</button>
+              <button class="tab" data-source="text" role="tab" aria-selected="false">文本</button>
+              <button class="tab" data-source="web" role="tab" aria-selected="false">网页</button>
+              <button class="tab" data-source="pdf" role="tab" aria-selected="false">PDF</button>
+              <button class="tab" data-source="docx" role="tab" aria-selected="false">DOCX</button>
+            </div>
+
+            <div class="toolbar">
+              <div class="search-field">
+                <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.2 10.2 3 3"/></svg>
+                <input id="doc-search" type="search" placeholder="搜索标题" aria-label="搜索文档标题" />
+              </div>
+              <span class="muted" id="doc-count"></span>
+            </div>
+
+            <div class="table-wrap">
+              <table class="table docs-table">
+                <thead>
+                  <tr>
+                    <th scope="col">标题</th>
+                    <th scope="col">来源</th>
+                    <th scope="col" class="num">检索单元</th>
+                    <th scope="col">权限</th>
+                    <th scope="col">版本</th>
+                    <th scope="col">更新</th>
+                  </tr>
+                </thead>
+                <tbody id="doc-table-body"></tbody>
+              </table>
+            </div>
+            <div class="empty-block" id="doc-empty" hidden>暂无文档</div>
+          </section>
+
+          <!-- 研究台 -->
+          <section class="page" id="page-ask">
+            <div class="tabs" id="mode-tabs" role="tablist" aria-label="检索模式">
+              <button class="tab active" data-mode="quick" role="tab" aria-selected="true">快速</button>
+              <button class="tab" data-mode="deep" role="tab" aria-selected="false">深度</button>
+              <button class="tab" data-mode="graph" role="tab" aria-selected="false">图谱</button>
+              <button class="tab" data-mode="timeline" role="tab" aria-selected="false">时间线</button>
+              <button class="tab" data-mode="compare" role="tab" aria-selected="false">对比</button>
+            </div>
+
+            <div class="ask-layout">
+              <div class="ask-main">
+                <section class="composer" aria-labelledby="composer-label">
+                  <label class="field-label" id="composer-label" for="question">问题</label>
+                  <div class="composer-body">
+                    <textarea id="question" rows="3"></textarea>
+                    <div class="composer-bar">
+                      <div class="composer-opt">
+                        <label for="as-of">截至</label>
+                        <input type="date" id="as-of" />
+                      </div>
+                      <button class="btn primary" id="ask-btn">提问</button>
+                    </div>
+                  </div>
+                </section>
+
+                <div class="ask-result" id="ask-result">
+                  <div class="empty-block">尚无检索结果</div>
+                </div>
+
+                <section class="block">
+                  <div class="block-head"><h2>最近会话</h2><button class="text-btn" id="conversations-refresh">刷新</button></div>
+                  <div class="rows" id="conversation-list"></div>
+                </section>
+              </div>
+
+              <aside class="ask-side">
+                <section class="block evidence-block">
+                  <div class="block-head"><h2>证据</h2><span class="muted" id="evidence-count"></span></div>
+                  <div id="evidence-body"><div class="empty-block">暂无证据</div></div>
+                </section>
+              </aside>
+            </div>
+          </section>
+
+          <!-- 实体图谱 -->
+          <section class="page" id="page-entities">
+            <div class="entities-layout">
+              <section class="block entity-panel">
+                <div class="block-head"><h2>实体</h2><span class="muted" id="entity-count"></span></div>
+                <div class="search-field compact">
+                  <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.2 10.2 3 3"/></svg>
+                  <input id="entity-search" type="search" placeholder="搜索名称" aria-label="搜索实体名称" />
+                </div>
+                <div class="rows scroll-rows" id="entity-list"></div>
+              </section>
+
+              <div class="entity-main">
+                <section class="block entity-detail">
+                  <div id="entity-detail"><div class="empty-block">选择实体</div></div>
+                </section>
+
+                <section class="block graph-panel">
+                  <div class="block-head"><h2>局部图谱</h2><span class="muted" id="graph-meta"></span></div>
+                  <div class="graph-stage">
+                    <svg id="graph-canvas" viewBox="0 0 960 360" role="img" aria-label="实体关系图"></svg>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </section>
+
+          <!-- 审阅队列 -->
+          <section class="page" id="page-review">
+            <div class="review-list" id="review-list"></div>
+          </section>
+
+          <!-- 运维台 -->
+          <section class="page" id="page-ops">
+            <div class="tabs" id="ops-tabs" role="tablist" aria-label="运维视图">
+              <button class="tab active" data-ops="traces" role="tab" aria-selected="true">轨迹</button>
+              <button class="tab" data-ops="costs" role="tab" aria-selected="false">成本</button>
+              <button class="tab" data-ops="gaps" role="tab" aria-selected="false">缺口</button>
+              <button class="tab" data-ops="evals" role="tab" aria-selected="false">评测</button>
+            </div>
+            <div id="ops-body"></div>
+          </section>
+
+          <!-- 设置 -->
+          <section class="page" id="page-settings">
+            <div class="settings">
+              <section class="setting-row">
+                <div class="setting-label">
+                  <h2>身份与权限</h2>
+                  <p class="muted" id="setting-identity-summary"></p>
+                </div>
+                <div class="setting-panel"><dl class="kv" id="settings-identity"></dl></div>
+              </section>
+
+              <section class="setting-row">
+                <div class="setting-label">
+                  <h2>模型运行时</h2>
+                  <p class="muted" id="setting-runtime-summary"></p>
+                </div>
+                <div class="setting-panel">
+                  <dl class="kv" id="settings-runtime"></dl>
+                  <div class="panel-actions">
+                    <button class="btn primary" id="reflect-btn">立即运行反思</button>
+                    <button class="btn" id="harness-refresh">刷新状态</button>
                   </div>
                 </div>
-              </div>
+              </section>
 
-              <div id="ask-result">
-                <div class="empty" style="margin-top:16px">输入问题开始检索</div>
-              </div>
+              <section class="setting-row">
+                <div class="setting-label">
+                  <h2>模型单价</h2>
+                  <p class="muted" id="setting-price-summary"></p>
+                </div>
+                <div class="setting-panel flush">
+                  <table class="table prices-table">
+                    <thead><tr><th scope="col">模型</th><th scope="col" class="num">输入 / 百万</th><th scope="col" class="num">输出 / 百万</th><th scope="col">生效</th></tr></thead>
+                    <tbody id="settings-prices"></tbody>
+                  </table>
+                </div>
+              </section>
 
-              <section class="panel conversations">
-                <header class="panel-head"><h3>最近会话</h3><button class="link-btn" id="refresh-conversations">刷新</button></header>
-                <div class="list-stack" id="conversation-list"><div class="empty">暂无会话</div></div>
+              <section class="setting-row">
+                <div class="setting-label">
+                  <h2>MCP 接入</h2>
+                  <p class="muted" id="setting-mcp-summary"></p>
+                </div>
+                <div class="setting-panel">
+                  <pre class="code" id="settings-mcp"></pre>
+                </div>
               </section>
             </div>
-
-            <aside class="ask-side">
-              <section class="panel evidence-panel" id="evidence-panel">
-                <header class="panel-head"><h3>证据与轨迹</h3><span class="pill muted" id="evidence-count">0 条</span></header>
-                <div id="evidence-body"><div class="empty">暂无证据</div></div>
-              </section>
-              <section class="panel">
-                <header class="panel-head"><h3>模型运行时</h3></header>
-                <div class="kv" id="harness-kv"><span>检测中…</span></div>
-              </section>
-            </aside>
-          </div>
-        </section>
-
-        <!-- ============ 实体图谱 ============ -->
-        <section class="page" id="page-entities">
-          <div class="entities-layout">
-            <section class="panel entity-list-panel">
-              <header class="panel-head">
-                <h3>实体</h3>
-                <input class="input search mini" id="entity-search" placeholder="搜索实体…" />
-              </header>
-              <div class="entity-list" id="entity-list"><div class="empty">正在读取…</div></div>
-            </section>
-            <section class="panel entity-detail-panel">
-              <div id="entity-detail"><div class="empty">选择实体</div></div>
-            </section>
-            <section class="panel graph-panel">
-              <header class="panel-head"><h3>局部图谱</h3></header>
-              <svg id="graph-canvas" viewBox="0 0 640 420" aria-label="知识图谱"></svg>
-            </section>
-          </div>
-        </section>
-
-        <!-- ============ 审阅 ============ -->
-        <section class="page" id="page-review">
-          <div class="review-head panel">
-            <div class="review-stats">
-              <div><strong data-stat="reviews_open">—</strong><span>待审</span></div>
-              <div><strong data-stat="facts_disputed">—</strong><span>争议事实</span></div>
-            </div>
-          </div>
-          <div id="review-list" class="review-list"><div class="empty">正在读取审阅队列…</div></div>
-        </section>
-
-        <!-- ============ 运维 ============ -->
-        <section class="page" id="page-ops">
-          <div class="segmented ops-tabs" id="ops-tabs">
-            <button class="active" data-ops="traces">轨迹</button>
-            <button data-ops="costs">成本</button>
-            <button data-ops="gaps">缺口</button>
-            <button data-ops="eval">评测</button>
-          </div>
-          <div id="ops-body"></div>
-        </section>
-
-        <!-- ============ 设置 ============ -->
-        <section class="page" id="page-settings">
-          <div class="grid-2">
-            <section class="panel">
-              <header class="panel-head"><h3>当前身份</h3><span class="pill" id="settings-role">—</span></header>
-              <div class="kv" id="settings-identity"></div>
-            </section>
-            <section class="panel">
-              <header class="panel-head"><h3>DeepSeek Harness</h3></header>
-              <div class="kv" id="settings-harness"></div>
-              <div class="hr"></div>
-              <div class="button-row">
-                <button class="btn" id="run-reflection">立即运行反思</button>
-                <button class="btn ghost" id="refresh-health">刷新状态</button>
-              </div>
-            </section>
-          </div>
-          <section class="panel">
-            <header class="panel-head"><h3>模型单价</h3></header>
-            <div class="table-wrap"><table class="table" id="price-table"><thead><tr><th>Provider</th><th>Model</th><th>输入 / 1M</th><th>输出 / 1M</th><th>生效</th></tr></thead><tbody></tbody></table></div>
           </section>
-          <section class="panel">
-            <header class="panel-head"><h3>MCP 接入</h3><span class="pill muted">JSON-RPC</span></header>
-            <p class="tiny"><code>POST /api/v1/mcp</code> · Bearer 令牌</p>
-            <pre class="code-block" id="mcp-example"></pre>
-          </section>
-        </section>
-      </div>
-    </main>
+
+        </div>
+      </main>
+    </div>
   </div>
 
+  <div class="scrim" id="scrim" hidden></div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-  <dialog class="dialog" id="doc-dialog">
-    <div class="dialog-head">
-      <div>
-        <span class="eyebrow">Document</span>
-        <h3 id="dialog-title">文档</h3>
-      </div>
-      <button class="icon-btn" id="dialog-close" aria-label="关闭">×</button>
+  <div class="tour" id="tour" hidden>
+    <div class="tour-shade" aria-hidden="true">
+      <i class="tour-band" id="tour-band-top"></i>
+      <i class="tour-band" id="tour-band-bottom"></i>
+      <i class="tour-band" id="tour-band-left"></i>
+      <i class="tour-band" id="tour-band-right"></i>
     </div>
-    <div class="dialog-body" id="dialog-body"></div>
+    <div class="tour-hole" id="tour-hole" aria-hidden="true"></div>
+    <div class="tour-card" id="tour-card" role="dialog" aria-modal="true" aria-labelledby="tour-title">
+      <h2 class="tour-title" id="tour-title"></h2>
+      <p class="tour-body" id="tour-body"></p>
+      <div class="tour-dots" id="tour-dots" aria-hidden="true"></div>
+      <div class="tour-foot">
+        <button class="text-btn" id="tour-skip" type="button">跳过</button>
+        <div class="tour-actions">
+          <button class="btn" id="tour-prev" type="button">上一步</button>
+          <button class="btn primary" id="tour-next" type="button">下一步</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <dialog class="dialog wide" id="doc-dialog" aria-labelledby="doc-dialog-title">
+    <div class="dialog-head">
+      <h2 id="doc-dialog-title"></h2>
+      <button class="icon-btn" data-close aria-label="关闭"><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button>
+    </div>
+    <div class="dialog-body" id="doc-dialog-body"></div>
   </dialog>
 
+  <dialog class="dialog" id="ingest-dialog" aria-labelledby="ingest-title">
+    <div class="dialog-head">
+      <h2 id="ingest-title">添加文档</h2>
+      <button class="icon-btn" data-close aria-label="关闭"><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button>
+    </div>
+    <div class="dialog-body">
+      <div class="tabs compact-tabs" id="ingest-tabs" role="tablist" aria-label="文档来源">
+        <button class="tab active" data-ingest="file" role="tab" aria-selected="true">文件</button>
+        <button class="tab" data-ingest="text" role="tab" aria-selected="false">粘贴</button>
+        <button class="tab" data-ingest="url" role="tab" aria-selected="false">网页</button>
+      </div>
+
+      <form id="ingest-file-form" class="form">
+        <label class="dropzone" for="file-input" id="file-drop">
+          <span class="dropzone-main" id="file-drop-label">选择文件</span>
+          <input type="file" id="file-input" accept=".pdf,.docx,.md,.txt" hidden />
+        </label>
+        <div class="field"><label for="file-title">标题</label><input id="file-title" /></div>
+        <div class="field"><label for="file-acl">权限组</label><input id="file-acl" /></div>
+        <button class="btn primary" type="submit">接入</button>
+      </form>
+
+      <form id="ingest-text-form" class="form" hidden>
+        <div class="field"><label for="text-input">正文</label><textarea id="text-input" rows="7"></textarea></div>
+        <div class="field"><label for="text-title">标题</label><input id="text-title" /></div>
+        <div class="field"><label for="text-acl">权限组</label><input id="text-acl" /></div>
+        <button class="btn primary" type="submit">接入</button>
+      </form>
+
+      <form id="ingest-url-form" class="form" hidden>
+        <div class="field"><label for="url-input">网址</label><input id="url-input" type="url" placeholder="https://" /></div>
+        <div class="field"><label for="url-title">标题</label><input id="url-title" /></div>
+        <div class="field"><label for="url-acl">权限组</label><input id="url-acl" /></div>
+        <button class="btn primary" type="submit">接入</button>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog class="dialog wide" id="trace-dialog" aria-labelledby="trace-dialog-title">
+    <div class="dialog-head">
+      <h2 id="trace-dialog-title">轨迹</h2>
+      <button class="icon-btn" data-close aria-label="关闭"><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button>
+    </div>
+    <div class="dialog-body" id="trace-dialog-body"></div>
+  </dialog>
+
+  <script src="/assets/charts.js"></script>
   <script src="/assets/app.js"></script>
 </body>
 </html>

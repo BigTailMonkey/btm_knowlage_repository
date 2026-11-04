@@ -1,12 +1,19 @@
-/* KnoWeave Web UI — zero framework, same-origin REST. */
 const API = "/api/v1";
 
 const state = {
   token: localStorage.getItem("kw_token") || "owner-token",
   meta: null,
   me: null,
-  page: "dashboard",
+  page: "chat",
   mode: "quick",
+  chatMode: "quick",
+  chatMessages: [],
+  chatConversationId: null,
+  chatBusy: false,
+  chatDraft: false,
+  tourIndex: 0,
+  tourReturnPage: null,
+  source: "",
   docs: [],
   stats: null,
   conversations: [],
@@ -18,10 +25,10 @@ const state = {
   file: null,
   lastAsk: null,
   conversationId: null,
-  traceCache: {},
 };
 
 const PAGE_META = {
+  chat: "对话",
   dashboard: "概览",
   library: "知识库",
   ask: "研究台",
@@ -33,6 +40,54 @@ const PAGE_META = {
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
+
+function setSub(page, text) {
+  if (state.page === page) $("#page-sub").textContent = text;
+}
+
+const FEATURE_LABEL = {
+  ask: "问答",
+  search: "检索",
+  ingest: "接入",
+  eval: "评测",
+  reflect: "反思",
+};
+
+const SOURCE_LABEL = {
+  text: "文本",
+  web: "网页",
+  pdf: "PDF",
+  docx: "DOCX",
+};
+
+const FACT_STATUS = {
+  active: ["当前", "ok"],
+  disputed: ["争议", "warn"],
+  superseded: ["已替代", ""],
+  retracted: ["已撤回", "bad"],
+};
+
+const TRACE_STATUS = {
+  ok: ["已完成", "ok"],
+  refused: ["已拒答", "warn"],
+  error: ["失败", "bad"],
+  running: ["进行中", "info"],
+};
+
+const REVIEW_KIND = {
+  fact_conflict: "事实冲突",
+  acl_conflict: "权限冲突",
+  low_quality: "低质量",
+  duplicate: "重复文档",
+};
+
+function plain(value) {
+  return String(value ?? "").replace(/[#*_`>]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function plainLines(value) {
+  return String(value ?? "").replace(/^#{1,6}\s*/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+}
 
 function esc(value) {
   return String(value ?? "")
@@ -57,24 +112,47 @@ function money(value) {
 }
 
 function shortDate(value) {
-  if (!value) return "—";
+  if (!value) return "无";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
 function dayOnly(value) {
-  if (!value) return "—";
+  if (!value) return "无";
   return String(value).slice(0, 10);
 }
 
+function statusPill(status, map = TRACE_STATUS, fallback = "neutral") {
+  const [label, tone] = map[status] || [status || "无", fallback];
+  return `<span class="pill ${tone}">${esc(label)}</span>`;
+}
+
+function factPill(status) {
+  const [label, tone] = FACT_STATUS[status] || [status || "无", ""];
+  return `<span class="pill ${tone}">${esc(label)}</span>`;
+}
+
 let toastTimer = null;
-function toast(message, kind = "") {
+function toast(message) {
   const el = $("#toast");
+  if (!el) return;
   el.textContent = message;
-  el.className = `toast show ${kind}`;
+  el.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.className = "toast"; }, 4200);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 3600);
+}
+
+function setBusy(button, busy, label = "处理中") {
+  if (!button) return;
+  if (busy) {
+    button.dataset.label = button.textContent;
+    button.textContent = label;
+    button.disabled = true;
+  } else {
+    button.textContent = button.dataset.label || button.textContent;
+    button.disabled = false;
+  }
 }
 
 async function api(path, options = {}) {
@@ -100,29 +178,41 @@ async function api(path, options = {}) {
   return response.json();
 }
 
-function setBusy(button, busy, label = "处理中…") {
-  if (!button) return;
-  if (busy) {
-    button.dataset.label = button.textContent;
-    button.textContent = label;
-    button.disabled = true;
-  } else {
-    button.textContent = button.dataset.label || button.textContent;
-    button.disabled = false;
-  }
+function loadingLines() {
+  return `<div class="loading-block"><i></i><i></i><i></i></div>`;
+}
+
+function stampNow() {
+  const el = $("#freshness");
+  if (!el) return;
+  const now = new Date();
+  el.textContent = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} 更新`; // taste-skill-ignore
 }
 
 /* ============ Shell ============ */
 function showPage(page) {
+  if (!PAGE_META[page]) page = "chat";
   state.page = page;
-  $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.page === page));
+  document.body.dataset.page = page;
+  $$(".nav-item").forEach((item) => {
+    const active = item.dataset.page === page;
+    item.classList.toggle("active", active);
+    if (active) item.setAttribute("aria-current", "page");
+    else item.removeAttribute("aria-current");
+  });
   $$(".page").forEach((section) => section.classList.toggle("active", section.id === `page-${page}`));
-  $("#page-title").textContent = PAGE_META[page] || page;
+  $("#topbar-title").textContent = PAGE_META[page];
+  $("#page-title").textContent = PAGE_META[page];
+  $("#page-sub").textContent = "";
+  $("#open-ingest").hidden = page !== "library";
+  $("#sheet").scrollTop = 0;
   if (location.hash !== `#${page}`) history.replaceState(null, "", `#${page}`);
+  closeSidebar();
   loadPage(page);
 }
 
 function loadPage(page) {
+  if (page === "chat") loadChat();
   if (page === "dashboard") loadDashboard();
   if (page === "library") loadDocs();
   if (page === "ask") loadConversations();
@@ -132,50 +222,88 @@ function loadPage(page) {
   if (page === "settings") loadSettings();
 }
 
+function openSidebar() {
+  $("#sidebar").classList.add("open");
+  $("#nav-toggle").setAttribute("aria-expanded", "true");
+  $("#scrim").hidden = false;
+}
+
+function closeSidebar() {
+  $("#sidebar").classList.remove("open");
+  $("#nav-toggle").setAttribute("aria-expanded", "false");
+  $("#scrim").hidden = true;
+}
+
 async function refreshShell() {
   try {
     state.me = await api("/auth/me");
-    $("#settings-role").textContent = state.me.role;
+    const name = state.me.name || "知";
+    $("#who-avatar").textContent = Array.from(name)[0];
+    const option = $(`#token-select option[value="${state.token}"]`);
+    if (option) option.textContent = `${state.me.name} · ${state.me.role}`;
+    if (state.page === "settings") renderIdentity();
   } catch (error) {
-    toast(error.message, "err");
+    toast(error.message);
   }
 }
 
 async function loadMetaAndHealth() {
   try {
     state.meta = await api("/meta");
-    $("#harness-kv").innerHTML = `<span>正在读取运行时…</span>`;
   } catch (_) { /* ignore */ }
   try {
     state.harness = await api("/harness/health");
-    renderHarness();
-  } catch (error) {
-    $("#harness-label").textContent = "运行时不可用";
-    $("#harness-dot").className = "dot err";
+  } catch (_) {
+    state.harness = null;
   }
+  renderRuntime();
+  renderDashboardConfig();
 }
 
-function renderHarness() {
+function runtimeView() {
   const health = state.harness || {};
   const primary = health.primary || health;
-  const available = Boolean(primary.available);
-  $("#harness-dot").className = `dot ${available ? "ok" : "warn"}`;
-  $("#harness-label").textContent = available
-    ? `${primary.adapter || "DSH"} · ${primary.mode || "ready"}`
-    : "模型运行时降级";
-  const rows = {
-    "适配器": health.adapter || primary.adapter || "—",
-    "DSH 可用": available ? "是" : "否",
-    "最近使用": health.last_used || primary.last_used || "—",
-    "模型": primary.model || state.meta?.model || "—",
-    "模式": primary.mode || "—",
-    "配置文件": primary.profile || "—",
-    "最近错误": primary.last_error || health.fallback?.last_error || "无",
+  return {
+    available: Boolean(primary.available),
+    adapter: primary.adapter || health.adapter || "无",
+    model: primary.model || state.meta?.model || "无",
+    mode: primary.mode || "无",
+    profile: primary.profile || "无",
+    lastUsed: health.last_used || primary.last_used || "无",
+    lastError: String(primary.last_error || health.fallback?.last_error || "")
+      .split("\n").map((line) => line.trim()).find((line) => line && !/^[\^~]+$/.test(line)) || "",
   };
-  $("#harness-kv").innerHTML = Object.entries(rows)
-    .map(([key, value]) => `<div><span>${esc(key)}</span><strong>${esc(value)}</strong></div>`)
-    .join("");
-  $("#settings-harness").innerHTML = $("#harness-kv").innerHTML;
+}
+
+function renderRuntime() {
+  const view = runtimeView();
+  const summary = $("#setting-runtime-summary");
+  if (summary) summary.textContent = view.available ? `${view.adapter} · ${view.mode}` : "运行时降级";
+  const target = $("#settings-runtime");
+  if (!target) return;
+  const rows = [
+    ["适配器", view.adapter],
+    ["状态", view.available ? "可用" : "不可用"],
+    ["模型", view.model],
+    ["模式", view.mode],
+    ["配置文件", view.profile],
+    ["最近使用", view.lastUsed],
+    ["最近错误", view.lastError || "无"],
+  ];
+  target.innerHTML = rows.map(([key, value]) => `<div class="kv-row"><dt>${esc(key)}</dt><dd>${esc(value)}</dd></div>`).join("");
+}
+
+function renderDashboardConfig() {
+  const target = $("#dash-config");
+  if (!target) return;
+  const view = runtimeView();
+  const rows = [
+    ["对话模型", view.model],
+    ["嵌入模型", state.meta?.embedding_model || "无"],
+    ["重排阈值", state.meta?.rerank_threshold != null ? Number(state.meta.rerank_threshold).toFixed(2) : "无"],
+    ["运行时", view.available ? `${view.adapter} · ${view.mode}` : "降级"],
+  ];
+  target.innerHTML = rows.map(([key, value]) => `<div class="kv-row"><dt>${esc(key)}</dt><dd>${esc(value)}</dd></div>`).join("");
 }
 
 /* ============ Dashboard ============ */
@@ -183,193 +311,258 @@ async function loadDashboard() {
   try {
     state.stats = await api("/stats");
     renderStats();
-    const [docs, traces] = await Promise.all([api("/documents?limit=5"), api("/traces?limit=6")]);
+    const [docs, traces, costs] = await Promise.all([
+      api("/documents?limit=5"),
+      api("/traces?limit=5"),
+      api("/costs/summary?days=30").catch(() => null),
+    ]);
     renderRecentDocs(docs.items);
     renderRecentTraces(traces.items);
+    renderBudgetBreakdown(costs?.by_feature);
+    stampNow();
   } catch (error) {
-    toast(error.message, "err");
+    toast(error.message);
   }
 }
 
 function renderStats() {
   const stats = state.stats || {};
-  $$("[data-stat]").forEach((el) => {
-    const key = el.dataset.stat;
-    let value = stats[key] ?? 0;
-    if (key === "refusal_rate_7d") value = pct(value);
-    else if (key === "spend_cny") value = money(value);
-    else value = num(value);
-    el.textContent = value;
-  });
+  const documents = Number(stats.documents || 0);
+  const chunks = Number(stats.chunks || 0);
+  const entities = Number(stats.entities || 0);
+
+  $("#stat-reviews").textContent = num(stats.reviews_open || 0);
+  $("#stat-disputed").textContent = num(stats.facts_disputed || 0);
+  $("#stat-gaps").textContent = num(stats.gaps_open || 0);
+  $("#stat-asks").textContent = num(stats.asks_7d || 0);
+  $("#stat-documents").textContent = num(documents);
+  $("#stat-chunks").textContent = num(chunks);
+  $("#stat-entities").textContent = num(entities);
+  $("#stat-facts").textContent = num(stats.facts_active || 0);
+  $("#stat-refusal").textContent = pct(stats.refusal_rate_7d || 0);
+
+  setSub("dashboard", `${num(documents)} 篇文档 · ${num(chunks)} 个检索单元 · ${num(entities)} 个实体`);
+
   const reviews = Number(stats.reviews_open || 0);
-  $("#nav-review-count").textContent = reviews;
-  $("#nav-review-count").hidden = reviews === 0;
-  const healthScore = Math.max(32, Math.min(98, 94 - reviews * 3 - Number(stats.gaps_open || 0) * 2));
-  $("#health-score").textContent = healthScore;
-  $("#health-ring").style.setProperty("--p", healthScore / 100);
-  $("#leg-evidence").textContent = `${num(stats.facts_active || 0)} 条`;
+  const badge = $("#nav-review-count");
+  badge.textContent = reviews;
+  badge.hidden = reviews === 0;
+
   const budget = stats.budget || {};
-  const ratio = budget.limit ? Math.min(1, Number(budget.used || 0) / Number(budget.limit)) : 0;
-  $("#budget-bar-fill").style.width = `${ratio * 100}%`;
-  $("#budget-copy").textContent = `本月已用 ${money(budget.used || 0)} / ${money(budget.limit || 0)}（${pct(ratio)}）`;
-  $("#budget-pill").textContent = ratio > 0.8 ? "预算预警" : "预算正常";
-  $("#budget-pill").className = `pill ${ratio > 0.8 ? "warn" : "teal"}`;
+  const used = Number(budget.used || 0);
+  const limit = Number(budget.limit || 0);
+  const ratio = limit > 0 ? Math.min(1, used / limit) : 0;
+  $("#budget-used").textContent = money(used);
+  $("#budget-limit").textContent = limit > 0 ? `/ ${money(limit)}` : "";
+  $("#budget-bar").style.width = `${ratio * 100}%`;
+  $("#budget-note").textContent = limit > 0
+    ? `已用 ${pct(ratio)} · 剩余 ${money(Math.max(0, limit - used))}`
+    : "未设置预算上限";
+
+  renderDashboardConfig();
+}
+
+function renderBudgetBreakdown(byFeature) {
+  const target = $("#budget-breakdown");
+  if (!target) return;
+  const entries = Object.entries(byFeature || {}).sort((a, b) => b[1].amount - a[1].amount).slice(0, 3);
+  if (!entries.length) {
+    target.innerHTML = "";
+    return;
+  }
+  const max = Math.max(0.00001, ...entries.map(([, item]) => item.amount));
+  target.innerHTML = `<div class="rank-list">${entries.map(([key, item]) => `
+    <div class="rank-row">
+      <span class="rank-label">${esc(FEATURE_LABEL[key] || key)}</span>
+      <div class="rank-track"><div class="rank-fill" style="width:${(item.amount / max) * 100}%"></div></div>
+      <span class="rank-value">${money(item.amount)}</span>
+    </div>`).join("")}</div>`;
 }
 
 function renderRecentDocs(docs) {
   const target = $("#recent-docs");
   if (!docs.length) {
-    target.innerHTML = `<div class="empty">暂无文档</div>`;
+    target.innerHTML = `<div class="empty-block">暂无文档</div>`;
     return;
   }
   target.innerHTML = docs.map((doc) => `
-    <div class="list-row" data-doc="${esc(doc.id)}">
-      <span class="row-icon">${esc((doc.source_type || "?").slice(0, 4))}</span>
-      <div class="row-main">
-        <strong>${esc(doc.title)}</strong>
-        <small>${esc(doc.source_type)} · ${doc.chunks} chunks · ${esc(doc.acl_label)}</small>
-      </div>
-      <span class="row-tag">v${doc.version}</span>
-    </div>`).join("");
+    <button class="row" type="button" data-doc="${esc(doc.id)}">
+      <span class="row-main">
+        <span class="row-title">${esc(doc.title)}</span>
+        <span class="row-sub">${esc(SOURCE_LABEL[doc.source_type] || doc.source_type)} · ${num(doc.chunks)} 个检索单元 · ${esc(doc.acl_label)}</span>
+      </span>
+      <span class="row-end">${shortDate(doc.updated_at)}</span>
+    </button>`).join("");
   $$("#recent-docs [data-doc]").forEach((row) => row.addEventListener("click", () => openDoc(row.dataset.doc)));
 }
 
 function renderRecentTraces(traces) {
   const target = $("#recent-traces");
   if (!traces.length) {
-    target.innerHTML = `<div class="empty">暂无轨迹</div>`;
+    target.innerHTML = `<div class="empty-block">暂无轨迹</div>`;
     return;
   }
   target.innerHTML = traces.map((trace) => `
-    <div class="list-row" data-trace="${esc(trace.id)}">
-      <span class="row-icon">${trace.feature === "ask" ? "⌕" : trace.feature === "search" ? "▤" : "⌁"}</span>
-      <div class="row-main">
-        <strong>${esc(trace.question || trace.answer || trace.feature)}</strong>
-        <small>${esc(trace.feature)} · ${trace.latency_ms}ms · ${shortDate(trace.created_at)}</small>
-      </div>
-      <span class="trace-status ${esc(trace.status)}">${esc(trace.status)}</span>
-    </div>`).join("");
+    <button class="row" type="button" data-trace="${esc(trace.id)}">
+      <span class="row-main">
+        <span class="row-title">${esc(trace.question || trace.answer || FEATURE_LABEL[trace.feature] || trace.feature)}</span>
+        <span class="row-sub">${esc(FEATURE_LABEL[trace.feature] || trace.feature)} · ${num(trace.latency_ms)} ms · ${shortDate(trace.created_at)}</span>
+      </span>
+      ${statusPill(trace.status)}
+    </button>`).join("");
   $$("#recent-traces [data-trace]").forEach((row) => row.addEventListener("click", () => openTrace(row.dataset.trace)));
 }
 
 /* ============ Library ============ */
+function docQuery() {
+  return $("#doc-search")?.value.trim() || "";
+}
+
 async function loadDocs() {
-  const q = $("#doc-search")?.value.trim() || "";
-  const source = $("#doc-source-filter")?.value || "";
   const params = new URLSearchParams({ limit: "100" });
+  const q = docQuery();
   if (q) params.set("q", q);
-  if (source) params.set("source_type", source);
+  if (state.source) params.set("source_type", state.source);
   try {
     const data = await api(`/documents?${params}`);
     state.docs = data.items;
     renderDocs();
     const totalChunks = data.items.reduce((sum, doc) => sum + Number(doc.chunks || 0), 0);
-    $("#library-summary").innerHTML = `<span>共 <strong>${data.items.length}</strong> 篇可见文档</span><span>·</span><span><strong>${num(totalChunks)}</strong> 个检索单元</span><span>·</span><span>当前身份 <strong>${esc(state.me?.name || "—")}</strong></span>`;
+    setSub("library", `共 ${num(data.items.length)} 篇 · ${num(totalChunks)} 个检索单元`);
+    $("#doc-count").textContent = `${num(data.items.length)} 篇`;
+    stampNow();
   } catch (error) {
-    toast(error.message, "err");
+    toast(error.message);
   }
 }
 
 function renderDocs() {
-  const target = $("#doc-list");
+  const target = $("#doc-table-body");
+  const empty = $("#doc-empty");
+  empty.hidden = Boolean(state.docs.length);
   if (!state.docs.length) {
-    target.innerHTML = `<div class="empty">暂无文档</div>`;
+    target.innerHTML = "";
     return;
   }
   target.innerHTML = state.docs.map((doc) => `
-    <article class="doc-card" data-doc="${esc(doc.id)}">
-      <div class="doc-card-top">
-        <span class="doc-type">${esc((doc.source_type || "?").slice(0, 4))}</span>
-        <span class="pill ${doc.acl_label === "全员可见" ? "teal" : "warn"}">${esc(doc.acl_label)}</span>
-      </div>
-      <h4>${esc(doc.title)}</h4>
-      <p class="doc-summary">${esc(doc.summary || "—")}</p>
-      <div class="doc-meta">
-        <span>v${doc.version}</span><span>·</span><span>${doc.chunks} chunks</span><span>·</span>
-        <span>${esc(doc.enrichment_status)}</span><span>·</span><span>${shortDate(doc.updated_at)}</span>
-      </div>
-    </article>`).join("");
-  $$("#doc-list [data-doc]").forEach((card) => card.addEventListener("click", () => openDoc(card.dataset.doc)));
+    <tr data-doc="${esc(doc.id)}" tabindex="0">
+      <td>
+        <div class="cell-title">
+          <strong>${esc(doc.title)}</strong>
+          <span>${esc(plain(doc.summary) || "无")}</span>
+          <span class="cell-inline">${esc(SOURCE_LABEL[doc.source_type] || doc.source_type)} · ${num(doc.chunks)} 个检索单元 · ${shortDate(doc.updated_at)}</span>
+        </div>
+      </td>
+      <td class="type">${esc(SOURCE_LABEL[doc.source_type] || doc.source_type)}</td>
+      <td class="num">${num(doc.chunks)}</td>
+      <td><span class="pill ${doc.acl_label === "全员可见" ? "" : "warn"}">${esc(doc.acl_label)}</span></td>
+      <td class="ver">v${esc(doc.version)}</td>
+      <td class="date">${shortDate(doc.updated_at)}</td>
+    </tr>`).join("");
+  $$("#doc-table-body [data-doc]").forEach((row) => {
+    const open = () => openDoc(row.dataset.doc);
+    row.addEventListener("click", open);
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        open();
+      }
+    });
+  });
 }
 
 async function openDoc(docId) {
   const dialog = $("#doc-dialog");
-  $("#dialog-title").textContent = "正在读取文档…";
-  $("#dialog-body").innerHTML = `<div class="empty">加载中…</div>`;
+  $("#doc-dialog-title").textContent = "文档";
+  $("#doc-dialog-body").innerHTML = loadingLines();
   if (!dialog.open) dialog.showModal();
   try {
     const data = await api(`/documents/${docId}`);
     const doc = data.document;
-    $("#dialog-title").textContent = doc.title;
-    $("#dialog-body").innerHTML = `
-      <div class="answer-top">
-        <span class="pill ${doc.acl_label === "全员可见" ? "teal" : "warn"}">${esc(doc.acl_label)}</span>
-        <span class="pill muted">v${doc.version}</span>
-        <span class="pill muted">${esc(doc.source_type)}</span>
-        <span class="pill muted">${doc.chunks} chunks</span>
-        <span class="pill muted">质量 ${doc.quality}</span>
+    $("#doc-dialog-title").textContent = doc.title;
+    $("#doc-dialog-body").innerHTML = `
+      <div class="detail-head">
+        <div style="min-width:0">
+          <div class="detail-pills">
+            <span class="pill ${doc.acl_label === "全员可见" ? "" : "warn"}">${esc(doc.acl_label)}</span>
+            <span class="pill">v${esc(doc.version)}</span>
+            <span class="pill">${esc(SOURCE_LABEL[doc.source_type] || doc.source_type)}</span>
+            <span class="pill">${num(doc.chunks)} 个检索单元</span>
+            <span class="pill">质量 ${esc(doc.quality)}</span>
+          </div>
+          ${doc.summary ? `<p class="detail-summary">${esc(plain(doc.summary))}</p>` : ""}
+        </div>
       </div>
-      <p class="tiny">${esc(doc.summary || "")}</p>
-      <div class="button-row" style="margin:14px 0">
-        <button class="btn small" data-doc-action="reprocess" data-doc-id="${esc(doc.id)}">重新抽取事实</button>
-        <button class="btn small danger" data-doc-action="delete" data-doc-id="${esc(doc.id)}">移入回收站</button>
+      <div class="detail-actions">
+        <button class="btn" data-doc-action="reprocess" data-doc-id="${esc(doc.id)}">重新抽取事实</button>
+        <button class="btn danger" data-doc-action="delete" data-doc-id="${esc(doc.id)}">移入回收站</button>
       </div>
-      <div class="hr"></div>
-      <h4>版本</h4>
-      <div class="list-stack">${data.versions.map((version) => `
-        <div class="list-row" style="cursor:default">
-          <span class="row-icon">v${version.version}</span>
-          <div class="row-main"><strong>${esc(version.parser)}</strong><small>${version.chars} 字符 · ${esc(version.hash)} · ${shortDate(version.created_at)}</small></div>
-        </div>`).join("")}</div>
-      <div class="hr"></div>
-      <h4>事实层（${data.facts.length}）</h4>
-      ${data.facts.length ? data.facts.map((fact) => `
-        <div class="chunk-block">
-          <header><span>${esc(fact.subject)} · ${esc(fact.predicate)} · ${esc(fact.object || "")}</span><span>${esc(fact.status)} · ${fact.confidence}</span></header>
-          <p>${esc(fact.evidence?.[0]?.quote || "")}</p>
-        </div>`).join("") : `<div class="empty">暂无事实</div>`}
-      <div class="hr"></div>
-      <h4>检索单元（展示前 ${data.chunks.length} 个）</h4>
-      ${data.chunks.map((chunk) => `
-        <div class="chunk-block">
-          <header><span>#${chunk.seq} · ${esc(chunk.block_type)} · ${chunk.tokens} tokens</span><span>${esc(chunk.heading_path?.join(" / ") || "正文")} ${chunk.page ? `· p.${chunk.page}` : ""}</span></header>
-          <p>${esc(chunk.text)}</p>
-        </div>`).join("")}
-      <div class="hr"></div>
-      <h4>关联实体</h4>
-      <div class="button-row">${data.entities.length ? data.entities.map((entity) => `<span class="pill teal">${esc(entity.name)}</span>`).join("") : `<span class="tiny">暂无</span>`}</div>
-    `;
-    $$("[data-doc-action]", $("#dialog-body")).forEach((button) => {
+
+      <div class="section">
+        <h3>版本</h3>
+        ${data.versions.map((version) => `
+          <div class="version-row">
+            <span>v${esc(version.version)} · ${esc(version.parser)}</span>
+            <span class="meta">${num(version.chars)} 字符 · ${esc(version.hash)} · ${shortDate(version.created_at)}</span>
+          </div>`).join("") || `<div class="empty-block">暂无版本</div>`}
+      </div>
+
+      <div class="section">
+        <h3>事实层</h3>
+        ${data.facts.length ? data.facts.map((fact) => `
+          <div class="fact-item">
+            <div class="fact-line">${esc(fact.subject)} <span class="pred">${esc(fact.predicate)}</span> <span class="obj">${esc(fact.object || "")}</span></div>
+            <div class="fact-meta">${factPill(fact.status)}<span>置信度 ${esc(fact.confidence)}</span><span>${esc(fact.acl_label)}</span></div>
+            ${fact.evidence?.[0]?.quote ? `<div class="fact-quote">${esc(plain(fact.evidence[0].quote))}</div>` : ""}
+          </div>`).join("") : `<div class="empty-block">暂无事实</div>`}
+      </div>
+
+      <div class="section">
+        <h3>检索单元</h3>
+        <div class="quote-list">
+          ${data.chunks.map((chunk) => `
+            <div class="quote-block">
+              ${esc(plainLines(chunk.text))}
+              <span class="quote-meta">#${esc(chunk.seq)} · ${esc(chunk.block_type)} · ${num(chunk.tokens)} tokens · ${esc(chunk.heading_path?.join(" / ") || "正文")}${chunk.page ? ` · p.${esc(chunk.page)}` : ""}</span>
+            </div>`).join("") || `<div class="empty-block">暂无检索单元</div>`}
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>关联实体</h3>
+        <div class="pill-row">${data.entities.length ? data.entities.map((entity) => `<span class="pill">${esc(entity.name)}</span>`).join("") : `<span class="muted small">暂无</span>`}</div>
+      </div>`;
+    $$("[data-doc-action]", $("#doc-dialog-body")).forEach((button) => {
       button.addEventListener("click", () => handleDocAction(button.dataset.docAction, button.dataset.docId, button));
     });
   } catch (error) {
-    $("#dialog-body").innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+    $("#doc-dialog-body").innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
   }
 }
 
 async function handleDocAction(action, docId, button) {
   if (action === "delete") {
     if (!confirm("确认移入回收站？")) return;
-    setBusy(button, true, "删除中…");
+    setBusy(button, true, "删除中");
     try {
       await api(`/documents/${docId}`, { method: "DELETE" });
-      toast("文档已移入回收站", "ok");
+      toast("文档已移入回收站");
       $("#doc-dialog").close();
       loadDocs();
       loadDashboard();
     } catch (error) {
-      toast(error.message, "err");
+      toast(error.message);
     } finally {
       setBusy(button, false);
     }
   }
   if (action === "reprocess") {
-    setBusy(button, true, "排队中…");
+    setBusy(button, true, "排队中");
     try {
       await api(`/documents/${docId}/reprocess`, { method: "POST" });
-      toast("已排入事实抽取队列", "ok");
+      toast("已排入事实抽取队列");
     } catch (error) {
-      toast(error.message, "err");
+      toast(error.message);
     } finally {
       setBusy(button, false);
     }
@@ -377,118 +570,554 @@ async function handleDocAction(action, docId, button) {
 }
 
 function setupIngest() {
-  $$("#ingest-tabs button").forEach((button) => {
+  $$("#ingest-tabs .tab").forEach((button) => {
     button.addEventListener("click", () => {
-      $$("#ingest-tabs button").forEach((item) => item.classList.toggle("active", item === button));
-      $$(".ingest-form").forEach((pane) => { pane.hidden = pane.dataset.pane !== button.dataset.ingest; });
+      $$("#ingest-tabs .tab").forEach((item) => {
+        const active = item === button;
+        item.classList.toggle("active", active);
+        item.setAttribute("aria-selected", active ? "true" : "false");
+      });
+      $("#ingest-file-form").hidden = button.dataset.ingest !== "file";
+      $("#ingest-text-form").hidden = button.dataset.ingest !== "text";
+      $("#ingest-url-form").hidden = button.dataset.ingest !== "url";
     });
   });
 
+  $("#open-ingest").addEventListener("click", () => $("#ingest-dialog").showModal());
+
   const fileInput = $("#file-input");
-  const dropzone = $("#dropzone");
-  const uploadBtn = $("#upload-btn");
+  const dropLabel = $("#file-drop-label");
   fileInput.addEventListener("change", () => {
     state.file = fileInput.files?.[0] || null;
-    uploadBtn.disabled = !state.file;
-    if (state.file) $("strong", dropzone).textContent = state.file.name;
+    dropLabel.textContent = state.file ? state.file.name : "选择文件";
   });
-  ["dragenter", "dragover"].forEach((event) => dropzone.addEventListener(event, (e) => { e.preventDefault(); dropzone.classList.add("drag"); }));
-  ["dragleave", "drop"].forEach((event) => dropzone.addEventListener(event, (e) => { e.preventDefault(); dropzone.classList.remove("drag"); }));
-  dropzone.addEventListener("drop", (event) => {
+  ["dragenter", "dragover"].forEach((event) => $("#file-drop").addEventListener(event, (e) => { e.preventDefault(); }));
+  $("#file-drop").addEventListener("drop", (event) => {
+    event.preventDefault();
     const file = event.dataTransfer.files?.[0];
     if (!file) return;
     state.file = file;
-    uploadBtn.disabled = false;
-    $("strong", dropzone).textContent = file.name;
+    fileInput.files = event.dataTransfer.files;
+    dropLabel.textContent = file.name;
   });
 
-  uploadBtn.addEventListener("click", async () => {
-    if (!state.file) return;
+  $("#ingest-file-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!state.file) { toast("先选择文件"); return; }
+    const button = event.submitter;
     const form = new FormData();
     form.append("file", state.file);
-    const title = $("#upload-title").value.trim();
-    const acl = $("#upload-acl").value.trim();
+    const title = $("#file-title").value.trim();
+    const acl = $("#file-acl").value.trim();
     if (title) form.append("title", title);
     if (acl) form.append("acl", acl);
-    setBusy(uploadBtn, true, "解析中…");
+    setBusy(button, true, "解析中");
     try {
       const result = await api("/documents/upload", { method: "POST", body: form });
-      toast(result.duplicate ? result.message : `已接入：${result.chunks} 个检索单元，v${result.version}`, "ok");
-      state.file = null;
-      fileInput.value = "";
-      $("strong", dropzone).textContent = "拖拽文件到这里，或点击选择";
-      uploadBtn.disabled = true;
-      $("#upload-title").value = "";
+      toast(result.duplicate ? result.message : `已接入 ${num(result.chunks)} 个检索单元 · v${result.version}`);
+      closeIngest();
       loadDocs();
       loadDashboard();
     } catch (error) {
-      toast(error.message, "err");
+      toast(error.message);
     } finally {
-      setBusy(uploadBtn, false);
+      setBusy(button, false);
     }
   });
 
-  $("#text-btn").addEventListener("click", async () => {
-    const text = $("#text-body").value.trim();
-    if (!text) { toast("请先粘贴内容", "err"); return; }
-    const button = $("#text-btn");
-    setBusy(button, true, "写入中…");
+  $("#ingest-text-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const text = $("#text-input").value.trim();
+    if (!text) { toast("内容不能为空"); return; }
+    const button = event.submitter;
+    setBusy(button, true, "写入中");
     try {
       const result = await api("/documents/text", {
         method: "POST",
-        body: { text, title: $("#text-title").value.trim() || null, acl: $("#text-acl").value.trim() ? [$("#text-acl").value.trim()] : null },
+        body: {
+          text,
+          title: $("#text-title").value.trim() || null,
+          acl: $("#text-acl").value.trim() ? [$("#text-acl").value.trim()] : null,
+        },
       });
-      toast(result.duplicate ? result.message : `已写入：${result.chunks} 个检索单元`, "ok");
-      $("#text-body").value = ""; $("#text-title").value = ""; $("#text-acl").value = "";
-      loadDocs(); loadDashboard();
+      toast(result.duplicate ? result.message : `已写入 ${num(result.chunks)} 个检索单元`);
+      closeIngest();
+      loadDocs();
+      loadDashboard();
     } catch (error) {
-      toast(error.message, "err");
+      toast(error.message);
     } finally {
       setBusy(button, false);
     }
   });
 
-  $("#url-btn").addEventListener("click", async () => {
-    const url = $("#url-body").value.trim();
-    if (!url) { toast("请输入 URL", "err"); return; }
-    const button = $("#url-btn");
-    setBusy(button, true, "抓取中…");
+  $("#ingest-url-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const url = $("#url-input").value.trim();
+    if (!url) { toast("网址不能为空"); return; }
+    const button = event.submitter;
+    setBusy(button, true, "抓取中");
     try {
       const result = await api("/documents/url", {
         method: "POST",
-        body: { url, title: $("#url-title").value.trim() || null, acl: $("#url-acl").value.trim() ? [$("#url-acl").value.trim()] : null },
+        body: {
+          url,
+          title: $("#url-title").value.trim() || null,
+          acl: $("#url-acl").value.trim() ? [$("#url-acl").value.trim()] : null,
+        },
       });
-      toast(result.duplicate ? result.message : `已抓取：${result.chunks} 个检索单元`, "ok");
-      $("#url-body").value = ""; $("#url-title").value = ""; $("#url-acl").value = "";
-      loadDocs(); loadDashboard();
+      toast(result.duplicate ? result.message : `已抓取 ${num(result.chunks)} 个检索单元`);
+      closeIngest();
+      loadDocs();
+      loadDashboard();
     } catch (error) {
-      toast(error.message, "err");
+      toast(error.message);
     } finally {
       setBusy(button, false);
     }
   });
 
-  $("#refresh-docs").addEventListener("click", loadDocs);
-  $("#doc-search").addEventListener("keydown", (event) => { if (event.key === "Enter") loadDocs(); });
-  $("#doc-source-filter").addEventListener("change", loadDocs);
+  $("#doc-search").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); loadDocs(); }
+  });
+  let searchTimer = null;
+  $("#doc-search").addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(loadDocs, 320);
+  });
+  $$("#doc-tabs .tab").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.source = button.dataset.source || "";
+      $$("#doc-tabs .tab").forEach((item) => {
+        const active = item === button;
+        item.classList.toggle("active", active);
+        item.setAttribute("aria-selected", active ? "true" : "false");
+      });
+      loadDocs();
+    });
+  });
+}
+
+function closeIngest() {
+  $("#ingest-dialog").close();
+  $("#ingest-file-form").reset();
+  $("#ingest-text-form").reset();
+  $("#ingest-url-form").reset();
+  state.file = null;
+  $("#file-drop-label").textContent = "选择文件";
+}
+
+/* ============ Chat ============ */
+const CHAT_MODE_LABEL = {
+  quick: "快速",
+  deep: "深度",
+  graph: "图谱",
+  timeline: "时间线",
+  compare: "对比",
+};
+
+function renderChatList() {
+  const list = $("#chat-list");
+  if (!state.conversations.length) {
+    list.innerHTML = `<div class="empty-block">暂无会话</div>`;
+    return;
+  }
+  list.innerHTML = state.conversations.map((conversation) => `
+    <button class="chat-item ${conversation.id === state.chatConversationId ? "active" : ""}" type="button" data-chat="${esc(conversation.id)}">
+      <span class="chat-item-title">${esc(conversation.title || "未命名会话")}</span>
+      <span class="chat-item-sub">${num(conversation.messages)} 条 · ${shortDate(conversation.created_at)}</span>
+    </button>`).join("");
+  $$("#chat-list [data-chat]").forEach((item) => {
+    item.addEventListener("click", () => openChatConversation(item.dataset.chat));
+  });
+}
+
+async function fetchChatList() {
+  const data = await api("/conversations?limit=30");
+  state.conversations = data.items;
+  renderChatList();
+  setSub("chat", data.items.length ? `${num(data.items.length)} 个会话` : "");
+  return data.items;
+}
+
+async function loadChat() {
+  try {
+    const items = await fetchChatList();
+    if (!items.length) {
+      state.chatConversationId = null;
+      state.chatMessages = [];
+      renderChatThread();
+      return;
+    }
+    const exists = items.some((item) => item.id === state.chatConversationId);
+    if (!exists && !state.chatDraft && !state.chatMessages.length) await openChatConversation(items[0].id);
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function openChatConversation(conversationId) {
+  if (state.chatBusy) return;
+  try {
+    const data = await api(`/conversations/${conversationId}`);
+    state.chatConversationId = conversationId;
+    state.chatDraft = false;
+    state.chatMessages = (data.messages || []).map((message) => ({
+      role: message.role,
+      content: message.content,
+      mode: message.mode,
+      confidence: message.confidence,
+      trace_id: message.trace_id,
+      citations: message.citations || [],
+    }));
+    renderChatThread();
+    renderChatList();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+function newChat() {
+  if (state.chatBusy) return;
+  state.chatConversationId = null;
+  state.chatDraft = true;
+  state.chatMessages = [];
+  renderChatThread();
+  renderChatList();
+  $("#chat-input").value = "";
+  resizeChatInput();
+  $("#chat-input").focus();
+}
+
+function chatMessageHtml(message, id) {
+  if (message.role === "user") {
+    return `<article class="msg msg-user" data-msg="${id}">
+      <div class="msg-body">${esc(message.content).replace(/\n/g, "<br>")}</div>
+    </article>`;
+  }
+  const refused = message.refused ?? /^现有资料不足/.test(message.content || "");
+  const citations = message.citations || [];
+  const body = message.pending
+    ? loadingLines()
+    : message.failed
+      ? `<p class="msg-error">${esc(message.content)}</p>`
+      : answerHtml(message.content, refused);
+  const status = [];
+  if (message.pending) status.push(`<span class="pill">${esc(CHAT_MODE_LABEL[message.mode] || message.mode || "快速")}</span>`);
+  else {
+    if (message.mode) status.push(`<span class="pill">${esc(CHAT_MODE_LABEL[message.mode] || message.mode)}</span>`);
+    if (message.failed) status.push(`<span class="pill bad">失败</span>`);
+    else if (refused) status.push(`<span class="pill warn">证据不足</span>`);
+    if (Number(message.confidence) > 0) status.push(`<span>置信度 ${esc(message.confidence)}</span>`);
+    if (message.latency_ms) status.push(`<span>${num(message.latency_ms)} ms</span>`);
+    if (message.trace_id) status.push(`<button class="text-btn" type="button" data-trace="${esc(message.trace_id)}">轨迹</button>`);
+  }
+  return `<article class="msg msg-assistant" data-msg="${id}">
+    <div class="msg-body">${body}</div>
+    ${citations.length ? `<details class="msg-cites">
+      <summary>${num(citations.length)} 条引用</summary>
+      <div class="cite-list">${citations.map((citation, index) => `
+        <div class="cite-item" data-cite-item="${index + 1}">
+          <span class="cite-num">${index + 1}</span>
+          <div>
+            <div class="cite-quote">${esc(plain(citation.quote))}</div>
+            <div class="cite-meta">${citation.doc_title ? `${esc(citation.doc_title)} · ` : ""}${citation.page ? `p.${esc(citation.page)}` : "正文"}</div>
+          </div>
+        </div>`).join("")}</div>
+    </details>` : ""}
+    ${status.length ? `<div class="msg-status">${status.join("")}</div>` : ""}
+  </article>`;
+}
+
+function renderChatThread() {
+  const thread = $("#chat-thread");
+  if (!state.chatMessages.length) {
+    thread.innerHTML = `<div class="empty-block">暂无消息</div>`;
+    return;
+  }
+  thread.innerHTML = state.chatMessages.map((message, index) => chatMessageHtml(message, index)).join("");
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function resizeChatInput() {
+  const input = $("#chat-input");
+  if (!input) return;
+  input.style.height = "auto";
+  input.style.height = `${Math.min(input.scrollHeight, 132)}px`;
+}
+
+async function sendChat() {
+  if (state.chatBusy) return;
+  const input = $("#chat-input");
+  const question = input.value.trim();
+  if (!question) return;
+  const mode = $("#chat-mode-select").value || "quick";
+  state.chatBusy = true;
+  $("#chat-send").disabled = true;
+  input.value = "";
+  resizeChatInput();
+  state.chatMessages.push({ role: "user", content: question });
+  const pending = { role: "assistant", content: "", mode, pending: true };
+  state.chatMessages.push(pending);
+  renderChatThread();
+  try {
+    const payload = { question, mode, top_k: 6 };
+    if (state.chatConversationId) payload.conversation_id = state.chatConversationId;
+    const result = await api("/ask", { method: "POST", body: payload });
+    state.chatConversationId = result.conversation_id;
+    state.chatDraft = false;
+    const index = state.chatMessages.indexOf(pending);
+    if (index >= 0) {
+      state.chatMessages[index] = {
+        role: "assistant",
+        content: result.answer,
+        mode: result.mode,
+        confidence: result.confidence,
+        latency_ms: result.latency_ms,
+        trace_id: result.trace_id,
+        refused: result.refused,
+        citations: (result.citations || []).map((citation) => ({
+          quote: citation.quote,
+          page: citation.page,
+          doc_title: citation.doc_title,
+        })),
+      };
+    }
+  } catch (error) {
+    const index = state.chatMessages.indexOf(pending);
+    if (index >= 0) {
+      state.chatMessages[index] = { role: "assistant", content: error.message, mode, failed: true };
+    }
+    toast(error.message);
+  } finally {
+    state.chatBusy = false;
+    $("#chat-send").disabled = false;
+    renderChatThread();
+    $("#chat-input").focus();
+  }
+  fetchChatList().catch(() => {});
+}
+
+function setupChat() {
+  $("#chat-new").addEventListener("click", newChat);
+  $("#chat-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    sendChat();
+  });
+  $("#chat-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      sendChat();
+    }
+  });
+  $("#chat-input").addEventListener("input", resizeChatInput);
+  $("#chat-mode-select").addEventListener("change", (event) => {
+    state.chatMode = event.target.value;
+  });
+  $("#chat-thread").addEventListener("click", (event) => {
+    const cite = event.target.closest("[data-cite]");
+    if (cite) {
+      const article = cite.closest(".msg-assistant");
+      const details = article?.querySelector(".msg-cites");
+      if (!details) return;
+      details.open = true;
+      const item = details.querySelector(`[data-cite-item="${Number(cite.dataset.cite)}"]`);
+      if (item) {
+        $$(".cite-item", details).forEach((row) => row.classList.remove("is-target"));
+        item.classList.add("is-target");
+        item.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+      return;
+    }
+    const trace = event.target.closest("[data-trace]");
+    if (trace) openTrace(trace.dataset.trace);
+  });
+  resizeChatInput();
+}
+
+/* ============ Tour ============ */
+const TOUR_STEPS = [
+  { page: "chat", title: "对话", body: "直接输入问题。回答带引用编号，点开可查看原文；支持连续追问，会话自动保存。" },
+  { page: "dashboard", title: "概览", body: "汇总待审内容、争议事实、知识缺口与近 7 日问答量。" },
+  { page: "library", title: "知识库", body: "添加文档，查看切片数量、权限与接入状态。" },
+  { page: "ask", title: "研究台", body: "单次检索入口，提供快速、深度、图谱、时间线、对比五种模式。" },
+  { page: "entities", title: "实体图谱", body: "查看实体之间的关联，以及支撑关联的文档与事实。" },
+  { page: "review", title: "审阅队列", body: "处理事实冲突、权限冲突、低质量与重复内容；左侧数量为待处理项。" },
+  { page: "ops", title: "运维台", body: "查看检索轨迹、成本消耗与评测结果。" },
+  { page: "settings", title: "设置", body: "查看当前身份与模型运行时；切换身份后可见的数据范围随之变化。" },
+];
+
+function tourKey() {
+  return `kw_tour_seen_${state.token}`;
+}
+
+function openTour(index = 0) {
+  state.tourReturnPage = state.page;
+  $("#tour").hidden = false;
+  goTourStep(index);
+  $("#tour-next").focus();
+}
+
+function goTourStep(index) {
+  state.tourIndex = Math.max(0, Math.min(index, TOUR_STEPS.length - 1));
+  const page = TOUR_STEPS[state.tourIndex].page;
+  if (state.page !== page) showPage(page);
+  renderTourStep();
+}
+
+function renderTourStep() {
+  const step = TOUR_STEPS[state.tourIndex];
+  $("#tour-title").textContent = step.title;
+  $("#tour-body").textContent = step.body;
+  $("#tour-dots").innerHTML = TOUR_STEPS.map((_, index) => `<i class="${index === state.tourIndex ? "on" : ""}"></i>`).join("");
+  $("#tour-prev").disabled = state.tourIndex === 0;
+  $("#tour-next").textContent = state.tourIndex === TOUR_STEPS.length - 1 ? "开始使用" : "下一步";
+  placeTourStep(step.page);
+}
+
+function placeTourStep(page) {
+  const hole = $("#tour-hole");
+  const card = $("#tour-card");
+  const shade = $(".tour-shade");
+  const bands = ["top", "bottom", "left", "right"].map((side) => $(`#tour-band-${side}`));
+  card.style.transform = "";
+  card.style.left = "";
+  card.style.top = "";
+  bands.forEach((band) => band.classList.remove("show"));
+  shade.classList.remove("solid");
+  if (window.innerWidth <= 1100) {
+    hole.classList.remove("show");
+    shade.classList.add("solid");
+    card.style.width = "min(340px, calc(100vw - 32px))";
+    card.style.left = "50%";
+    card.style.top = "50%";
+    card.style.transform = "translate(-50%, -50%)";
+    return;
+  }
+  const item = $(`.nav-item[data-page="${page}"]`);
+  if (!item) {
+    hole.classList.remove("show");
+    shade.classList.add("solid");
+    card.style.width = "320px";
+    card.style.left = "50%";
+    card.style.top = "50%";
+    card.style.transform = "translate(-50%, -50%)";
+    return;
+  }
+  const rect = item.getBoundingClientRect();
+  const pad = 5;
+  const x = rect.left - pad;
+  const y = rect.top - pad;
+  const width = rect.width + pad * 2;
+  const height = rect.height + pad * 2;
+  hole.style.left = `${x}px`;
+  hole.style.top = `${y}px`;
+  hole.style.width = `${width}px`;
+  hole.style.height = `${height}px`;
+  hole.classList.add("show");
+  const [top, bottom, left, right] = bands;
+  const topEdge = Math.max(0, y);
+  top.style.left = "0";
+  top.style.top = "0";
+  top.style.width = "100%";
+  top.style.height = `${topEdge}px`;
+  bottom.style.left = "0";
+  bottom.style.top = `${y + height}px`;
+  bottom.style.width = "100%";
+  bottom.style.height = `calc(100% - ${y + height}px)`;
+  left.style.left = "0";
+  left.style.top = `${topEdge}px`;
+  left.style.width = `${Math.max(0, x)}px`;
+  left.style.height = `${height}px`;
+  right.style.left = `${x + width}px`;
+  right.style.top = `${topEdge}px`;
+  right.style.width = `calc(100% - ${x + width}px)`;
+  right.style.height = `${height}px`;
+  bands.forEach((band) => band.classList.add("show"));
+  card.style.width = "320px";
+  const cardWidth = 320;
+  const cardHeight = card.offsetHeight || 190;
+  const leftEdge = Math.min(rect.right + 16, window.innerWidth - cardWidth - 12);
+  const topEdgeCard = Math.max(16, Math.min(rect.top - 12, window.innerHeight - cardHeight - 16));
+  card.style.left = `${leftEdge}px`;
+  card.style.top = `${topEdgeCard}px`;
+}
+
+function closeTour() {
+  const returnPage = state.tourReturnPage || state.page;
+  state.tourReturnPage = null;
+  $("#tour").hidden = true;
+  $("#tour-hole").classList.remove("show");
+  localStorage.setItem(tourKey(), "1");
+  if (state.page !== returnPage) showPage(returnPage);
+}
+
+function setupTour() {
+  $("#open-tour").addEventListener("click", () => openTour());
+  $("#tour-skip").addEventListener("click", closeTour);
+  $("#tour-prev").addEventListener("click", () => goTourStep(state.tourIndex - 1));
+  $("#tour-next").addEventListener("click", () => {
+    if (state.tourIndex >= TOUR_STEPS.length - 1) closeTour();
+    else goTourStep(state.tourIndex + 1);
+  });
+  window.addEventListener("resize", () => {
+    if (!$("#tour").hidden) placeTourStep(TOUR_STEPS[state.tourIndex].page);
+  });
+  document.addEventListener("keydown", (event) => {
+    if ($("#tour").hidden) return;
+    if (event.key === "Escape") closeTour();
+    if (event.key === "Tab") {
+      const focusables = $$("button:not([disabled])", $("#tour-card"));
+      if (!focusables.length) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+  });
 }
 
 /* ============ Ask ============ */
+function cleanAnswer(text, refused) {
+  let value = String(text || "").replace(/（注：模型未逐句标注引用，以上依据按相关度附上。）/g, "").trim();
+  if (refused) {
+    value = value.split("。").filter((sentence) => !/建议|可以调整|请补充/.test(sentence)).join("。");
+    if (!value.endsWith("。") && value) value += "。";
+  }
+  return value;
+}
+
+function linkifyCitations(text, refused) {
+  const safe = esc(cleanAnswer(text, refused));
+  return safe.replace(/\[(\d{1,2})\]/g, (match, number) => `<button type="button" class="cite" data-cite="${number}" aria-label="证据 ${number}">${number}</button>`);
+}
+
+function answerHtml(text, refused) {
+  const linked = linkifyCitations(text, refused);
+  return linked.split(/\n{2,}/).map((block) => `<p>${block.replace(/\n/g, "<br>")}</p>`).join("");
+}
+
 function setupAsk() {
-  $$("#mode-row .mode-chip").forEach((chip) => {
-    chip.addEventListener("click", () => {
-      state.mode = chip.dataset.mode;
-      $$("#mode-row .mode-chip").forEach((item) => item.classList.toggle("active", item === chip));
+  $$("#mode-tabs .tab").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.mode = button.dataset.mode;
+      $$("#mode-tabs .tab").forEach((item) => {
+        const active = item === button;
+        item.classList.toggle("active", active);
+        item.setAttribute("aria-selected", active ? "true" : "false");
+      });
     });
-  });
-  $$("[data-suggest]").forEach((button) => {
-    button.addEventListener("click", () => { $("#question").value = button.dataset.suggest; $("#question").focus(); });
   });
   $("#ask-btn").addEventListener("click", runAsk);
   $("#question").addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") runAsk();
   });
-  $("#refresh-conversations").addEventListener("click", loadConversations);
+  $("#conversations-refresh").addEventListener("click", loadConversations);
 }
 
 function askPayload(question, conversationId = null) {
@@ -501,10 +1130,11 @@ function askPayload(question, conversationId = null) {
 
 async function runAsk() {
   const question = $("#question").value.trim();
-  if (!question) { toast("先输入一个问题", "err"); return; }
+  if (!question) { toast("问题不能为空"); return; }
   const button = $("#ask-btn");
-  setBusy(button, true, "检索中…");
-  $("#ask-result").innerHTML = `<div class="panel ask-skeleton"><div class="sk-line w80"></div><div class="sk-line"></div><div class="sk-line w60"></div><div class="sk-line w40"></div></div>`;
+  setBusy(button, true, "检索中");
+  $("#ask-result").innerHTML = `<div class="answer">${loadingLines()}</div>`;
+  $("#evidence-body").innerHTML = loadingLines();
   try {
     const result = await api("/ask", { method: "POST", body: askPayload(question, state.conversationId) });
     state.lastAsk = result;
@@ -513,41 +1143,40 @@ async function runAsk() {
     loadConversations();
     loadDashboard();
   } catch (error) {
-    $("#ask-result").innerHTML = `<div class="panel refused-card"><div class="answer-body">${esc(error.message)}</div></div>`;
-    toast(error.message, "err");
+    $("#ask-result").innerHTML = `<div class="answer"><div class="empty-block">${esc(error.message)}</div></div>`;
+    toast(error.message);
   } finally {
     setBusy(button, false);
   }
 }
 
-function linkifyCitations(text) {
-  return esc(text).replace(/\[(\d{1,2})\]/g, (match, number) => `<span class="cite-link" data-cite="${number}">${number}</span>`);
-}
-
 function renderAsk(result) {
-  const refused = result.refused;
+  const refused = Boolean(result.refused);
   const modeName = state.meta?.modes?.find((mode) => mode.id === result.mode)?.name || result.mode;
-  const answer = linkifyCitations(result.answer);
   const citations = result.citations || [];
   const facts = result.facts || [];
   $("#ask-result").innerHTML = `
-    <article class="panel answer-card ${refused ? "refused-card" : ""}">
-      <div class="answer-top">
-        <span class="pill ${refused ? "warn" : "teal"}">${refused ? "证据不足 · 已拒答" : "已回答"}</span>
-        <span class="pill muted">${esc(modeName)}</span>
-        <span class="pill muted">置信度 ${result.confidence}</span>
-        <span class="pill muted">${result.latency_ms} ms</span>
-        <span class="pill muted">${citations.length} 条引用</span>
+    <article class="answer">
+      <div class="answer-status">
+        <span class="pill ${refused ? "warn" : "ok"}">${refused ? "证据不足" : "已回答"}</span>
+        <span class="pill">${esc(modeName)}</span>
+        <span class="pill">置信度 ${esc(result.confidence)}</span>
+        <span class="pill">${num(result.latency_ms)} ms</span>
+        <span class="pill">${num(citations.length)} 条引用</span>
       </div>
-      <div class="answer-body">${answer}</div>
-      ${facts.length ? `<div class="hr"></div><div class="tiny">图谱事实：${facts.slice(0, 4).map((fact) => `<span class="pill teal" style="margin:2px">${esc(fact.subject)} ${esc(fact.predicate)} ${esc(fact.object || "")}</span>`).join("")}</div>` : ""}
+      <div class="answer-body">${answerHtml(result.answer, refused)}</div>
+      ${facts.length ? `<div class="answer-facts"><span class="caption">事实</span>${facts.slice(0, 6).map((fact) => `
+        <div class="answer-fact"><b>${esc(fact.subject)}</b> ${esc(fact.predicate)} ${esc(fact.object || "")}</div>`).join("")}</div>` : ""}
       <div class="answer-foot">
-        <span>top score ${(result.stats?.top_score ?? 0).toFixed(3)} / 阈值 ${(result.stats?.threshold ?? 0).toFixed(3)}</span>
-        <span>·</span>
-        <span>证据 ${result.stats?.evidence_count || 0} · 拒绝 ${result.stats?.rejected_candidates || 0}</span>
-        <button class="btn small" data-feedback="1">有帮助</button>
-        <button class="btn small" data-feedback="-1">需改进</button>
-        <button class="btn small ghost" data-open-trace="${esc(result.trace_id)}">查看轨迹</button>
+        <div class="answer-metrics">
+          <span>top ${(result.stats?.top_score ?? 0).toFixed(3)} / 阈值 ${(result.stats?.threshold ?? 0).toFixed(3)}</span>
+          <span>证据 ${num(result.stats?.evidence_count || 0)} · 淘汰 ${num(result.stats?.rejected_candidates || 0)}</span>
+        </div>
+        <div class="answer-actions">
+          <button class="btn" data-feedback="1">有帮助</button>
+          <button class="btn" data-feedback="-1">需改进</button>
+          <button class="btn" data-open-trace="${esc(result.trace_id)}">查看轨迹</button>
+        </div>
       </div>
     </article>`;
   $$("[data-feedback]", $("#ask-result")).forEach((button) => {
@@ -560,6 +1189,7 @@ function renderAsk(result) {
     link.addEventListener("click", () => focusEvidence(Number(link.dataset.cite)));
   });
   renderEvidence(result);
+  stampNow();
 }
 
 function renderEvidence(result) {
@@ -567,44 +1197,35 @@ function renderEvidence(result) {
   const facts = result.facts || [];
   $("#evidence-count").textContent = `${evidence.length} 条`;
   if (!evidence.length && !facts.length) {
-    $("#evidence-body").innerHTML = `<div class="empty">${esc(result.answer)}</div>`;
+    $("#evidence-body").innerHTML = `<div class="empty-block">暂无证据</div>`;
     return;
   }
   $("#evidence-body").innerHTML = evidence.map((item, index) => `
     <div class="evidence-item" data-evidence-index="${index + 1}">
-      <header>
-        <strong>${esc(item.doc_title)}</strong>
-        <span class="score">${Number(item.scores?.rerank || 0).toFixed(3)}</span>
-      </header>
-      <p>${esc(item.text)}</p>
-      <div class="ev-meta">
-        <span>${item.page ? `p.${item.page}` : "—"}</span>
-        <span>${esc(item.heading_path?.join(" / ") || "正文")}</span>
-        <span>${esc(item.source)}</span>
-        <span>RRF ${Number(item.scores?.rrf || 0).toFixed(3)}</span>
-      </div>
-    </div>`).join("") + (facts.length ? `<div class="hr"></div><h4 style="margin:0 0 8px;font-size:12px">事实层</h4>${facts.slice(0, 8).map((fact) => `
-      <div class="evidence-item" style="cursor:default">
-        <header><strong>${esc(fact.subject)} ${esc(fact.predicate)}</strong><span class="score">${fact.confidence}</span></header>
-        <p>${esc(fact.object || "")} ${fact.valid_from ? `· 自 ${esc(fact.valid_from)}` : ""}${fact.valid_to ? ` · 至 ${esc(fact.valid_to)}` : ""}</p>
-        <div class="ev-meta"><span>${esc(fact.status)}</span><span>${esc(fact.valid_to ? "历史" : "当前")}</span></div>
-      </div>`).join("")}` : "");
+      <div class="ev-head"><span class="ev-num">${index + 1}</span><span class="ev-title">${esc(item.doc_title)}</span></div>
+      <div class="ev-quote">${esc(plain(item.quote || item.text || ""))}</div>
+      <div class="ev-meta">${item.page ? `p.${esc(item.page)}` : "正文"} · ${esc(item.heading_path?.join(" / ") || "")} · ${Number(item.scores?.rerank || 0).toFixed(3)}</div>
+    </div>`).join("") + (facts.length ? `<div class="evidence-item"><div class="ev-head"><span class="ev-num">·</span><span class="ev-title">事实层</span></div>${facts.slice(0, 6).map((fact) => `
+      <div class="ev-meta" style="margin-top:4px">${esc(fact.subject)} ${esc(fact.predicate)} <b style="color:var(--text);font-weight:500">${esc(fact.object || "")}</b></div>`).join("")}</div>` : "");
 }
 
 function focusEvidence(index) {
   const item = $(`[data-evidence-index="${index}"]`);
   if (!item) return;
-  $$(".evidence-item").forEach((el) => el.classList.remove("active"));
-  item.classList.add("active");
+  $$(".evidence-item").forEach((el) => el.classList.remove("is-target"));
+  item.classList.add("is-target");
   item.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 async function sendFeedback(messageId, value) {
   try {
-    await api("/feedback", { method: "POST", body: { target_type: "message", target_id: messageId, value, comment: value > 0 ? "有帮助" : "需改进" } });
-    toast("反馈已记录", "ok");
+    await api("/feedback", {
+      method: "POST",
+      body: { target_type: "message", target_id: messageId, value, comment: value > 0 ? "有帮助" : "需改进" },
+    });
+    toast("反馈已记录");
   } catch (error) {
-    toast(error.message, "err");
+    toast(error.message);
   }
 }
 
@@ -613,12 +1234,18 @@ async function loadConversations() {
     const data = await api("/conversations?limit=12");
     state.conversations = data.items;
     const target = $("#conversation-list");
-    if (!data.items.length) { target.innerHTML = `<div class="empty">暂无会话</div>`; return; }
+    if (!data.items.length) {
+      target.innerHTML = `<div class="empty-block">暂无会话</div>`;
+      return;
+    }
     target.innerHTML = data.items.map((conversation) => `
-      <div class="conv-row" data-conversation="${esc(conversation.id)}">
-        <div><strong>${esc(conversation.title || "未命名会话")}</strong><br/><small>${conversation.messages} 条消息 · ${shortDate(conversation.created_at)}</small></div>
-        <span class="row-tag">打开</span>
-      </div>`).join("");
+      <button class="row" type="button" data-conversation="${esc(conversation.id)}">
+        <span class="row-main">
+          <span class="row-title">${esc(conversation.title || "未命名会话")}</span>
+          <span class="row-sub">${num(conversation.messages)} 条消息 · ${shortDate(conversation.created_at)}</span>
+        </span>
+        <span class="row-end">打开</span>
+      </button>`).join("");
     $$("#conversation-list [data-conversation]").forEach((row) => {
       row.addEventListener("click", () => loadConversation(row.dataset.conversation));
     });
@@ -630,27 +1257,34 @@ async function loadConversation(conversationId) {
     const data = await api(`/conversations/${conversationId}`);
     state.conversationId = conversationId;
     const messages = data.messages || [];
-    $("#ask-result").innerHTML = `<article class="panel answer-card">
-      <div class="answer-top"><span class="pill muted">会话</span><strong style="font-size:15px">${esc(data.title)}</strong><button class="link-btn" id="back-to-ask">新提问 →</button></div>
-      ${messages.map((message) => `
-        <div style="padding:12px 0;border-bottom:1px dashed var(--line)">
-          <div class="tiny" style="margin-bottom:5px">${message.role === "user" ? "你" : "知织"} · ${shortDate(message.created_at)} ${message.role === "assistant" ? ` · 置信度 ${message.confidence}` : ""}</div>
-          <div class="answer-body">${message.role === "assistant" ? linkifyCitations(message.content) : esc(message.content)}</div>
-          ${message.citations?.length ? `<div class="button-row" style="margin-top:6px">${message.citations.map((citation) => `<span class="pill">${esc(citation.quote?.slice(0, 40) || "")}…</span>`).join("")}</div>` : ""}
-        </div>`).join("")}
-    </article>`;
+    $("#ask-result").innerHTML = `
+      <article class="answer">
+        <div class="answer-status">
+          <span class="pill">会话</span>
+          <button class="text-btn" id="back-to-ask">新提问</button>
+        </div>
+        <div class="answer-body">
+          ${messages.map((message) => `
+            <div style="padding:10px 0;border-top:1px solid var(--rule)">
+              <div class="ev-meta" style="margin:0 0 4px">${message.role === "user" ? "你" : "知织"} · ${shortDate(message.created_at)}${message.role === "assistant" && message.confidence != null ? ` · 置信度 ${esc(message.confidence)}` : ""}</div>
+              ${message.role === "assistant" ? linkifyCitations(message.content, false).replace(/\n/g, "<br>") : esc(message.content)}
+            </div>`).join("")}
+        </div>
+      </article>`;
     $("#back-to-ask").addEventListener("click", () => {
       state.conversationId = null;
-      $("#ask-result").innerHTML = `<div class="empty" style="margin-top:16px">输入问题开始检索</div>`;
+      $("#ask-result").innerHTML = `<div class="empty-block">尚无检索结果</div>`;
     });
     $$("[data-cite]", $("#ask-result")).forEach((link) => {
       link.addEventListener("click", () => {
         const citation = messages.flatMap((message) => message.citations || [])[Number(link.dataset.cite) - 1];
-        if (citation) toast(citation.quote || "引用片段", "ok");
+        if (citation) toast(plain(citation.quote) || "引用片段");
       });
     });
+    $("#evidence-body").innerHTML = `<div class="empty-block">暂无证据</div>`;
+    $("#evidence-count").textContent = "";
   } catch (error) {
-    toast(error.message, "err");
+    toast(error.message);
   }
 }
 
@@ -659,53 +1293,67 @@ async function loadEntities(q = "") {
   try {
     const data = await api(`/entities?limit=80${q ? `&q=${encodeURIComponent(q)}` : ""}`);
     state.entities = data.items;
+    setSub("entities", `${num(data.items.length)} 个实体`);
     const target = $("#entity-list");
-    if (!data.items.length) { target.innerHTML = `<div class="empty">暂无实体</div>`; return; }
-    target.innerHTML = data.items.map((entity, index) => `
-      <div class="entity-row ${state.activeEntity === entity.id ? "active" : ""}" data-entity="${esc(entity.id)}">
-        <span class="entity-dot">${esc((entity.name || "?")[0])}</span>
-        <div><strong>${esc(entity.name)}</strong><small>${esc(entity.type)} · ${entity.facts} 条事实</small></div>
-      </div>`).join("");
+    $("#entity-count").textContent = `${num(data.items.length)} 个`;
+    if (!data.items.length) {
+      target.innerHTML = `<div class="empty-block">暂无实体</div>`;
+      return;
+    }
+    target.innerHTML = data.items.map((entity) => `
+      <button class="row ${state.activeEntity === entity.id ? "selected" : ""}" type="button" data-entity="${esc(entity.id)}">
+        <span class="row-main">
+          <span class="row-title">${esc(entity.name)}</span>
+          <span class="row-sub">${esc(entity.type)} · ${num(entity.facts)} 条事实</span>
+        </span>
+      </button>`).join("");
     $$("#entity-list [data-entity]").forEach((row) => row.addEventListener("click", () => selectEntity(row.dataset.entity)));
     if (!state.activeEntity && data.items[0]) selectEntity(data.items[0].id);
   } catch (error) {
-    toast(error.message, "err");
+    toast(error.message);
   }
 }
 
 async function selectEntity(entityId) {
   state.activeEntity = entityId;
-  $$("#entity-list [data-entity]").forEach((row) => row.classList.toggle("active", row.dataset.entity === entityId));
+  $$("#entity-list [data-entity]").forEach((row) => row.classList.toggle("selected", row.dataset.entity === entityId));
   const target = $("#entity-detail");
-  target.innerHTML = `<div class="empty">加载实体详情…</div>`;
+  target.innerHTML = loadingLines();
   try {
     const data = await api(`/entities/${entityId}`);
     const entity = data.entity;
     const facts = data.facts || [];
     target.innerHTML = `
-      <div class="entity-hero">
-        <div>
-          <span class="eyebrow">${esc(entity.type)}</span>
-          <h2>${esc(entity.name)}</h2>
-          ${entity.description ? `<p>${esc(entity.description)}</p>` : ""}
-        </div>
-        <span class="pill ${entity.acl_label === "全员可见" ? "teal" : "warn"}">${esc(entity.acl_label)}</span>
+      <div class="entity-head">
+        <h2>${esc(entity.name)}</h2>
+        <span class="pill">${esc(entity.type)}</span>
+        <span class="pill ${entity.acl_label === "全员可见" ? "" : "warn"}">${esc(entity.acl_label)}</span>
       </div>
-      <h4 style="margin:0 0 14px;font-size:12px">事实时间线（${facts.length}）</h4>
-      ${facts.length ? `<div class="timeline">${facts.map((fact) => `
-        <div class="timeline-item ${esc(fact.status)}">
-          <div class="tl-date">${fact.valid_from ? `有效 ${dayOnly(fact.valid_from)}` : "未标注起始"}${fact.valid_to ? ` → ${dayOnly(fact.valid_to)}` : " → 至今"}</div>
-          <h4>${esc(fact.subject)} <span>${esc(fact.predicate)}</span> ${esc(fact.object || "")}</h4>
-          <p>状态 ${esc(fact.status)} · 置信度 ${fact.confidence} · 来源 ${esc(fact.source_doc_id || "—")}</p>
-          ${fact.evidence?.[0]?.quote ? `<div class="quote">${esc(fact.evidence[0].quote)}</div>` : ""}
-        </div>`).join("")}</div>` : `<div class="empty">暂无事实</div>`}
-      <div class="hr"></div>
-      <h4 style="margin:0 0 8px;font-size:12px">相关文档</h4>
-      <div class="button-row">${(data.documents || []).map((doc) => `<button class="btn small" data-doc="${esc(doc.id)}">${esc(doc.title)}</button>`).join("") || `<span class="tiny">暂无</span>`}</div>`;
+      ${entity.description ? `<p class="entity-desc">${esc(plain(entity.description))}</p>` : ""}
+
+      <div class="section">
+        <h3>事实时间线</h3>
+        ${facts.length ? `<ol class="timeline">${facts.map((fact) => `
+          <li class="tl-item">
+            <span class="tl-date">${fact.valid_from ? dayOnly(fact.valid_from) : "无"}</span>
+            <div class="tl-body">
+              <div class="tl-triple">${esc(fact.subject)} <span class="pred">${esc(fact.predicate)}</span> <span class="obj">${esc(fact.object || "")}</span></div>
+              ${fact.evidence?.[0]?.quote ? `<div class="tl-quote">${esc(plain(fact.evidence[0].quote))}</div>` : ""}
+              <div class="tl-meta">${factPill(fact.status)}<span>置信度 ${esc(fact.confidence)}</span><span>${fact.valid_to ? `截至 ${dayOnly(fact.valid_to)}` : "至今"}</span></div>
+            </div>
+          </li>`).join("")}</ol>` : `<div class="empty-block">暂无事实</div>`}
+      </div>
+
+      <div class="section">
+        <h3>相关文档</h3>
+        <div class="doc-links">
+          ${(data.documents || []).map((doc) => `<button class="doc-link" type="button" data-doc="${esc(doc.id)}">${esc(doc.title)}</button>`).join("") || `<span class="muted small">暂无</span>`}
+        </div>
+      </div>`;
     $$("#entity-detail [data-doc]").forEach((button) => button.addEventListener("click", () => openDoc(button.dataset.doc)));
     drawGraph(entityId);
   } catch (error) {
-    target.innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+    target.innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
   }
 }
 
@@ -715,7 +1363,7 @@ async function loadGraph() {
     state.graph = data;
     drawGraph(state.activeEntity);
   } catch (error) {
-    toast(error.message, "err");
+    toast(error.message);
   }
 }
 
@@ -724,48 +1372,71 @@ function drawGraph(centerId) {
   if (!svg) return;
   const nodes = (state.graph.nodes || []).slice(0, 30);
   const edges = (state.graph.edges || []).filter((edge) => nodes.some((node) => node.id === edge.source) && nodes.some((node) => node.id === edge.target));
+  $("#graph-meta").textContent = `${num(nodes.length)} 个节点 · ${num(edges.length)} 条关系`;
   svg.innerHTML = "";
+  const NS = "http://www.w3.org/2000/svg";
+  const width = Math.max(280, svg.clientWidth || 960);
+  const height = Math.max(180, svg.clientHeight || 320);
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  const cx = width / 2, cy = height / 2;
   if (!nodes.length) {
-    svg.innerHTML = `<text x="320" y="210" text-anchor="middle" fill="#9a9d94" font-size="12">暂无图谱数据</text>`;
+    const text = document.createElementNS(NS, "text");
+    text.setAttribute("x", String(cx));
+    text.setAttribute("y", String(cy));
+    text.setAttribute("text-anchor", "middle");
+    text.setAttribute("fill", "#6d7478");
+    text.setAttribute("font-size", "12");
+    text.textContent = "暂无图谱";
+    svg.appendChild(text);
     return;
   }
   const center = nodes.find((node) => node.id === centerId) || nodes[0];
   const others = nodes.filter((node) => node.id !== center.id);
-  const width = 640, height = 420, cx = 320, cy = 210;
+  const spanX = width / 2 - 64;
+  const spanY = height / 2 - (width < 480 ? 46 : 52);
   const positions = { [center.id]: { x: cx, y: cy } };
   others.forEach((node, index) => {
     const angle = (index / Math.max(1, others.length)) * Math.PI * 2 - Math.PI / 2;
-    const radius = 130 + (index % 3) * 28;
-    positions[node.id] = { x: cx + Math.cos(angle) * radius, y: cy + Math.sin(angle) * radius };
+    const scale = 0.74 + (index % 3) * 0.12;
+    positions[node.id] = { x: cx + Math.cos(angle) * spanX * scale, y: cy + Math.sin(angle) * spanY * scale };
   });
-  const NS = "http://www.w3.org/2000/svg";
   edges.forEach((edge) => {
-    const a = positions[edge.source], b = positions[edge.target];
+    const a = positions[edge.source];
+    const b = positions[edge.target];
     if (!a || !b) return;
     const line = document.createElementNS(NS, "line");
-    line.setAttribute("x1", a.x); line.setAttribute("y1", a.y);
-    line.setAttribute("x2", b.x); line.setAttribute("y2", b.y);
-    line.setAttribute("class", "graph-link");
-    line.dataset.status = edge.status;
-    line.setAttribute("stroke-opacity", "0.8");
+    line.setAttribute("x1", a.x);
+    line.setAttribute("y1", a.y);
+    line.setAttribute("x2", b.x);
+    line.setAttribute("y2", b.y);
+    line.setAttribute("class", `g-link ${edge.status === "disputed" ? "disputed" : ""}`);
     svg.appendChild(line);
   });
   nodes.forEach((node) => {
     const position = positions[node.id];
     if (!position) return;
     const group = document.createElementNS(NS, "g");
-    group.setAttribute("class", `graph-node ${node.type === "literal" ? "literal" : ""}`);
+    const classes = ["g-node"];
+    if (node.type === "literal") classes.push("literal");
+    if (node.id === center.id) classes.push("center");
+    group.setAttribute("class", classes.join(" "));
     group.setAttribute("transform", `translate(${position.x},${position.y})`);
+    if (node.id !== center.id && !node.id.startsWith("lit_")) group.style.cursor = "pointer";
+    const radius = node.id === center.id ? (width < 480 ? 21 : 27) : (width < 480 ? 13 : 17);
     const circle = document.createElementNS(NS, "circle");
-    circle.setAttribute("r", node.id === center.id ? 26 : 18);
+    circle.setAttribute("r", radius);
     group.appendChild(circle);
     const label = document.createElementNS(NS, "text");
     label.setAttribute("text-anchor", "middle");
-    label.setAttribute("y", node.id === center.id ? 4 : 3);
-    label.textContent = (node.name || "").slice(0, 12);
+    label.setAttribute("y", String(radius + 15));
+    const chars = Array.from(node.name || "");
+    const limit = node.id === center.id ? (width < 480 ? 8 : 12) : (width < 480 ? 7 : 9);
+    label.textContent = chars.length > limit ? chars.slice(0, limit - 1).join("") + "…" : chars.join("");
     group.appendChild(label);
+    const title = document.createElementNS(NS, "title");
+    title.textContent = node.name || "";
+    group.appendChild(title);
     if (node.id !== center.id && !node.id.startsWith("lit_")) {
-      group.style.cursor = "pointer";
       group.addEventListener("click", () => selectEntity(node.id));
     }
     svg.appendChild(group);
@@ -775,49 +1446,63 @@ function drawGraph(centerId) {
 /* ============ Review ============ */
 async function loadReview() {
   const target = $("#review-list");
+  target.innerHTML = loadingLines();
   try {
     const data = await api("/review?status=open");
+    setSub("review", `${num(data.items.length)} 项待审`);
+    stampNow();
     if (!data.items.length) {
-      target.innerHTML = `<div class="panel empty">暂无待审项</div>`;
+      target.innerHTML = `<div class="empty-block">暂无待审项</div>`;
       return;
     }
     target.innerHTML = data.items.map((item) => `
-      <article class="panel review-card">
+      <article class="review-card">
         <div>
-          <div class="answer-top"><span class="pill warn">${esc(item.kind)}</span><span class="pill muted">${shortDate(item.created_at)}</span></div>
-          <h3>${esc(item.title)}</h3>
-          <p>${esc(item.payload?.reason || "需要人工确认")}</p>
-          ${item.payload?.new_object !== undefined ? `<div class="conflict-grid">
-            <div class="conflict-side"><small>本次候选</small><strong>${esc(item.payload.new_object || "—")}</strong><small>${esc(item.payload.quote || "")}</small></div>
-            <div class="conflict-side"><small>既有事实</small><strong>${esc((item.payload.old_objects || []).join(" / ") || "—")}</strong></div>
+          <div class="review-head">
+            <span class="pill warn">${esc(REVIEW_KIND[item.kind] || item.kind)}</span>
+            <span>${shortDate(item.created_at)}</span>
+          </div>
+          <h2 class="review-title">${esc(item.title)}</h2>
+          <p class="review-reason">${esc(item.payload?.reason || "无")}</p>
+          ${item.payload?.new_object !== undefined ? `<div class="conflict">
+            <div class="conflict-cell">
+              <span class="label">本次候选</span>
+              <div class="conflict-value">${esc(item.payload.new_object || "无")}</div>
+              <div class="conflict-quote">${esc(plain(item.payload.quote) || "")}</div>
+            </div>
+            <div class="conflict-cell">
+              <span class="label">既有事实</span>
+              <div class="conflict-value">${esc((item.payload.old_objects || []).join(" / ") || "无")}</div>
+            </div>
           </div>` : ""}
-          ${item.payload?.text ? `<div class="chunk-block"><p>${esc(item.payload.text)}</p></div>` : ""}
+          ${item.payload?.text ? `<div class="quote-block" style="margin-top:12px">${esc(plainLines(item.payload.text))}</div>` : ""}
         </div>
         <div class="review-actions">
-          <button class="btn primary small" data-review="${esc(item.id)}" data-action="accept_new">采纳本次</button>
-          <button class="btn small" data-review="${esc(item.id)}" data-action="reject_new">保留既有</button>
-          <button class="btn small ghost" data-review="${esc(item.id)}" data-action="merge">合并证据</button>
-          <button class="btn small ghost" data-review="${esc(item.id)}" data-action="dispute">维持争议</button>
+          <button class="btn primary" data-review="${esc(item.id)}" data-action="accept_new">采纳本次</button>
+          <button class="btn" data-review="${esc(item.id)}" data-action="reject_new">保留既有</button>
+          <button class="btn" data-review="${esc(item.id)}" data-action="merge">合并证据</button>
+          <button class="btn" data-review="${esc(item.id)}" data-action="dispute">维持争议</button>
         </div>
       </article>`).join("");
     $$("[data-review]").forEach((button) => {
       button.addEventListener("click", () => resolveReview(button.dataset.review, button.dataset.action, button));
     });
   } catch (error) {
-    target.innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+    setSub("review", "");
+    target.innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
   }
 }
 
 async function resolveReview(reviewId, action, button) {
-  const labels = { accept_new: "采纳中…", reject_new: "保留中…", merge: "合并中…", dispute: "标记中…" };
-  setBusy(button, true, labels[action] || "处理中…");
+  const labels = { accept_new: "采纳中", reject_new: "保留中", merge: "合并中", dispute: "标记中" };
+  setBusy(button, true, labels[action] || "处理中");
   try {
     await api(`/review/${reviewId}/resolve`, { method: "POST", body: { action, note: "" } });
-    toast("审阅项已处理", "ok");
+    toast("审阅项已处理");
     loadReview();
     loadDashboard();
   } catch (error) {
-    toast(error.message, "err");
+    toast(error.message);
   } finally {
     setBusy(button, false);
   }
@@ -825,10 +1510,14 @@ async function resolveReview(reviewId, action, button) {
 
 /* ============ Ops ============ */
 function setupOps() {
-  $$("#ops-tabs button").forEach((button) => {
+  $$("#ops-tabs .tab").forEach((button) => {
     button.addEventListener("click", () => {
       state.opsTab = button.dataset.ops;
-      $$("#ops-tabs button").forEach((item) => item.classList.toggle("active", item === button));
+      $$("#ops-tabs .tab").forEach((item) => {
+        const active = item === button;
+        item.classList.toggle("active", active);
+        item.setAttribute("aria-selected", active ? "true" : "false");
+      });
       loadOps(state.opsTab);
     });
   });
@@ -838,258 +1527,433 @@ async function loadOps(tab) {
   if (tab === "traces") return loadTraces();
   if (tab === "costs") return loadCosts();
   if (tab === "gaps") return loadGaps();
-  if (tab === "eval") return loadEval();
+  if (tab === "evals") return loadEvals();
 }
 
 async function loadTraces() {
-  $("#ops-body").innerHTML = `<div class="panel"><div class="empty">读取轨迹…</div></div>`;
+  $("#ops-body").innerHTML = `<div class="block">${loadingLines()}</div>`;
   try {
     const data = await api("/traces?limit=50");
-    $("#ops-body").innerHTML = `<section class="panel">
-      <header class="panel-head"><h3>请求轨迹</h3><span class="pill muted">${data.items.length} 条</span></header>
-      <div class="table-wrap"><table class="table">
-        <thead><tr><th>功能</th><th>问题 / 目标</th><th>状态</th><th>耗时</th><th>时间</th></tr></thead>
-        <tbody>${data.items.map((trace) => `
-          <tr class="clickable" data-trace="${esc(trace.id)}">
-            <td>${esc(trace.feature)}</td>
-            <td>${esc(trace.question || trace.answer || "—")}</td>
-            <td><span class="trace-status ${esc(trace.status)}">${esc(trace.status)}</span></td>
-            <td>${trace.latency_ms} ms</td>
-            <td>${shortDate(trace.created_at)}</td>
-          </tr>`).join("") || `<tr><td colspan="5"><div class="empty">暂无轨迹</div></td></tr>`}</tbody>
-      </table></div></section>`;
-    $$("#ops-body [data-trace]").forEach((row) => row.addEventListener("click", () => openTrace(row.dataset.trace)));
+    const total = data.items.length;
+    const refused = data.items.filter((trace) => trace.status === "refused").length;
+    const avg = total ? Math.round(data.items.reduce((sum, trace) => sum + Number(trace.latency_ms || 0), 0) / total) : 0;
+    setSub("ops", `${num(total)} 条轨迹`);
+    $("#ops-body").innerHTML = `
+      <div class="metrics cols-3">
+        <div class="metric"><span class="metric-label">轨迹</span><div class="metric-value">${num(total)}</div></div>
+        <div class="metric"><span class="metric-label">拒答</span><div class="metric-value">${num(refused)}</div></div>
+        <div class="metric"><span class="metric-label">平均耗时</span><div class="metric-value">${num(avg)} ms</div></div>
+      </div>
+      <div class="table-wrap" style="margin-top:16px">
+        <table class="table">
+          <thead><tr><th scope="col">功能</th><th scope="col">输入</th><th scope="col">状态</th><th scope="col" class="num">耗时</th><th scope="col">时间</th></tr></thead>
+          <tbody>${data.items.map((trace) => `
+            <tr data-trace="${esc(trace.id)}" tabindex="0">
+              <td>${esc(FEATURE_LABEL[trace.feature] || trace.feature)}</td>
+              <td><span class="truncate" style="display:block;max-width:460px">${esc(trace.question || trace.answer || "无")}</span></td>
+              <td>${statusPill(trace.status)}</td>
+              <td class="num">${num(trace.latency_ms)} ms</td>
+              <td class="date">${shortDate(trace.created_at)}</td>
+            </tr>`).join("") || `<tr><td colspan="5"><div class="empty-block">暂无轨迹</div></td></tr>`}</tbody>
+        </table>
+      </div>`;
+    $$("#ops-body [data-trace]").forEach((row) => {
+      const open = () => openTrace(row.dataset.trace);
+      row.addEventListener("click", open);
+      row.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); }
+      });
+    });
+    stampNow();
   } catch (error) {
-    $("#ops-body").innerHTML = `<div class="panel empty">${esc(error.message)}</div>`;
+    $("#ops-body").innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
   }
 }
 
 async function openTrace(traceId) {
-  const dialog = $("#doc-dialog");
-  $("#dialog-title").textContent = "轨迹回放";
-  $("#dialog-body").innerHTML = `<div class="empty">读取轨迹…</div>`;
+  const dialog = $("#trace-dialog");
+  $("#trace-dialog-title").textContent = "轨迹";
+  $("#trace-dialog-body").innerHTML = loadingLines();
   if (!dialog.open) dialog.showModal();
   try {
     const data = await api(`/traces/${traceId}`);
     const trace = data.trace;
-    $("#dialog-title").textContent = `轨迹 · ${trace.feature}`;
-    $("#dialog-body").innerHTML = `
-      <div class="answer-top">
-        <span class="trace-status ${esc(trace.status)}">${esc(trace.status)}</span>
-        <span class="pill muted">${trace.latency_ms} ms</span>
-        <span class="pill muted">${esc(trace.id)}</span>
+    $("#trace-dialog-title").textContent = `轨迹 · ${FEATURE_LABEL[trace.feature] || trace.feature}`;
+    $("#trace-dialog-body").innerHTML = `
+      <div class="detail-pills">
+        ${statusPill(trace.status)}
+        <span class="pill">${num(trace.latency_ms)} ms</span>
+        <span class="pill mono">${esc(trace.id)}</span>
+        <span class="pill">${shortDate(trace.created_at)}</span>
       </div>
-      <p class="tiny"><strong>问题：</strong>${esc(trace.question || "—")}</p>
-      <p class="tiny"><strong>回答：</strong>${esc(trace.answer || "—")}</p>
-      <div class="hr"></div>
-      <h4 style="font-size:12px;margin:0 0 10px">阶段</h4>
-      ${data.spans.map((span) => `
-        <div class="span-row">
-          <strong>${esc(span.stage)}</strong>
-          <small>${span.latency_ms} ms · ${esc(span.status)}</small>
-          <div class="mono">${esc(JSON.stringify(span.output || {}).slice(0, 320))}</div>
-        </div>`).join("")}
-      <div class="hr"></div>
-      <h4 style="font-size:12px;margin:0 0 10px">成本</h4>
-      ${data.usage.length ? data.usage.map((row) => `<div class="span-row"><strong>${esc(row.model)}</strong><small>${row.tokens_in}/${row.tokens_out} tokens</small><div class="mono">${money(row.amount)} · ${esc(row.provider)}</div></div>`).join("") : `<p class="tiny">无模型调用</p>`}
-      <div class="hr"></div>
-      <div class="button-row">
-        <button class="btn small" data-replay="${esc(trace.id)}">回放检索阶段</button>
+      <div class="section">
+        <h3>问题</h3>
+        <p class="detail-summary" style="margin-top:0;color:var(--text)">${esc(trace.question || "无")}</p>
+      </div>
+      <div class="section">
+        <h3>回答</h3>
+        <p class="detail-summary" style="margin-top:0">${esc(trace.answer || "无")}</p>
+      </div>
+      <div class="section">
+        <h3>阶段</h3>
+        ${data.spans.map((span) => `
+          <div class="fact-item">
+            <div class="fact-line">${esc(span.stage)} <span class="pred">${num(span.latency_ms)} ms · ${esc(span.status)}</span></div>
+            <div class="fact-quote">${esc(JSON.stringify(span.output || {}).slice(0, 280))}</div>
+          </div>`).join("") || `<div class="empty-block">暂无阶段</div>`}
+      </div>
+      <div class="section">
+        <h3>成本</h3>
+        ${data.usage.length ? data.usage.map((row) => `
+          <div class="version-row">
+            <span>${esc(row.model)}</span>
+            <span class="meta">${num(row.tokens_in)} / ${num(row.tokens_out)} tokens · ${money(row.amount)}</span>
+          </div>`).join("") : `<span class="muted small">无模型调用</span>`}
+      </div>
+      <div class="detail-actions">
+        <button class="btn primary" data-replay="${esc(trace.id)}">回放检索阶段</button>
       </div>
       <div id="replay-result"></div>
-      <div class="hr"></div>
-      <h4 style="font-size:12px;margin:0 0 10px">Meta</h4>
-      <pre class="code-block">${esc(JSON.stringify(trace.meta || {}, null, 2))}</pre>`;
-    $$("[data-replay]").forEach((button) => {
+      <div class="section">
+        <h3>Meta</h3>
+        <pre class="code">${esc(JSON.stringify(trace.meta || {}, null, 2))}</pre>
+      </div>`;
+    $$("[data-replay]", $("#trace-dialog-body")).forEach((button) => {
       button.addEventListener("click", () => replayTrace(button.dataset.replay, button));
     });
   } catch (error) {
-    $("#dialog-body").innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+    $("#trace-dialog-body").innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
   }
 }
 
 async function replayTrace(traceId, button) {
-  setBusy(button, true, "回放中…");
+  setBusy(button, true, "回放中");
   try {
     const data = await api(`/traces/${traceId}/replay`, { method: "POST", body: { target_stage: "retrieve", top_k: 8 } });
-    $("#replay-result").innerHTML = `<div class="chunk-block" style="margin-top:12px">
-      <header><span>检索回放</span><span>top score ${Number(data.diff.top_score || 0).toFixed(3)}</span></header>
-      <p>新增 ${data.diff.added.length} 条，移除 ${data.diff.removed.length} 条。</p>
-      ${data.hits.slice(0, 4).map((hit) => `<p><strong>${esc(hit.doc_title)}</strong> · ${Number(hit.scores.rerank).toFixed(3)} · ${esc(hit.quote)}</p>`).join("")}
-    </div>`;
-    toast("回放完成", "ok");
+    $("#replay-result").innerHTML = `
+      <div class="section">
+        <h3>检索回放</h3>
+        <div class="version-row">
+          <span>新增 ${num(data.diff.added.length)} 条 · 移除 ${num(data.diff.removed.length)} 条</span>
+          <span class="meta">top ${Number(data.diff.top_score || 0).toFixed(3)}</span>
+        </div>
+        ${data.hits.slice(0, 4).map((hit) => `
+          <div class="fact-item">
+            <div class="fact-line">${esc(hit.doc_title)} <span class="pred">${Number(hit.scores.rerank).toFixed(3)}</span></div>
+            <div class="fact-quote">${esc(plain(hit.quote))}</div>
+          </div>`).join("")}
+      </div>`;
+    toast("回放完成");
   } catch (error) {
-    toast(error.message, "err");
+    toast(error.message);
   } finally {
     setBusy(button, false);
   }
 }
 
 async function loadCosts() {
-  $("#ops-body").innerHTML = `<div class="panel"><div class="empty">读取成本…</div></div>`;
+  $("#ops-body").innerHTML = `<div class="block">${loadingLines()}</div>`;
   try {
     const data = await api("/costs/summary?days=30");
     const features = Object.entries(data.by_feature || {});
+    const models = Object.entries(data.by_model || {});
+    const days = data.by_day || [];
     const maxAmount = Math.max(0.00001, ...features.map(([, value]) => value.amount));
-    $("#ops-body").innerHTML = `<section class="panel">
-      <header class="panel-head"><h3>30 日成本</h3><span class="pill teal">${money(data.total_amount)}</span></header>
-      <div class="stat-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:18px">
-        <div class="stat-card"><span class="stat-label">金额</span><strong>${money(data.total_amount)}</strong></div>
-        <div class="stat-card"><span class="stat-label">Tokens</span><strong>${num(data.total_tokens)}</strong></div>
-        <div class="stat-card"><span class="stat-label">模型</span><strong>${Object.keys(data.by_model || {}).length}</strong></div>
+    setSub("ops", `近 30 日 · ${money(data.total_amount)}`);
+    $("#ops-body").innerHTML = `
+      <div class="metrics cols-3">
+        <div class="metric"><span class="metric-label">金额</span><div class="metric-value">${money(data.total_amount)}</div></div>
+        <div class="metric"><span class="metric-label">Tokens</span><div class="metric-value">${num(data.total_tokens)}</div></div>
+        <div class="metric"><span class="metric-label">模型</span><div class="metric-value">${num(models.length)}</div></div>
       </div>
-      <div class="cost-bars">${features.map(([key, value]) => `
-        <div class="cost-bar-row"><span>${esc(key)}</span><div class="cost-bar"><span style="width:${(value.amount / maxAmount) * 100}%"></span></div><strong>${money(value.amount)}</strong></div>`).join("") || `<div class="empty">暂无成本记录</div>`}</div>
-      <div class="hr"></div>
-      <h4 style="font-size:12px">按模型</h4>
-      <div class="table-wrap" style="margin-top:8px"><table class="table"><thead><tr><th>模型</th><th>调用</th><th>金额</th></tr></thead><tbody>
-        ${Object.entries(data.by_model || {}).map(([key, value]) => `<tr><td>${esc(key)}</td><td>${value.calls}</td><td>${money(value.amount)}</td></tr>`).join("") || `<tr><td colspan="3"><div class="empty">暂无</div></td></tr>`}
-      </tbody></table></div>
-    </section>`;
+      <section class="chart-card">
+        <div class="block-head"><h2>每日成本</h2><span class="muted">${days.length} 天</span></div>
+        <div class="chart-wrap" id="cost-chart"></div>
+      </section>
+      <section class="chart-card">
+        <div class="block-head"><h2>按功能</h2><span class="muted">${num(features.length)} 项</span></div>
+        <div class="rank-list">
+          ${features.map(([key, value]) => `
+            <div class="rank-row">
+              <span class="rank-label">${esc(FEATURE_LABEL[key] || key)}</span>
+              <div class="rank-track"><div class="rank-fill" style="width:${(value.amount / maxAmount) * 100}%"></div></div>
+              <span class="rank-value">${money(value.amount)}</span>
+            </div>`).join("") || `<div class="empty-block">暂无成本记录</div>`}
+        </div>
+      </section>
+      <div class="table-wrap" style="margin-top:16px">
+        <table class="table">
+          <thead><tr><th scope="col">模型</th><th scope="col" class="num">调用</th><th scope="col" class="num">金额</th></tr></thead>
+          <tbody>${models.map(([key, value]) => `
+            <tr><td>${esc(key)}</td><td class="num">${num(value.calls)}</td><td class="num">${money(value.amount)}</td></tr>`).join("") || `<tr><td colspan="3"><div class="empty-block">暂无模型调用</div></td></tr>`}</tbody>
+        </table>
+      </div>`;
+    if (days.length && window.Charts) {
+      const values = days.map((day) => day.amount);
+      const maxIndex = values.indexOf(Math.max(...values));
+      window.Charts.bars($("#cost-chart"), {
+        labels: days.map((day) => day.date.slice(5)),
+        values,
+        highlight: maxIndex,
+        height: 200,
+        format: (value) => money(value),
+        tickFormat: (value) => `¥${Number(value).toFixed(2)}`,
+      });
+    } else {
+      $("#cost-chart").innerHTML = `<div class="empty-block">暂无按日成本</div>`;
+    }
+    stampNow();
   } catch (error) {
-    $("#ops-body").innerHTML = `<div class="panel empty">${esc(error.message)}</div>`;
+    $("#ops-body").innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
   }
 }
 
 async function loadGaps() {
-  $("#ops-body").innerHTML = `<div class="panel"><div class="empty">读取缺口…</div></div>`;
+  $("#ops-body").innerHTML = `<div class="block">${loadingLines()}</div>`;
   try {
     const data = await api("/gaps?status=open");
-    $("#ops-body").innerHTML = `<section class="panel">
-      <header class="panel-head"><h3>知识缺口</h3><span class="pill muted">${data.items.length} 条</span></header>
-      ${data.items.length ? data.items.map((gap) => `
-        <div class="chunk-block">
-          <header><span>出现 ${gap.count} 次</span><span>${shortDate(gap.updated_at)}</span></header>
-          <p>${esc(gap.question)}</p>
-          <div class="button-row" style="margin-top:6px">
-            <button class="btn small ghost" data-gap="${esc(gap.id)}" data-status="resolved">已补充</button>
-            <button class="btn small ghost" data-gap="${esc(gap.id)}" data-status="dismissed">忽略</button>
+    setSub("ops", `${num(data.items.length)} 个缺口`);
+    $("#ops-body").innerHTML = `<section class="block">
+      ${data.items.length ? `<div class="gap-list">${data.items.map((gap) => `
+        <div class="gap-row">
+          <div class="gap-main">
+            <div class="gap-q">${esc(gap.question)}</div>
+            <div class="gap-meta">出现 ${num(gap.count)} 次 · ${shortDate(gap.updated_at)}</div>
           </div>
-        </div>`).join("") : `<div class="empty">暂无缺口</div>`}
+          <div class="gap-actions">
+            <button class="btn" data-gap="${esc(gap.id)}" data-status="resolved">已补充</button>
+            <button class="btn" data-gap="${esc(gap.id)}" data-status="dismissed">忽略</button>
+          </div>
+        </div>`).join("")}</div>` : `<div class="empty-block">暂无缺口</div>`}
     </section>`;
     $$("[data-gap]").forEach((button) => {
       button.addEventListener("click", async () => {
+        setBusy(button, true, "处理中");
         try {
           await api(`/gaps/${button.dataset.gap}/resolve`, { method: "POST", body: { status: button.dataset.status } });
-          toast("缺口已更新", "ok");
-          loadGaps(); loadDashboard();
-        } catch (error) { toast(error.message, "err"); }
+          toast("缺口已更新");
+          loadGaps();
+          loadDashboard();
+        } catch (error) {
+          toast(error.message);
+        } finally {
+          setBusy(button, false);
+        }
       });
     });
+    stampNow();
   } catch (error) {
-    $("#ops-body").innerHTML = `<div class="panel empty">${esc(error.message)}</div>`;
+    $("#ops-body").innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
   }
 }
 
-async function loadEval() {
-  $("#ops-body").innerHTML = `<div class="panel"><div class="empty">读取评测集…</div></div>`;
+async function loadEvals() {
+  $("#ops-body").innerHTML = `<div class="block">${loadingLines()}</div>`;
   try {
     const data = await api("/evals/cases");
-    $("#ops-body").innerHTML = `<section class="panel">
-      <header class="panel-head"><h3>黄金评测集</h3><div class="button-row"><span class="pill muted">${data.total} 题</span><button class="btn primary small" id="run-eval">运行评测</button></div></header>
+    setSub("ops", `${num(data.total)} 道评测题`);
+    $("#ops-body").innerHTML = `<section class="block">
+      <div class="block-head" style="margin-bottom:10px">
+        <h2>评测集</h2>
+        <button class="btn primary" id="run-eval">运行评测</button>
+      </div>
       <div id="eval-result"></div>
-      <div class="hr"></div>
-      <div class="table-wrap"><table class="table"><thead><tr><th>问题</th><th>期望文档</th><th>期望关键词</th><th>类型</th></tr></thead><tbody>
-        ${data.items.map((item) => `<tr><td>${esc(item.question)}</td><td>${esc((item.expected_docs || []).join(" / ") || "—")}</td><td>${esc((item.expected_keywords || []).join(" / ") || "—")}</td><td>${item.should_refuse ? `<span class="pill warn">应拒答</span>` : `<span class="pill teal">应回答</span>`}</td></tr>`).join("")}
-      </tbody></table></div>
+      <div class="table-wrap" style="margin-top:14px">
+        <table class="table">
+          <thead><tr><th scope="col">问题</th><th scope="col">期望文档</th><th scope="col">期望关键词</th><th scope="col">类型</th></tr></thead>
+          <tbody>${data.items.map((item) => `
+            <tr>
+              <td>${esc(item.question)}</td>
+              <td class="muted">${esc((item.expected_docs || []).join(" / ") || "无")}</td>
+              <td class="muted">${esc((item.expected_keywords || []).join(" / ") || "无")}</td>
+              <td>${item.should_refuse ? `<span class="pill warn">应拒答</span>` : `<span class="pill ok">应回答</span>`}</td>
+            </tr>`).join("") || `<tr><td colspan="4"><div class="empty-block">暂无评测题</div></td></tr>`}</tbody>
+        </table>
+      </div>
     </section>`;
-    $("#run-eval").addEventListener("click", runEval);
+    $("#run-eval").addEventListener("click", runEvals);
+    stampNow();
   } catch (error) {
-    $("#ops-body").innerHTML = `<div class="panel empty">${esc(error.message)}</div>`;
+    $("#ops-body").innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
   }
 }
 
-async function runEval() {
+async function runEvals() {
   const button = $("#run-eval");
-  setBusy(button, true, "评测中…");
+  setBusy(button, true, "评测中");
   try {
     const data = await api("/evals/run", { method: "POST" });
     const metrics = data.metrics;
-    $("#eval-result").innerHTML = `<div class="eval-metrics">
-      <div class="eval-metric"><strong>${pct(metrics.doc_recall)}</strong><span>文档召回</span></div>
-      <div class="eval-metric"><strong>${pct(metrics.keyword_recall)}</strong><span>关键词召回</span></div>
-      <div class="eval-metric"><strong>${pct(metrics.refusal_accuracy)}</strong><span>拒答准确率</span></div>
-      <div class="eval-metric"><strong>${pct(metrics.pass_rate)}</strong><span>整体通过</span></div>
-    </div>
-    <div class="table-wrap"><table class="table"><thead><tr><th>问题</th><th>Top score</th><th>拒答</th><th>结果</th></tr></thead><tbody>
-      ${data.results.map((result) => `<tr><td>${esc(result.question)}</td><td>${Number(result.top_score).toFixed(3)}</td><td>${result.refused ? "是" : "否"}</td><td>${result.pass ? `<span class="pill teal">通过</span>` : `<span class="pill warn">未通过</span>`}</td></tr>`).join("")}
-    </tbody></table></div>`;
-    toast(`评测完成：通过率 ${pct(metrics.pass_rate)}`, "ok");
+    $("#eval-result").innerHTML = `
+      <div class="metrics" style="margin-top:2px">
+        <div class="metric"><span class="metric-label">文档召回</span><div class="metric-value">${pct(metrics.doc_recall)}</div></div>
+        <div class="metric"><span class="metric-label">关键词召回</span><div class="metric-value">${pct(metrics.keyword_recall)}</div></div>
+        <div class="metric"><span class="metric-label">拒答准确率</span><div class="metric-value">${pct(metrics.refusal_accuracy)}</div></div>
+        <div class="metric"><span class="metric-label">整体通过</span><div class="metric-value">${pct(metrics.pass_rate)}</div></div>
+      </div>
+      <div class="table-wrap" style="margin-top:14px">
+        <table class="table">
+          <thead><tr><th scope="col">问题</th><th scope="col" class="num">Top score</th><th scope="col">拒答</th><th scope="col">结果</th></tr></thead>
+          <tbody>${data.results.map((result) => `
+            <tr>
+              <td>${esc(result.question)}</td>
+              <td class="num">${Number(result.top_score).toFixed(3)}</td>
+              <td>${result.refused ? "是" : "否"}</td>
+              <td>${result.pass ? `<span class="pill ok">通过</span>` : `<span class="pill warn">未通过</span>`}</td>
+            </tr>`).join("")}</tbody>
+        </table>
+      </div>`;
+    toast(`评测完成 · 通过率 ${pct(metrics.pass_rate)}`);
   } catch (error) {
-    toast(error.message, "err");
+    toast(error.message);
   } finally {
     setBusy(button, false);
   }
 }
 
 /* ============ Settings ============ */
+function renderIdentity() {
+  const me = state.me;
+  if (!me) return;
+  const summary = $("#setting-identity-summary");
+  if (summary) summary.textContent = `${me.name} · ${me.role}`;
+  const target = $("#settings-identity");
+  if (!target) return;
+  const rows = [
+    ["名称", me.name],
+    ["租户", me.tenant_id],
+    ["角色", me.role],
+    ["组", (me.groups || []).join("、") || "无"],
+    ["主体集合", (me.principals || []).join("  ") || "无"],
+  ];
+  target.innerHTML = rows.map(([key, value]) => `<div class="kv-row"><dt>${esc(key)}</dt><dd>${esc(value)}</dd></div>`).join("");
+}
+
 async function loadSettings() {
-  if (state.me) {
-    $("#settings-identity").innerHTML = `
-      <div><span>名称</span><strong>${esc(state.me.name)}</strong></div>
-      <div><span>租户</span><strong>${esc(state.me.tenant_id)}</strong></div>
-      <div><span>角色</span><strong>${esc(state.me.role)}</strong></div>
-      <div><span>组</span><strong>${esc((state.me.groups || []).join("、"))}</strong></div>
-      <div><span>主体集合</span><strong>${esc((state.me.principals || []).join("  "))}</strong></div>`;
-  }
-  if (state.harness) renderHarness();
+  renderIdentity();
+  renderRuntime();
   try {
     const data = await api("/prices");
-    $("#price-table tbody").innerHTML = data.items.map((price) => `
-      <tr><td>${esc(price.provider)}</td><td>${esc(price.model)}</td><td>¥${price.input_per_1m}</td><td>¥${price.output_per_1m}</td><td>${esc(price.effective_from)}</td></tr>`).join("") || `<tr><td colspan="5"><div class="empty">暂无单价</div></td></tr>`;
+    const summary = $("#setting-price-summary");
+    if (summary) summary.textContent = `${num(data.items.length)} 个模型 · 当前 ${data.current_runtime?.model || "无"}`;
+    $("#settings-prices").innerHTML = data.items.map((price) => `
+      <tr>
+        <td><strong style="font-weight:500">${esc(price.model)}</strong> <span class="muted small">${esc(price.provider)}</span></td>
+        <td class="num">¥${Number(price.input_per_1m).toFixed(2)}</td>
+        <td class="num">¥${Number(price.output_per_1m).toFixed(2)}</td>
+        <td class="date">${esc(price.effective_from)}</td>
+      </tr>`).join("") || `<tr><td colspan="4"><div class="empty-block">暂无单价</div></td></tr>`;
   } catch (_) { /* ignore */ }
-  $("#mcp-example").textContent = `curl -s -X POST http://localhost:8000/api/v1/mcp \\
-  -H "Authorization: Bearer owner-token" \\
+  $("#settings-mcp").textContent = `curl -s -X POST http://localhost:8000/api/v1/mcp \\
+  -H "Authorization: Bearer ${state.token}" \\
   -H "Content-Type: application/json" \\
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
-       "params":{"name":"kb_ask","arguments":{"question":"KnoWeave 的架构铁律是什么？"}}}'`;
-  $("#run-reflection").onclick = async () => {
-    const button = $("#run-reflection");
-    setBusy(button, true, "反思中…");
-    try {
-      const summary = await api("/reflection/run", { method: "POST" });
-      toast(`反思完成：合并 ${summary.merged_entities} 个实体，标记 ${summary.conflicts_marked} 个冲突`, "ok");
-      loadDashboard();
-    } catch (error) {
-      toast(error.message, "err");
-    } finally {
-      setBusy(button, false);
-    }
-  };
-  $("#refresh-health").onclick = loadMetaAndHealth;
+       "params":{"name":"kb_ask","arguments":{"question":"知识库的架构约束是什么？"}}}'`;
+  const mcpSummary = $("#setting-mcp-summary");
+  if (mcpSummary) mcpSummary.textContent = `JSON-RPC · /api/v1/mcp`;
+  stampNow();
 }
 
 /* ============ Boot ============ */
 async function boot() {
+  document.body.dataset.page = state.page;
   $("#token-select").value = state.token;
   $("#token-select").addEventListener("change", async (event) => {
     state.token = event.target.value;
     localStorage.setItem("kw_token", state.token);
-    state.me = null; state.stats = null; state.docs = []; state.entities = []; state.activeEntity = null; state.conversationId = null;
-    $("#ask-result").innerHTML = "";
+    state.me = null;
+    state.stats = null;
+    state.docs = [];
+    state.entities = [];
+    state.activeEntity = null;
+    state.conversationId = null;
+    state.chatConversationId = null;
+    state.chatDraft = false;
+    state.chatMessages = [];
+    state.chatBusy = false;
+    $("#chat-thread").innerHTML = `<div class="empty-block">暂无消息</div>`;
+    $("#chat-list").innerHTML = "";
+    $("#ask-result").innerHTML = `<div class="empty-block">尚无检索结果</div>`;
+    $("#evidence-body").innerHTML = `<div class="empty-block">暂无证据</div>`;
+    $("#evidence-count").textContent = "";
     await refreshShell();
-    loadMetaAndHealth();
+    await loadMetaAndHealth();
     loadPage(state.page);
   });
+
+  window.addEventListener("hashchange", () => {
+    const next = location.hash.replace("#", "");
+    if (PAGE_META[next] && next !== state.page) showPage(next);
+  });
+
   $$(".nav-item").forEach((item) => item.addEventListener("click", () => showPage(item.dataset.page)));
   $$("[data-goto]").forEach((button) => button.addEventListener("click", () => showPage(button.dataset.goto)));
-  $("#dialog-close").addEventListener("click", () => $("#doc-dialog").close());
-  $("#doc-dialog").addEventListener("click", (event) => {
-    if (event.target === $("#doc-dialog")) $("#doc-dialog").close();
+
+  $("#nav-toggle").addEventListener("click", () => {
+    if ($("#sidebar").classList.contains("open")) closeSidebar();
+    else openSidebar();
   });
+  $("#scrim").addEventListener("click", closeSidebar);
+
+  $("#refresh-page").addEventListener("click", () => {
+    refreshShell();
+    loadMetaAndHealth();
+    loadPage(state.page);
+    toast("已刷新");
+  });
+
+  $("#global-search").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const query = $("#global-search-input").value.trim();
+    if (!query) return;
+    $("#doc-search").value = query;
+    showPage("library");
+    loadDocs();
+  });
+
   $("#entity-search").addEventListener("input", (event) => {
     clearTimeout(window.__entityTimer);
     window.__entityTimer = setTimeout(() => loadEntities(event.target.value.trim()), 300);
   });
+
+  $$("dialog").forEach((dialog) => {
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog) dialog.close();
+    });
+  });
+  $$("[data-close]").forEach((button) => {
+    button.addEventListener("click", () => button.closest("dialog")?.close());
+  });
+
+  $("#reflect-btn").addEventListener("click", async () => {
+    const button = $("#reflect-btn");
+    setBusy(button, true, "反思中");
+    try {
+      const summary = await api("/reflection/run", { method: "POST" });
+      toast(`反思完成 · 合并 ${num(summary.merged_entities)} 个实体，标记 ${num(summary.conflicts_marked)} 个冲突`);
+      loadDashboard();
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      setBusy(button, false);
+    }
+  });
+  $("#harness-refresh").addEventListener("click", async () => {
+    await loadMetaAndHealth();
+    toast("运行时状态已更新");
+  });
+
   setupIngest();
   setupAsk();
+  setupChat();
+  setupTour();
   setupOps();
 
-  const initial = (location.hash || "#dashboard").replace("#", "");
+  const initial = (location.hash || "#chat").replace("#", "");
   await refreshShell();
   await loadMetaAndHealth();
-  showPage(PAGE_META[initial] ? initial : "dashboard");
-  loadDashboard();
+  showPage(PAGE_META[initial] ? initial : "chat");
+  if (!localStorage.getItem(tourKey())) openTour();
 }
 
 document.addEventListener("DOMContentLoaded", boot);

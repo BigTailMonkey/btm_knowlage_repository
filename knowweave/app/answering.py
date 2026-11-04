@@ -26,6 +26,7 @@ from .tracing import TraceRecorder
 
 CITATION = re.compile(r"\[(\d{1,2})\]")
 REFUSAL_MARKERS = ("REFUSE", "资料不足", "不足以回答", "无法回答", "没有足够")
+FOLLOW_UP = re.compile(r"(它|他|她|这|那|该|此|其|上面|刚才|之前|上述|前面|还有|继续|再|那么)")
 
 SYSTEM = """你是 KnoWeave（知织）知识库的问答引擎。规则：
 1. 只能使用给定的「证据」回答，不得使用训练知识补全，不得编造。
@@ -33,7 +34,8 @@ SYSTEM = """你是 KnoWeave（知织）知识库的问答引擎。规则：
 3. 若证据不足以支撑结论，只输出一行：REFUSE: <缺失原因>。
 4. 回答使用中文，先给结论，再给 2-4 句关键依据；不要复述整段原文。
 5. 区分「资料明确支持」与「推测」；推测必须标注「（推测）」。
-6. 涉及时间时按事实有效期判断，不要混用已经失效的旧结论。"""
+6. 涉及时间时按事实有效期判断，不要混用已经失效的旧结论。
+7. 多轮对话中的历史消息仅用于理解指代，不得作为证据；引用编号只对应本轮证据。"""
 
 
 def _format_evidence(hits: list[Hit], facts: list[dict], memories: list[MemoryItem]) -> str:
@@ -77,6 +79,36 @@ def _memory_context(db: Session, principal: Principal, question: str) -> list[Me
         if tokens and len(tokens & query_tokens) >= max(1, min(3, len(tokens) // 3)):
             matches.append(memory)
     return matches[:5]
+
+
+def _conversation_history(db: Session, conversation: Conversation | None) -> list[Message]:
+    if conversation is None:
+        return []
+    rows = db.execute(
+        select(Message)
+        .where(Message.conversation_id == conversation.id)
+        .order_by(Message.created_at.desc())
+        .limit(6)
+    ).scalars().all()
+    return list(reversed(rows))
+
+
+def _history_context(messages: list[Message]) -> str:
+    lines = ["对话历史（仅用于理解指代，不作为证据）："]
+    for message in messages:
+        role = "用户" if message.role == "user" else "助手"
+        lines.append(f"{role}：{' '.join(message.content.split())[:500]}")
+    return "\n".join(lines)
+
+
+def _retrieval_question(question: str, messages: list[Message]) -> str:
+    previous = next(
+        (message.content for message in reversed(messages) if message.role == "user"),
+        "",
+    )
+    if previous and (len(question) <= 12 or FOLLOW_UP.search(question)):
+        return f"{previous} {question}"
+    return question
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -180,7 +212,23 @@ def ask(
     recorder = TraceRecorder(principal.tenant_id, principal.user_id, "ask", question)
     recorder.add_span("intent", params={"mode": mode, "as_of": as_of}, output={"question": question})
 
-    queries = _subqueries(question, mode)
+    conversation = db.get(Conversation, conversation_id) if conversation_id else None
+    if conversation and (
+        conversation.tenant_id != principal.tenant_id
+        or conversation.user_id != principal.user_id
+    ):
+        raise ValueError("会话不存在")
+    history = _conversation_history(db, conversation)
+    retrieval_question = _retrieval_question(question, history)
+    recorder.add_span(
+        "context.history",
+        output={
+            "messages": len(history),
+            "retrieval_question": retrieval_question,
+        },
+    )
+
+    queries = _subqueries(retrieval_question, mode)
     results: list[RetrievalResult] = []
     merged: dict[str, Hit] = {}
     facts: list[dict] = []
@@ -217,7 +265,8 @@ def ask(
         usage_recorded = False
     else:
         evidence = _format_evidence(hits, facts, memories)
-        prompt = f"""证据：
+        history_block = f"{_history_context(history)}\n\n" if history else ""
+        prompt = f"""{history_block}证据：
 {evidence}
 
 问题：{question}
@@ -247,7 +296,7 @@ def ask(
             refused = True
             citations = []
         elif not text:
-            answer = _extractive_answer(question, hits) or _refusal(hits)
+            answer = _extractive_answer(retrieval_question, hits) or _refusal(hits)
             refused = not answer.startswith("根据现有资料")
             citations = []
         else:
@@ -295,11 +344,7 @@ def ask(
     if refused:
         _upsert_gap(db, principal, question)
 
-    if conversation_id:
-        conversation = db.get(Conversation, conversation_id)
-    else:
-        conversation = None
-    if not conversation:
+    if conversation is None:
         conversation = Conversation(
             id=new_id("conv"),
             tenant_id=principal.tenant_id,

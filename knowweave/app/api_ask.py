@@ -14,6 +14,7 @@ from .models import (
     Chunk,
     Citation,
     Conversation,
+    Document,
     Feedback,
     Message,
     new_id,
@@ -186,6 +187,21 @@ def conversation_detail(
                 ],
             }
         )
+    doc_ids = {
+        citation["doc_id"]
+        for item in items
+        for citation in item["citations"]
+        if citation.get("doc_id")
+    }
+    titles = {
+        document.id: document.title
+        for document in db.execute(
+            select(Document).where(Document.id.in_(doc_ids))
+        ).scalars()
+    } if doc_ids else {}
+    for item in items:
+        for citation in item["citations"]:
+            citation["doc_title"] = titles.get(citation.get("doc_id"), "")
     return {
         "id": conversation.id,
         "title": conversation.title,
