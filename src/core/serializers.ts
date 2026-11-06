@@ -49,6 +49,11 @@ interface EvidenceRow {
   quote: string
 }
 
+function dateOnly(value: unknown): string | null {
+  if (!value) return null
+  return value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10)
+}
+
 export async function factDict(fact: FactRow): Promise<Record<string, unknown>> {
   const subject = await queryOne<EntityRow>('SELECT * FROM entities WHERE id = $1', [fact.subject_id])
   const object = fact.object_id
@@ -67,8 +72,8 @@ export async function factDict(fact: FactRow): Promise<Record<string, unknown>> 
     object_id: fact.object_id,
     object: object?.canonical_name ?? fact.object_literal,
     object_literal: fact.object_literal,
-    valid_from: fact.valid_from ? String(fact.valid_from).slice(0, 10) : null,
-    valid_to: fact.valid_to ? String(fact.valid_to).slice(0, 10) : null,
+    valid_from: dateOnly(fact.valid_from),
+    valid_to: dateOnly(fact.valid_to),
     recorded_at: iso(fact.recorded_at),
     confidence: Number((fact.confidence ?? 0).toFixed(3)),
     status: fact.status,

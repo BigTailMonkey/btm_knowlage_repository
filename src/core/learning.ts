@@ -1,5 +1,4 @@
 import { query, queryOne } from '../db/index.js'
-import { tokenize } from '../adapters/embeddings/index.js'
 import { harness } from '../adapters/harness/index.js'
 import { estimateTokens } from './chunking.js'
 import { newId, todayLocal } from './ids.js'
@@ -13,7 +12,7 @@ subject, subject_type(product|org|person|concept|event), predicate, object,
 object_type, object_literal, valid_from(YYYY-MM-DD 或 null), valid_to(YYYY-MM-DD 或 null),
 confidence(0-1), quote(必须逐字来自原文，不超过120字)。
 规则：谓词用简短中文动词短语；不要抽取常识、推测、代词指代；最多 12 条；
-数字、日期、版本必须保留；没有明确主语时不要抽取。`
+数字、日期、版本必须保留；主语与宾语保留引文中的写法；没有明确主语时不要抽取。`
 
 const DATE_RE = /(20\d{2})[-年/.](\d{1,2})[-月/.](\d{1,2})?/
 
@@ -37,6 +36,7 @@ export function normalizeName(name: string): string {
 
 export function parseDate(value: unknown): string | null {
   if (!value) return null
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString().slice(0, 10)
   const text = String(value).trim()
   if (!text || ['null', 'none', '无'].includes(text.toLowerCase())) return null
   const match = DATE_RE.exec(text)
@@ -45,6 +45,8 @@ export function parseDate(value: unknown): string | null {
   const month = Number(match[2])
   const day = Number(match[3] ?? 1)
   if (month < 1 || month > 12 || day < 1 || day > 31) return null
+  const parsed = new Date(Date.UTC(year, month - 1, day))
+  if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day) return null
   return `${year.toString().padStart(4, '0')}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`
 }
 
@@ -99,32 +101,60 @@ export async function getOrCreateEntity(
   return (await queryOne<EntityRow>('SELECT * FROM entities WHERE id = $1', [id]))!
 }
 
-async function findChunkForQuote(docId: string, quote: string): Promise<ChunkRow | null> {
-  const chunks = await query<ChunkRow>(
-    `SELECT c.* FROM chunks c
-     JOIN document_versions v ON c.version_id = v.id
-     JOIN documents d ON c.doc_id = d.id
-     WHERE c.doc_id = $1 AND c.is_parent = false AND v.version = d.current_version`,
-    [docId],
-  )
-  const clean = quote.replace(/\s+/g, ' ').trim()
-  const quoteTokens = new Set(tokenize(clean))
-  let best: ChunkRow | null = null
-  let bestScore = 0
+const EXTRACTION_BATCH_CHARS = 7000
+const MIN_FACT_CONFIDENCE = 0.7
+const EXTRACTION_OVERLAP = 180
+
+function quotedChunk(chunks: ChunkRow[], quote: string): ChunkRow | null {
+  if (!quote.trim()) return null
+  return chunks.find((chunk) => chunk.text.includes(quote)) ?? null
+}
+
+function extractionBatches(chunks: ChunkRow[]): Array<{ text: string; chunks: ChunkRow[] }> {
+  const batches: Array<{ text: string; chunks: ChunkRow[] }> = []
+  let parts: string[] = []
+  let included: ChunkRow[] = []
+  let size = 0
+  const flush = () => {
+    if (parts.length) batches.push({ text: parts.join('\n\n'), chunks: included })
+    parts = []
+    included = []
+    size = 0
+  }
   for (const chunk of chunks) {
-    const text = chunk.text.replace(/\s+/g, ' ')
-    if (clean && text.includes(clean.slice(0, 40))) return chunk
-    if (!quoteTokens.size) continue
-    let hit = 0
-    const tokens = new Set(tokenize(text))
-    for (const token of quoteTokens) if (tokens.has(token)) hit += 1
-    const score = hit / quoteTokens.size
-    if (score > bestScore) {
-      bestScore = score
-      best = chunk
+    for (let offset = 0; offset < chunk.text.length;) {
+      const part = chunk.text.slice(offset, offset + EXTRACTION_BATCH_CHARS)
+      if (size + part.length + (parts.length ? 2 : 0) > EXTRACTION_BATCH_CHARS) flush()
+      parts.push(part)
+      if (!included.some((item) => item.id === chunk.id)) included.push(chunk)
+      size += part.length + (parts.length > 1 ? 2 : 0)
+      if (offset + part.length >= chunk.text.length) break
+      offset += part.length - EXTRACTION_OVERLAP
+      flush()
     }
   }
-  return bestScore >= 0.45 ? best : null
+  flush()
+  return batches
+}
+
+function isLiteralTarget(value: string, type: string): boolean {
+  return ['literal', 'number', 'date', 'string'].includes(type)
+    || /^[+-]?\d+(?:\.\d+)?\s*[^\d]*$/.test(value)
+}
+
+function quoteContains(quote: string, term: string): boolean {
+  const compact = (text: string) => text.toLowerCase().replace(/\s+/g, '')
+  const text = compact(quote)
+  const target = compact(term)
+  if (!/^[+-]?\d/.test(target)) return text.includes(target)
+  for (let index = text.indexOf(target); index >= 0; index = text.indexOf(target, index + 1)) {
+    const before = text[index - 1] ?? ''
+    const after = text[index + target.length] ?? ''
+    if (/[+\-\d.]/.test(before)) continue
+    if (/\d$/.test(target) && /[\d.]/.test(after)) continue
+    return true
+  }
+  return false
 }
 
 async function extractCandidates(document: DocumentRow): Promise<Candidate[]> {
@@ -133,107 +163,195 @@ async function extractCandidates(document: DocumentRow): Promise<Candidate[]> {
      WHERE c.doc_id = $1 AND c.is_parent = false AND v.version = $2 ORDER BY c.seq`,
     [document.id, document.current_version],
   )
-  if (!chunks.length) return []
-  const parts: string[] = []
-  let total = 0
-  for (const chunk of chunks) {
-    if (total > 7000) break
-    parts.push(chunk.text)
-    total += chunk.text.length
-  }
-  const text = parts.join('\n\n')
-  const prompt = `文档标题：${document.title}\n来源类型：${document.source_type}\n\n原文：\n${text}\n\n请输出 JSON 数组。`
-  const result = await harness.complete(prompt, EXTRACT_SYSTEM, 1600)
-  const candidates: Candidate[] = []
-  for (const item of parseJsonArray(result.text)) {
-    const subject = String(item.subject ?? '').trim()
-    const predicate = String(item.predicate ?? '').trim()
-    const object = String(item.object ?? '').trim()
-    const literal = String(item.object_literal ?? '').trim()
-    const quote = String(item.quote ?? '').trim()
-    if (!subject || !predicate || !(object || literal) || !quote) continue
-    if (['它', '他', '她', '该系统', '本系统', '这'].includes(subject)) continue
-    const chunk = await findChunkForQuote(document.id, quote)
-    candidates.push({
-      subject: subject.slice(0, 120),
-      subjectType: String(item.subject_type ?? 'concept').slice(0, 24),
-      predicate: predicate.slice(0, 120),
-      objectName: object.slice(0, 120),
-      objectType: String(item.object_type ?? 'concept').slice(0, 24),
-      objectLiteral: literal.slice(0, 200),
-      validFrom: parseDate(item.valid_from),
-      validTo: parseDate(item.valid_to),
-      confidence: Math.max(0.2, Math.min(0.99, Number(item.confidence ?? 0.7) || 0.7)),
-      quote: quote.slice(0, 300),
-      chunkId: chunk?.id ?? null,
-    })
-  }
-  return candidates.length ? candidates : ruleExtractCandidates(text, chunks)
-}
-
-function ruleExtractCandidates(text: string, chunks: ChunkRow[]): Candidate[] {
-  const pattern = /([\u4e00-\u9fffA-Za-z0-9·\-]{2,24})(采用|使用|基于|依赖|支持|提供|发布|推出|属于|位于|成立于|由)([^，。；：\n]{2,40})/g
   const candidates: Candidate[] = []
   const seen = new Set<string>()
-  for (const sentence of text.split(/[。！？!?；;\n]/)) {
-    const body = sentence.trim()
-    if (body.length < 10) continue
-    for (const match of body.matchAll(pattern)) {
-      const subject = match[1]!.trim()
-      const predicate = match[2]!.trim()
-      const object = match[3]!.trim()
-      if (['我们', '本系统', '该系统', '它'].includes(subject) || object.length < 2) continue
-      const key = `${normalizeName(subject)}|${predicate}|${normalizeName(object)}`
+  for (const [index, batch] of extractionBatches(chunks).entries()) {
+    const prompt = `文档标题：${document.title}\n来源类型：${document.source_type}\n分批：${index + 1}\n\n原文：\n${batch.text}\n\n请输出 JSON 数组。`
+    const result = await harness.complete(prompt, EXTRACT_SYSTEM, 1600)
+    const extracted: Candidate[] = []
+    for (const item of parseJsonArray(result.text)) {
+      const subject = String(item.subject ?? '').trim()
+      const predicate = String(item.predicate ?? '').trim()
+      const object = String(item.object ?? '').trim()
+      const literal = String(item.object_literal ?? '').trim()
+      const quote = String(item.quote ?? '').trim()
+      if (!subject || !predicate || !(object || literal) || !quote) continue
+      if (['它', '他', '她', '该系统', '本系统', '这'].includes(subject)) continue
+      const chunk = quotedChunk(batch.chunks, quote)
+      // A nearby sentence, fuzzy token overlap or matching quote prefix is not
+      // evidence for an extracted assertion. Keep the entire verbatim quote.
+      if (!chunk || !batch.text.includes(quote)) continue
+      if (!quoteContains(quote, subject)) continue
+      if (!quoteContains(quote, object || literal)) continue
+      const validFrom = parseDate(item.valid_from)
+      const validTo = parseDate(item.valid_to)
+      if (validFrom && validTo && validFrom >= validTo) continue
+      const confidence = Number(item.confidence ?? 0.7)
+      const objectType = String(item.object_type ?? 'concept').slice(0, 24)
+      const literalTarget = !object || isLiteralTarget(object, objectType)
+      extracted.push({
+        subject: subject.slice(0, 120),
+        subjectType: String(item.subject_type ?? 'concept').slice(0, 24),
+        predicate: predicate.slice(0, 120),
+        objectName: literalTarget ? '' : object.slice(0, 120),
+        objectType,
+        objectLiteral: (literalTarget ? literal || object : literal).slice(0, 200),
+        validFrom,
+        validTo,
+        confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(0.99, confidence)) : 0.7,
+        quote,
+        chunkId: chunk.id,
+      })
+    }
+    for (const candidate of extracted.length ? extracted : ruleExtractCandidates(batch.text, batch.chunks)) {
+      const key = [normalizeName(candidate.subject), candidate.predicate, normalizeName(candidate.objectName || candidate.objectLiteral), candidate.validFrom, candidate.validTo, candidate.chunkId].join('|')
       if (seen.has(key)) continue
       seen.add(key)
-      let chunk: ChunkRow | null = null
-      let bestScore = 0
-      for (const candidateChunk of chunks) {
-        if (candidateChunk.text.includes(match[0])) {
-          chunk = candidateChunk
-          break
-        }
-        let hit = 0
-        const sentenceTokens = new Set(tokenize(body))
-        const chunkTokens = new Set(tokenize(candidateChunk.text))
-        for (const token of sentenceTokens) if (chunkTokens.has(token)) hit += 1
-        if (hit > bestScore) {
-          bestScore = hit
-          chunk = candidateChunk
-        }
-      }
-      candidates.push({
-        subject: subject.slice(0, 120),
-        subjectType: /[A-Za-z]/.test(subject) ? 'product' : 'concept',
-        predicate,
-        objectName: object.slice(0, 120),
-        objectType: /[A-Za-z]/.test(object) ? 'product' : 'concept',
-        objectLiteral: object.slice(0, 200),
-        validFrom: null,
-        validTo: null,
-        confidence: 0.52,
-        quote: body.slice(0, 180),
-        chunkId: chunk?.id ?? null,
-      })
-      if (candidates.length >= 8) return candidates
+      candidates.push(candidate)
     }
   }
   return candidates
 }
 
-function periodsOverlap(a: FactRow, b: FactRow): boolean {
-  const aStart = a.valid_from ? String(a.valid_from).slice(0, 10) : '0000-01-01'
-  const aEnd = a.valid_to ? String(a.valid_to).slice(0, 10) : '9999-12-31'
-  const bStart = b.valid_from ? String(b.valid_from).slice(0, 10) : '0000-01-01'
-  const bEnd = b.valid_to ? String(b.valid_to).slice(0, 10) : '9999-12-31'
-  return aStart <= bEnd && bStart <= aEnd
+function ruleExtractCandidates(text: string, chunks: ChunkRow[]): Candidate[] {
+  const pattern = /([\u4e00-\u9fffA-Za-z0-9·\-]{2,24})(采用|使用|基于|依赖|支持|提供|发布|推出|属于|位于|成立于|由)([^，。；：\n]{2,40})/g
+  const candidates: Candidate[] = []
+  for (const sentence of text.split(/[。！？!?；;\n]/)) {
+    const body = sentence.trim()
+    if (body.length < 6) continue
+    for (const match of body.matchAll(pattern)) {
+      const subject = match[1]!.trim()
+      const predicate = match[2]!.trim()
+      const object = match[3]!.trim()
+      if (['我们', '本系统', '该系统', '它'].includes(subject) || object.length < 2) continue
+      const quote = match[0]
+      const chunk = quotedChunk(chunks, quote)
+      if (!chunk) continue
+      candidates.push({
+        subject: subject.slice(0, 120),
+        subjectType: /[A-Za-z]/.test(subject) ? 'product' : 'concept',
+        predicate,
+        objectName: isLiteralTarget(object, '') ? '' : object.slice(0, 120),
+        objectType: /[A-Za-z]/.test(object) ? 'product' : 'concept',
+        objectLiteral: object.slice(0, 200),
+        validFrom: null,
+        validTo: null,
+        confidence: 0.52,
+        quote,
+        chunkId: chunk.id,
+      })
+    }
+  }
+  return candidates
 }
 
-async function mergeOrArbitrate(
-  principal: Principal,
-  document: DocumentRow,
-  candidate: Candidate,
-): Promise<string> {
+type Period = Pick<FactRow, 'valid_from' | 'valid_to'>
+
+function dateOnly(value: unknown): string | null {
+  if (!value) return null
+  return value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10)
+}
+
+function periodsOverlap(a: Period, b: Period): boolean {
+  const aStart = dateOnly(a.valid_from) ?? '0000-01-01'
+  const aEnd = dateOnly(a.valid_to) ?? '9999-12-31'
+  const bStart = dateOnly(b.valid_from) ?? '0000-01-01'
+  const bEnd = dateOnly(b.valid_to) ?? '9999-12-31'
+  // valid_to is exclusive, matching timeline retrieval's date filtering.
+  return aStart < bEnd && bStart < aEnd
+}
+
+function equalLiteral(left: string | null, right: string, predicate: string): boolean {
+  if ((left ?? '').trim().toLowerCase() === right.trim().toLowerCase()) return true
+  if (/版本|version|编号|标识/i.test(predicate)) return false
+  const numeric = /^([+-]?\d+(?:\.\d+)?)\s*([^\d]*)$/
+  const a = numeric.exec(left ?? '')
+  const b = numeric.exec(right)
+  if (!a || !b || a[2]!.trim() !== b[2]!.trim()) return false
+  const x = Number(a[1])
+  const y = Number(b[1])
+  // Only tolerate decimal representation noise; do not silently round
+  // measurements, prices, dates or version identifiers into the same fact.
+  return Math.abs(x - y) <= Number.EPSILON * Math.max(1, Math.abs(x), Math.abs(y))
+}
+
+async function appendEvidence(factId: string, document: DocumentRow, candidate: Candidate): Promise<boolean> {
+  if (!candidate.chunkId) return false
+  const chunk = await queryOne<ChunkRow>(
+    `SELECT c.* FROM chunks c JOIN document_versions v ON c.version_id = v.id
+     JOIN documents d ON c.doc_id = d.id
+     WHERE c.id = $1 AND c.doc_id = $2 AND c.is_parent = false
+       AND v.version = $3 AND d.current_version = $3 AND d.status = 'active'`,
+    [candidate.chunkId, document.id, document.current_version],
+  )
+  if (!chunk || !chunk.text.includes(candidate.quote)) return false
+  const duplicate = await queryOne<{ id: string }>(
+    'SELECT id FROM fact_evidence WHERE fact_id = $1 AND chunk_id = $2 AND quote = $3 LIMIT 1',
+    [factId, candidate.chunkId, candidate.quote],
+  )
+  if (duplicate) return true
+  const start = chunk.text.indexOf(candidate.quote)
+  await query(
+    `INSERT INTO fact_evidence (id, fact_id, chunk_id, doc_id, quote, span, weight)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+    [newId('ev'), factId, chunk.id, document.id, candidate.quote, JSON.stringify({ start, end: start + candidate.quote.length }), Math.max(0.05, Math.min(1, document.quality_score || 0.5))],
+  )
+  return true
+}
+
+async function factSources(factId: string): Promise<Array<{ doc_id: string; weight: number }>> {
+  return query<{ doc_id: string; weight: number }>(
+    `SELECT e.doc_id, max(e.weight) AS weight FROM fact_evidence e
+     JOIN chunks c ON c.id = e.chunk_id JOIN document_versions v ON v.id = c.version_id
+     JOIN documents d ON d.id = e.doc_id
+     WHERE e.fact_id = $1 AND d.status = 'active' AND v.version = d.current_version
+     GROUP BY e.doc_id`,
+    [factId],
+  )
+}
+
+async function queueFactReview(
+  principal: Principal, subject: EntityRow, fact: FactRow, candidate: Candidate,
+  document: DocumentRow, conflicting: FactRow[], reason: string,
+): Promise<void> {
+  const existing = await queryOne<{ id: string }>(
+    `SELECT id FROM review_queue WHERE tenant_id = $1 AND status = 'open'
+       AND payload->>'new_fact_id' = $2 LIMIT 1`,
+    [principal.tenantId, fact.id],
+  )
+  const oldObjects: unknown[] = []
+  for (const old of conflicting) {
+    oldObjects.push(old.object_id
+      ? (await queryOne<EntityRow>('SELECT canonical_name FROM entities WHERE id = $1', [old.object_id]))?.canonical_name
+      : old.object_literal)
+  }
+  const payload = JSON.stringify({
+    subject: subject.canonical_name, predicate: fact.predicate,
+    new_fact_id: fact.id, new_object: candidate.objectName || candidate.objectLiteral,
+    old_fact_ids: conflicting.map((old) => old.id), old_objects: oldObjects,
+    quote: candidate.quote, doc_id: document.id, reason,
+  })
+  if (existing) {
+    await query('UPDATE review_queue SET payload = $1::jsonb, kind = $2 WHERE id = $3', [payload, conflicting.length ? 'fact_conflict' : 'fact_validation', existing.id])
+    return
+  }
+  await query(
+    `INSERT INTO review_queue (id, tenant_id, kind, title, payload, status)
+     VALUES ($1, $2, $3, $4, $5::jsonb, 'open')`,
+    [newId('rev'), principal.tenantId, conflicting.length ? 'fact_conflict' : 'fact_validation', `${subject.canonical_name} · ${candidate.predicate}`, payload],
+  )
+}
+
+async function mergeOrArbitrate(principal: Principal, document: DocumentRow, candidate: Candidate): Promise<string> {
+  if (!candidate.chunkId) return 'rejected'
+  const chunk = await queryOne<ChunkRow>(
+    `SELECT c.* FROM chunks c JOIN document_versions v ON c.version_id = v.id
+     JOIN documents d ON c.doc_id = d.id
+     WHERE c.id = $1 AND c.doc_id = $2 AND c.is_parent = false AND v.version = $3
+       AND d.current_version = $3 AND d.status = 'active'`,
+    [candidate.chunkId, document.id, document.current_version],
+  )
+  if (!chunk || !chunk.text.includes(candidate.quote)) return 'rejected'
   const acl = document.acl_principals?.length ? document.acl_principals : ['tenant:public']
   const subject = await getOrCreateEntity(principal.tenantId, candidate.subject, candidate.subjectType, acl)
   const objectEntity = candidate.objectName
@@ -244,124 +362,92 @@ async function mergeOrArbitrate(
        AND status IN ('active', 'disputed')`,
     [principal.tenantId, subject.id, candidate.predicate],
   )
-  const sameObject = existingFacts.find((fact) =>
-    objectEntity ? fact.object_id === objectEntity.id : fact.object_literal === candidate.objectLiteral,
-  )
+  const sameTarget = (fact: FactRow) => objectEntity
+    ? fact.object_id === objectEntity.id
+    : fact.object_id === null && equalLiteral(fact.object_literal, candidate.objectLiteral, candidate.predicate)
+  const candidatePeriod = { valid_from: candidate.validFrom, valid_to: candidate.validTo }
+  const sameObject = existingFacts.find((fact) => sameTarget(fact) && periodsOverlap(fact, candidatePeriod))
+  let fact: FactRow
+  const wasActive = sameObject?.status === 'active'
   if (sameObject) {
-    await query('UPDATE facts SET confidence = $1, acl_principals = $2::jsonb WHERE id = $3', [
-      Math.max(sameObject.confidence, candidate.confidence),
+    const priorSources = await factSources(sameObject.id)
+    const priorWeight = priorSources.reduce((sum, source) => sum + source.weight, 0)
+    const independent = !priorSources.some((source) => source.doc_id === document.id)
+    const addedWeight = Math.max(0.05, Math.min(1, document.quality_score || 0.5))
+    const confidence = independent && priorWeight
+      ? (sameObject.confidence * priorWeight + candidate.confidence * addedWeight) / (priorWeight + addedWeight)
+      : sameObject.confidence
+    const starts = [sameObject.valid_from, candidate.validFrom].map(dateOnly)
+    const ends = [sameObject.valid_to, candidate.validTo].map(dateOnly)
+    await query('UPDATE facts SET confidence = $1, acl_principals = $2::jsonb, valid_from = $3, valid_to = $4 WHERE id = $5', [
+      confidence,
       JSON.stringify([...new Set(sameObject.acl_principals ?? [])].filter((item) => acl.includes(item))),
+      starts.includes(null) ? null : starts.slice().sort()[0],
+      ends.includes(null) ? null : ends.slice().sort().at(-1),
       sameObject.id,
     ])
-    if (candidate.chunkId) {
-      const duplicate = await queryOne<{ id: string }>(
-        `SELECT id FROM fact_evidence WHERE fact_id = $1 AND chunk_id = $2 AND quote = $3 LIMIT 1`,
-        [sameObject.id, candidate.chunkId, candidate.quote],
-      )
-      if (!duplicate) {
-        await query(
-          `INSERT INTO fact_evidence (id, fact_id, chunk_id, doc_id, quote, weight)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [newId('ev'), sameObject.id, candidate.chunkId, document.id, candidate.quote, Math.max(0.5, document.quality_score)],
-        )
+    fact = (await queryOne<FactRow>('SELECT * FROM facts WHERE id = $1', [sameObject.id]))!
+  } else {
+    const factId = newId('f')
+    await query(
+      `INSERT INTO facts
+         (id, tenant_id, subject_id, predicate, object_id, object_literal, valid_from, valid_to,
+          recorded_at, confidence, status, acl_principals, source_doc_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9, 'disputed', $10::jsonb, $11)`,
+      [factId, principal.tenantId, subject.id, candidate.predicate, objectEntity?.id ?? null,
+        objectEntity ? null : candidate.objectLiteral, candidate.validFrom, candidate.validTo,
+        candidate.confidence, JSON.stringify(acl), document.id],
+    )
+    fact = (await queryOne<FactRow>('SELECT * FROM facts WHERE id = $1', [factId]))!
+  }
+  if (!(await appendEvidence(fact.id, document, candidate))) {
+    if (!sameObject) await query(`UPDATE facts SET status = 'retracted' WHERE id = $1`, [fact.id])
+    return 'rejected'
+  }
+  const sources = await factSources(fact.id)
+  const conflicting = existingFacts.filter((old) => old.id !== fact.id && !sameTarget(old) && periodsOverlap(old, fact))
+  const supported = sources.length >= 2 && fact.confidence >= MIN_FACT_CONFIDENCE && candidate.confidence >= MIN_FACT_CONFIDENCE
+  const canSupersede = supported && fact.valid_from !== null && conflicting.length > 0 && conflicting.every((old) =>
+    old.valid_from !== null && dateOnly(fact.valid_from)! > dateOnly(old.valid_from)!,
+  )
+  if (wasActive || (supported && (!conflicting.length || canSupersede))) {
+    await query(`UPDATE facts SET status = 'active' WHERE id = $1`, [fact.id])
+    if (canSupersede) {
+      for (const old of conflicting) {
+        await query(`UPDATE facts SET status = 'superseded', valid_to = $1, superseded_by = $2 WHERE id = $3`, [fact.valid_from, fact.id, old.id])
       }
     }
-    return 'merged'
-  }
-
-  const factId = newId('f')
-  await query(
-    `INSERT INTO facts
-       (id, tenant_id, subject_id, predicate, object_id, object_literal, valid_from, valid_to,
-        recorded_at, confidence, status, acl_principals, source_doc_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9, 'active', $10::jsonb, $11)`,
-    [
-      factId,
-      principal.tenantId,
-      subject.id,
-      candidate.predicate,
-      objectEntity?.id ?? null,
-      objectEntity ? null : candidate.objectLiteral,
-      candidate.validFrom,
-      candidate.validTo,
-      candidate.confidence,
-      JSON.stringify(acl),
-      document.id,
-    ],
-  )
-  if (candidate.chunkId) {
     await query(
-      `INSERT INTO fact_evidence (id, fact_id, chunk_id, doc_id, quote, weight)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [newId('ev'), factId, candidate.chunkId, document.id, candidate.quote, Math.max(0.5, document.quality_score)],
+      `UPDATE review_queue SET status = 'resolved', resolution = $1::jsonb, resolved_at = now()
+       WHERE tenant_id = $2 AND status = 'open' AND payload->>'new_fact_id' = $3`,
+      [JSON.stringify({ action: 'corroborated', by: 'system', sources: sources.length }), principal.tenantId, fact.id],
     )
+    return canSupersede ? 'superseded' : sameObject ? 'merged' : 'created'
   }
-
-  const conflicting: FactRow[] = []
-  for (const old of existingFacts) {
-    let oldTarget = old.object_literal
-    if (old.object_id) {
-      const oldObject = await queryOne<EntityRow>('SELECT canonical_name FROM entities WHERE id = $1', [old.object_id])
-      oldTarget = oldObject?.canonical_name ?? old.object_literal
-    }
-    if (oldTarget === candidate.objectName && candidate.objectName) continue
-    if (!periodsOverlap(old, await queryOne<FactRow>('SELECT * FROM facts WHERE id = $1', [factId]) as FactRow)) continue
-    conflicting.push(old)
-  }
-  if (!conflicting.length) return 'created'
-
-  const newest = conflicting.reduce((a, b) => (new Date(a.recorded_at) > new Date(b.recorded_at) ? a : b))
-  const canSupersede =
-    candidate.validFrom !== null &&
-    newest.valid_from !== null &&
-    candidate.validFrom > String(newest.valid_from).slice(0, 10) &&
-    candidate.confidence >= 0.7
-  if (canSupersede) {
-    for (const old of conflicting) {
-      await query(
-        `UPDATE facts SET status = 'superseded', valid_to = $1, superseded_by = $2 WHERE id = $3`,
-        [candidate.validFrom, factId, old.id],
-      )
-    }
-    return 'superseded'
-  }
-
-  await query(`UPDATE facts SET status = 'disputed' WHERE id = $1`, [factId])
-  for (const old of conflicting) await query(`UPDATE facts SET status = 'disputed' WHERE id = $1`, [old.id])
-  const oldObjects: unknown[] = []
-  for (const old of conflicting) {
-    oldObjects.push(
-      old.object_id
-        ? (await queryOne<EntityRow>('SELECT canonical_name FROM entities WHERE id = $1', [old.object_id]))?.canonical_name
-        : old.object_literal,
-    )
-  }
-  await query(
-    `INSERT INTO review_queue (id, tenant_id, kind, title, payload, status)
-     VALUES ($1, $2, 'fact_conflict', $3, $4::jsonb, 'open')`,
-    [
-      newId('rev'),
-      principal.tenantId,
-      `${subject.canonical_name} · ${candidate.predicate}`,
-      JSON.stringify({
-        subject: subject.canonical_name,
-        predicate: candidate.predicate,
-        new_fact_id: factId,
-        new_object: candidate.objectName || candidate.objectLiteral,
-        old_fact_ids: conflicting.map((fact) => fact.id),
-        old_objects: oldObjects,
-        quote: candidate.quote,
-        doc_id: document.id,
-        reason: '同一主语与谓词出现不同宾语，且有效期重叠；按保守策略进入人工审阅。',
-      }),
-    ],
-  )
+  const reason = conflicting.length
+    ? '同一主语与谓词出现不同宾语，且有效期重叠；进入人工审阅。'
+    : fact.confidence < MIN_FACT_CONFIDENCE
+      ? '候选置信度低于0.7；需人工验证后生效。'
+      : '当前只有单份文档支持；需独立来源佐证或人工审阅后生效。'
+  await queueFactReview(principal, subject, fact, candidate, document, conflicting, reason)
   return 'disputed'
 }
 
+const extractionTasks = new Map<string, Promise<Record<string, unknown>>>()
+
 export async function extractFactsForDocument(principal: Principal, docId: string): Promise<Record<string, unknown>> {
   const document = await queryOne<DocumentRow>('SELECT * FROM documents WHERE id = $1', [docId])
-  if (!document || document.tenant_id !== principal.tenantId) return { error: '文档不存在' }
+  if (!document || document.tenant_id !== principal.tenantId || document.status !== 'active') return { error: '文档不存在' }
+  const key = `${principal.tenantId}:${docId}:${document.current_version}`
+  const existing = extractionTasks.get(key)
+  if (existing) return existing
+  const task = extractDocument(principal, document).finally(() => extractionTasks.delete(key))
+  extractionTasks.set(key, task)
+  return task
+}
+
+async function extractDocument(principal: Principal, document: DocumentRow): Promise<Record<string, unknown>> {
+  const docId = document.id
   const version = await queryOne<VersionRow>(
     'SELECT * FROM document_versions WHERE doc_id = $1 AND version = $2',
     [docId, document.current_version],
@@ -369,18 +455,27 @@ export async function extractFactsForDocument(principal: Principal, docId: strin
   if (!version) return { error: '版本不存在' }
   await query(`UPDATE documents SET enrichment_status = 'running' WHERE id = $1`, [docId])
   const started = Date.now()
-  const candidates = await extractCandidates(document)
-  const counts: Record<string, number> = { created: 0, merged: 0, superseded: 0, disputed: 0 }
-  for (const candidate of candidates) {
-    const outcome = await mergeOrArbitrate(principal, document, candidate)
-    counts[outcome] = (counts[outcome] ?? 0) + 1
-  }
-  await query(`UPDATE documents SET enrichment_status = $1 WHERE id = $2`, [candidates.length ? 'done' : 'empty', docId])
-  return {
-    document_id: docId,
-    candidates: candidates.length,
-    outcomes: counts,
-    elapsed_ms: Date.now() - started,
+  try {
+    const candidates = await extractCandidates(document)
+    const current = await queryOne<DocumentRow>('SELECT * FROM documents WHERE id = $1', [docId])
+    if (!current || current.status !== 'active' || current.current_version !== document.current_version) {
+      return { document_id: docId, status: 'stale', candidates: 0, message: '抽取期间文档已更新，本次旧版本结果已丢弃' }
+    }
+    const counts: Record<string, number> = { created: 0, merged: 0, superseded: 0, disputed: 0, rejected: 0 }
+    for (const candidate of candidates) {
+      const outcome = await mergeOrArbitrate(principal, document, candidate)
+      counts[outcome] = (counts[outcome] ?? 0) + 1
+    }
+    await query(`UPDATE documents SET enrichment_status = $1 WHERE id = $2 AND current_version = $3 AND status = 'active'`, [candidates.length ? 'done' : 'empty', docId, document.current_version])
+    return {
+      document_id: docId,
+      candidates: candidates.length,
+      outcomes: counts,
+      elapsed_ms: Date.now() - started,
+    }
+  } catch (error) {
+    await query(`UPDATE documents SET enrichment_status = 'failed' WHERE id = $1 AND current_version = $2 AND status = 'active'`, [docId, document.current_version])
+    throw error
   }
 }
 
@@ -400,11 +495,16 @@ export async function resolveReview(
   const newFact = payload.new_fact_id
     ? await queryOne<FactRow>('SELECT * FROM facts WHERE id = $1', [String(payload.new_fact_id)])
     : null
+  if (newFact?.source_doc_id && ['accept_new', 'supersede', 'merge'].includes(action)) {
+    if (newFact.status === 'retracted' || !(await factSources(newFact.id)).length) {
+      throw new Error('事实出处已删除或更新，请重新抽取后审阅')
+    }
+  }
   const oldFactIds = Array.isArray(payload.old_fact_ids) ? payload.old_fact_ids : []
   const oldFacts: FactRow[] = []
   for (const factId of oldFactIds) {
     const fact = await queryOne<FactRow>('SELECT * FROM facts WHERE id = $1', [String(factId)])
-    if (fact) oldFacts.push(fact)
+    if (fact && fact.status !== 'retracted') oldFacts.push(fact)
   }
 
   if (action === 'accept_new' || action === 'supersede') {

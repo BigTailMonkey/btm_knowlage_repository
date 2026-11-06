@@ -1,8 +1,8 @@
 """LLMHarness adapter.
 
 Business code only knows this interface: complete / stream / health. The
-DeepSeek Harness is invoked as a headless runtime; no internal DSH module is
-imported. A direct DeepSeek-compatible adapter exists only as a graceful
+agent engine is invoked as a headless runtime; no internal runtime module is
+imported. A direct API-compatible adapter exists only as a graceful
 fallback, and an extractive answer keeps the product usable when no model is
 reachable.
 """

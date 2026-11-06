@@ -41,7 +41,7 @@ function failure(error: unknown, model: string, provider: string, started: numbe
 }
 
 /**
- * 全量 DeepSeek Harness：官方 TypeScript SDK + `sdk` profile。
+ * 完整智能体运行时：TypeScript SDK + `sdk` profile，第三方说明见项目声明文件。
  * SDK 托管完整 runtime（会话持久化、工具、Plan/Goal、权限审批、插件），
  * 一次启动后复用，不再按请求拉起 headless 一次性进程。
  */
@@ -78,6 +78,9 @@ class DshHarness {
       this.starting = harness.start().then(() => {
         this.harness = harness
         return harness
+      }).catch((error) => {
+        this.starting = null
+        throw error
       })
     }
     return this.starting

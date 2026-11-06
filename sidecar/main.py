@@ -74,12 +74,32 @@ def parse_pdf(data: bytes, title: str) -> dict:
 
 def parse_docx(data: bytes, title: str) -> dict:
     from docx import Document as DocxDocument
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
 
     document = DocxDocument(io.BytesIO(data))
     blocks: list[Block] = []
     heading_path: list[tuple[int, str]] = []
     order = 0
-    for paragraph in document.paragraphs:
+    # Iterate the body once so tables retain their source position and heading.
+    # Appending document.tables after every paragraph loses both.
+    for element in document.element.body.iterchildren():
+        if element.tag.endswith("}tbl"):
+            table = Table(element, document)
+            rows = [" | ".join(cell.text.strip() for cell in row.cells) for row in table.rows]
+            blocks.append(
+                Block(
+                    type="table",
+                    text="\n".join(rows),
+                    headingPath=[name for _, name in heading_path],
+                    order=order,
+                )
+            )
+            order += 1
+            continue
+        if not element.tag.endswith("}p"):
+            continue
+        paragraph = Paragraph(element, document)
         text = paragraph.text.strip()
         if not text:
             continue
@@ -95,17 +115,6 @@ def parse_docx(data: bytes, title: str) -> dict:
             Block(
                 type="paragraph",
                 text=text,
-                headingPath=[name for _, name in heading_path],
-                order=order,
-            )
-        )
-        order += 1
-    for table in document.tables:
-        rows = [" | ".join(cell.text.strip() for cell in row.cells) for row in table.rows]
-        blocks.append(
-            Block(
-                type="table",
-                text="\n".join(rows),
                 headingPath=[name for _, name in heading_path],
                 order=order,
             )

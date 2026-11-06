@@ -4,8 +4,40 @@ import { cosine, embedder, keywordOverlap, sparseDot, tokenize } from '../adapte
 import type { ChunkRow, DocumentRow, EntityRow } from './rows.js'
 import { canRead, Principal, principalSet } from './security.js'
 import type { TraceRecorder } from './tracing.js'
+import { todayLocal } from './ids.js'
 
 const RRF_K = 60
+
+type RetrievalDocument = DocumentRow & { selected_version?: number }
+
+/** Historical queries use calendar dates in the configured workspace timezone. */
+export function normalizeAsOf(value?: string | null): string | null {
+  if (!value) return null
+  const normalized = value.trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    throw Object.assign(new Error('as_of 必须为 YYYY-MM-DD 日期'), { statusCode: 400 })
+  }
+  const parsed = new Date(`${normalized}T00:00:00Z`)
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== normalized) {
+    throw Object.assign(new Error('as_of 日期无效'), { statusCode: 400 })
+  }
+  return normalized
+}
+
+function dateValue(value: string | Date | null): string | null {
+  return value instanceof Date ? value.toISOString().slice(0, 10) : value?.slice(0, 10) ?? null
+}
+
+export function factIsEffective(
+  fact: { status: string; valid_from: string | Date | null; valid_to: string | Date | null },
+  asOf: string | null,
+): boolean {
+  if (!['active', ...(asOf ? ['superseded'] : [])].includes(fact.status)) return false
+  const date = asOf ?? todayLocal(settings.timezone)
+  const from = dateValue(fact.valid_from)
+  const to = dateValue(fact.valid_to)
+  return (!from || from <= date) && (!to || to > date)
+}
 
 function snippet(text: string, limit = 220): string {
   const clean = text.replace(/\s+/g, ' ').trim()
@@ -15,7 +47,7 @@ function snippet(text: string, limit = 220): string {
 export class Hit {
   constructor(
     readonly chunk: ChunkRow,
-    readonly document: DocumentRow,
+    readonly document: RetrievalDocument,
     readonly dense: number,
     readonly sparse: number,
     readonly rrf: number,
@@ -30,11 +62,14 @@ export class Hit {
       chunk_id: this.chunk.id,
       doc_id: this.document.id,
       doc_title: this.document.title,
+      version_id: this.chunk.version_id,
+      version: this.document.selected_version ?? this.document.current_version,
       text: this.chunk.text,
       quote: snippet(this.chunk.text),
       context: this.parentText || this.chunk.text,
       heading_path: this.chunk.heading_path,
       page: this.chunk.page,
+      bbox: this.chunk.bbox,
       block_type: this.chunk.block_type,
       scores: {
         dense: Number(this.dense.toFixed(4)),
@@ -58,15 +93,22 @@ export interface RetrievalResult {
   asOf: string | null
 }
 
-async function loadCandidates(tenantId: string): Promise<Array<[ChunkRow, DocumentRow]>> {
-  const rows = await query<{ chunk: ChunkRow; document: DocumentRow }>(
-    `SELECT to_jsonb(c) AS chunk, to_jsonb(d) AS document
+async function loadCandidates(tenantId: string, asOf: string | null): Promise<Array<[ChunkRow, RetrievalDocument]>> {
+  const versionFilter = asOf
+    ? `v.id = (SELECT historical.id FROM document_versions historical
+               WHERE historical.doc_id = d.id
+                 AND historical.created_at < (($2::date + interval '1 day') AT TIME ZONE $3)
+               ORDER BY historical.created_at DESC, historical.version DESC LIMIT 1)`
+    : 'v.version = d.current_version'
+  const rows = await query<{ chunk: ChunkRow; document: RetrievalDocument }>(
+    `SELECT to_jsonb(c) AS chunk,
+            to_jsonb(d) || jsonb_build_object('selected_version', v.version) AS document
      FROM chunks c
      JOIN documents d ON c.doc_id = d.id
      JOIN document_versions v ON c.version_id = v.id
      WHERE d.tenant_id = $1 AND d.status = 'active'
-       AND v.version = d.current_version AND c.is_parent = false`,
-    [tenantId],
+       AND ${versionFilter} AND c.is_parent = false`,
+    asOf ? [tenantId, asOf, settings.timezone] : [tenantId],
   )
   return rows.map((row) => [row.chunk, row.document])
 }
@@ -83,7 +125,7 @@ function rrf(rankedLists: string[][]): Map<string, number> {
 
 export async function linkEntities(principal: Principal, text: string): Promise<EntityRow[]> {
   const entities = await query<EntityRow>(
-    'SELECT * FROM entities WHERE tenant_id = $1',
+    "SELECT * FROM entities WHERE tenant_id = $1 AND status = 'active'",
     [principal.tenantId],
   )
   const visible = entities.filter((entity) => canRead(principal, entity.acl_principals))
@@ -96,7 +138,10 @@ export async function linkEntities(principal: Principal, text: string): Promise<
   for (const entity of visible) {
     const names = new Set([entity.normalized_name.toLowerCase(), entity.canonical_name.toLowerCase()])
     for (const [key, entityId] of aliasMap) if (entityId === entity.id) names.add(key.toLowerCase())
-    if ([...names].some((name) => name && name.replace(/\s+/g, '').includes(normalizedQuery))) {
+    if (normalizedQuery && [...names].some((name) => {
+      const normalizedName = name.replace(/\s+/g, '')
+      return normalizedName && (normalizedQuery.includes(normalizedName) || normalizedName.includes(normalizedQuery))
+    })) {
       matched.push(entity)
     }
   }
@@ -116,6 +161,7 @@ export async function factsForEntities(
   principal: Principal,
   entities: EntityRow[],
   asOf: string | null = null,
+  allowedChunkIds?: Set<string>,
 ): Promise<Array<Record<string, unknown>>> {
   if (!entities.length) return []
   const entityIds = entities.map((entity) => entity.id)
@@ -139,49 +185,60 @@ export async function factsForEntities(
   const output: Array<Record<string, unknown>> = []
   for (const fact of facts) {
     if (!canRead(principal, fact.acl_principals)) continue
-    if (asOf) {
-      if (fact.valid_from && String(fact.valid_from).slice(0, 10) > asOf) continue
-      if (fact.valid_to && String(fact.valid_to).slice(0, 10) <= asOf) continue
-    }
+    if (!factIsEffective(fact, asOf)) continue
     const subject = await queryOne<EntityRow>('SELECT * FROM entities WHERE id = $1', [fact.subject_id])
     const object = fact.object_id
       ? await queryOne<EntityRow>('SELECT * FROM entities WHERE id = $1', [fact.object_id])
       : null
     const evidence = await query<{ chunk_id: string | null }>(
-      'SELECT chunk_id FROM fact_evidence WHERE fact_id = $1',
-      [fact.id],
+      `SELECT e.chunk_id FROM fact_evidence e
+       JOIN documents d ON d.id = e.doc_id
+       WHERE e.fact_id = $1 AND d.tenant_id = $2 AND d.status = 'active'`,
+      [fact.id, principal.tenantId],
     )
+    const chunkIds = evidence.map((row) => row.chunk_id)
+      .filter((id): id is string => Boolean(id) && (!allowedChunkIds || allowedChunkIds.has(id!)))
+    if (!chunkIds.length) continue
     output.push({
       fact_id: fact.id,
+      subject_id: fact.subject_id,
+      object_id: fact.object_id,
       subject: subject?.canonical_name ?? fact.subject_id,
       predicate: fact.predicate,
       object: object?.canonical_name ?? fact.object_literal,
-      valid_from: fact.valid_from ? String(fact.valid_from).slice(0, 10) : null,
-      valid_to: fact.valid_to ? String(fact.valid_to).slice(0, 10) : null,
+      valid_from: dateValue(fact.valid_from),
+      valid_to: dateValue(fact.valid_to),
       confidence: fact.confidence,
       status: fact.status,
-      evidence_chunk_ids: evidence.map((row) => row.chunk_id).filter(Boolean),
+      evidence_chunk_ids: chunkIds,
     })
   }
   return output
 }
 
+export interface RetrievalOptions {
+  topK?: number
+  docIds?: string[] | null
+  sourceType?: string | null
+  asOf?: string | null
+  recorder?: TraceRecorder | null
+  mode?: string
+  graphHops?: number
+}
+
 export async function retrieve(
   principal: Principal,
   text: string,
-  options: {
-    topK?: number
-    docIds?: string[] | null
-    sourceType?: string | null
-    asOf?: string | null
-    recorder?: TraceRecorder | null
-    mode?: string
-  } = {},
+  options: RetrievalOptions = {},
 ): Promise<RetrievalResult> {
   const started = Date.now()
-  const topK = options.topK ?? 8
+  text = text.trim()
+  if (!text) throw Object.assign(new Error('query 不能为空'), { statusCode: 400 })
+  const topK = Math.max(1, Math.min(100, Math.floor(Number(options.topK) || 8)))
   const mode = options.mode ?? 'quick'
-  let candidates = await loadCandidates(principal.tenantId)
+  const asOf = normalizeAsOf(options.asOf)
+  const graphHops = Math.max(1, Math.min(3, Math.floor(Number(options.graphHops) || (mode === 'graph' ? 2 : 1))))
+  let candidates = await loadCandidates(principal.tenantId, asOf)
   if (options.docIds?.length) {
     const allowed = new Set(options.docIds)
     candidates = candidates.filter((pair) => allowed.has(pair[1].id))
@@ -204,7 +261,7 @@ export async function retrieve(
       stats: { candidates: 0, visible: 0, rejected },
       rejectedCandidates: rejected,
       query: text,
-      asOf: options.asOf ?? null,
+      asOf,
     }
   }
 
@@ -238,7 +295,34 @@ export async function retrieve(
 
   t0 = Date.now()
   const entities = await linkEntities(principal, text)
-  const facts = await factsForEntities(principal, entities, options.asOf ?? null)
+  const visibleChunkIds = new Set(visible.map(([chunk]) => chunk.id))
+  const facts: Array<Record<string, unknown>> = []
+  const visitedEntities = new Set(entities.map((entity) => entity.id))
+  const visitedFacts = new Set<string>()
+  let frontier = entities
+  let traversedHops = 0
+  for (let hop = 0; hop < graphHops && frontier.length; hop += 1) {
+    traversedHops += 1
+    const connected = await factsForEntities(principal, frontier, asOf, visibleChunkIds)
+    const nextIds = new Set<string>()
+    for (const fact of connected) {
+      const factId = String(fact.fact_id)
+      if (!visitedFacts.has(factId) && facts.length < 200) {
+        visitedFacts.add(factId)
+        facts.push(fact)
+      }
+      for (const id of [fact.subject_id, fact.object_id]) {
+        if (typeof id === 'string' && !visitedEntities.has(id) && visitedEntities.size + nextIds.size < 100) nextIds.add(id)
+      }
+    }
+    if (!nextIds.size || facts.length >= 200) break
+    const nextEntities = await query<EntityRow>(
+      "SELECT * FROM entities WHERE tenant_id = $1 AND id = ANY($2) AND status = 'active'",
+      [principal.tenantId, [...nextIds]],
+    )
+    frontier = nextEntities.filter((entity) => canRead(principal, entity.acl_principals))
+    for (const entity of frontier) visitedEntities.add(entity.id)
+  }
   const graphChunkIds: string[] = []
   for (const fact of facts) {
     for (const chunkId of fact.evidence_chunk_ids as string[]) {
@@ -247,8 +331,8 @@ export async function retrieve(
   }
   options.recorder?.addSpan({
     stage: 'recall.graph',
-    params: { entities: entities.map((entity) => entity.canonical_name) },
-    output: { facts: facts.length, chunks: graphChunkIds.length },
+    params: { entities: entities.map((entity) => entity.canonical_name), max_hops: graphHops },
+    output: { facts: facts.length, chunks: graphChunkIds.length, traversed_hops: traversedHops },
     latencyMs: Date.now() - t0,
   })
 
@@ -269,7 +353,7 @@ export async function retrieve(
 
   t0 = Date.now()
   const reranked: Hit[] = []
-  for (const [chunkId, rrfScore] of [...fused.entries()].sort((a, b) => b[1] - a[1]).slice(0, 30)) {
+  for (const [chunkId, rrfScore] of [...fused.entries()].sort((a, b) => b[1] - a[1]).slice(0, Math.max(30, topK))) {
     const pair = byId.get(chunkId)
     if (!pair) continue
     const { chunk, document } = pair
@@ -278,16 +362,16 @@ export async function retrieve(
     const sparseNorm = maxSparse ? Math.min(1, sparse / maxSparse) : 0
     const coverage = keywordOverlap(queryTokens, chunk.text)
     const headingHit = keywordOverlap(queryTokens, `${(chunk.heading_path ?? []).join(' ')} ${document.title}`)
-    const phraseBonus = text.trim() && text.trim().includes(chunk.text) ? 0.08 : 0
+    const phraseBonus = chunk.text.toLowerCase().includes(text.toLowerCase()) ? 0.08 : 0
     const graphBonus = graphSet.has(chunkId) ? 0.07 : 0
-    const score =
+    const score = Math.max(0, Math.min(1,
       0.40 * dense +
       0.20 * sparseNorm +
       0.24 * coverage +
       0.06 * headingHit +
       phraseBonus +
       graphBonus +
-      Math.min(0.05, Math.max(0, (chunk.weight ?? 1) - 1) * 0.05)
+      Math.max(-0.05, Math.min(0.05, ((chunk.weight ?? 1) - 1) * 0.05))))
     reranked.push(
       new Hit(chunk, document, dense, sparseNorm, rrfScore, Number(score.toFixed(4)), coverage, graphSet.has(chunkId) ? 'graph' : 'chunk'),
     )
@@ -318,6 +402,7 @@ export async function retrieve(
       dense: denseRanked.length,
       sparse: sparseRanked.length,
       graph_chunks: graphChunkIds.length,
+      graph_hops: traversedHops,
       fused: fused.size,
       reranked: reranked.length,
       top_score: final[0]?.rerank ?? 0,
@@ -326,6 +411,6 @@ export async function retrieve(
     },
     rejectedCandidates: rejected,
     query: text,
-    asOf: options.asOf ?? null,
+    asOf,
   }
 }

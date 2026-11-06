@@ -44,29 +44,31 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
       filename: part.filename || 'document.txt',
       data,
       acl: parseAcl(fields.acl?.value),
+      documentId: typeof fields.doc_id?.value === 'string' ? fields.doc_id.value : null,
     })
   })
 
   app.post('/text', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
     requireEditor(principal)
-    const payload = request.body as { text?: string; title?: string; acl?: string[] }
+    const payload = request.body as { text?: string; title?: string; acl?: string[]; doc_id?: string }
     if (!payload?.text) throw Object.assign(new Error('text 不能为空'), { statusCode: 400 })
     return submitIngest(principal, 'text', {
       text: payload.text,
       title: payload.title ?? null,
       acl: payload.acl ?? null,
+      documentId: payload.doc_id ?? null,
     })
   })
 
   app.post('/url', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
     requireEditor(principal)
-    const payload = request.body as { url?: string; title?: string; acl?: string[] }
+    const payload = request.body as { url?: string; title?: string; acl?: string[]; doc_id?: string }
     if (!payload?.url || !/^https?:\/\//i.test(payload.url)) {
       throw Object.assign(new Error('仅支持 http/https URL'), { statusCode: 400 })
     }
-    return submitIngest(principal, 'url', { url: payload.url, title: payload.title ?? null, acl: payload.acl ?? null })
+    return submitIngest(principal, 'url', { url: payload.url, title: payload.title ?? null, acl: payload.acl ?? null, documentId: payload.doc_id ?? null })
   })
 
   app.get('/jobs', { preHandler: authenticate }, async (request) => {
@@ -127,11 +129,14 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
       'SELECT * FROM document_versions WHERE doc_id = $1 ORDER BY version DESC',
       [document.id],
     )
+    const requestedVersion = (request.query as { version_id?: string }).version_id
+    const selectedVersion = requestedVersion ? versions.find((version) => version.id === requestedVersion) : versions.find((version) => version.version === document.current_version)
+    if (!selectedVersion) throw Object.assign(new Error('文档版本不存在'), { statusCode: 404 })
     const chunks = await query<ChunkRow>(
       `SELECT * FROM chunks WHERE doc_id = $1 AND is_parent = false
-         AND version_id IN (SELECT id FROM document_versions WHERE doc_id = $1 AND version = $2)
-       ORDER BY seq LIMIT 60`,
-      [document.id, document.current_version],
+         AND version_id = $2
+       ORDER BY seq`,
+      [document.id, selectedVersion.id],
     )
     const evidence = await query<{ fact_id: string }>('SELECT fact_id FROM fact_evidence WHERE doc_id = $1', [document.id])
     const facts = []
@@ -158,7 +163,8 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
         chars: version.text.length,
         created_at: version.created_at,
       })),
-      chunks: chunks.map((chunk) => chunkDict(chunk, document)),
+      source: { version_id: selectedVersion.id, version: selectedVersion.version, text: selectedVersion.text, parser: selectedVersion.parser, coordinate_system: selectedVersion.meta.coordinate_system ?? null },
+      chunks: chunks.map((chunk) => ({ ...chunkDict(chunk, document), version_id: selectedVersion.id, bbox: chunk.bbox, spans: (selectedVersion.meta.chunk_spans as Record<string, unknown> | undefined)?.[chunk.id] ?? [] })),
       facts,
       entities,
     }

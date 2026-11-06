@@ -44,7 +44,7 @@ KnoWeave 使用 PostgreSQL 作为唯一真相源。Qdrant 里的向量、图里�
 
 ## 组件选型
 
-KnoWeave 采用 Qdrant 作为向量索引，使用 BGE-M3 同时提供稠密与稀疏向量。解析与向量化下沉到无状态的 Python 边车，主路径不跨语言依赖。大模型交互由内嵌的 DeepSeek Harness 负责，业务代码只依赖 LLMHarness 接口。
+KnoWeave 采用 Qdrant 作为向量索引，使用 BGE-M3 同时提供稠密与稀疏向量。解析与向量化下沉到无状态的 Python 边车，主路径不跨语言依赖。大模型交互由内嵌的智能体引擎负责，业务代码只依赖统一模型接口。
 
 ## 对外能力
 

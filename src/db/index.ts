@@ -57,6 +57,14 @@ async function createDriver(): Promise<Driver> {
   const { PGlite } = await import('@electric-sql/pglite')
   const pglite = new PGlite(join(settings.dataDir, 'pglite'))
   await pglite.waitReady
+  // A PGlite instance owns one connection. Keep transactions exclusive while
+  // allowing their client queries to run directly inside the queued operation.
+  let pending: Promise<void> = Promise.resolve()
+  const serialize = <T>(operation: () => Promise<T>): Promise<T> => {
+    const result = pending.then(operation)
+    pending = result.then(() => undefined, () => undefined)
+    return result
+  }
   const client: DbClient = {
     async query<T = Record<string, unknown>>(text: string, params: unknown[] = []) {
       const result = await pglite.query<T>(text, params as unknown[])
@@ -65,25 +73,29 @@ async function createDriver(): Promise<Driver> {
   }
   return {
     async query(text, params) {
-      const result = await pglite.query(text, params as unknown[])
-      return { rows: result.rows }
+      return serialize(async () => {
+        const result = await pglite.query(text, params as unknown[])
+        return { rows: result.rows }
+      })
     },
     async exec(text) {
-      await pglite.exec(text)
+      await serialize(() => pglite.exec(text).then(() => undefined))
     },
     async transaction(fn) {
-      await pglite.query('BEGIN')
-      try {
-        const result = await fn(client)
-        await pglite.query('COMMIT')
-        return result
-      } catch (error) {
-        await pglite.query('ROLLBACK')
-        throw error
-      }
+      return serialize(async () => {
+        await pglite.query('BEGIN')
+        try {
+          const result = await fn(client)
+          await pglite.query('COMMIT')
+          return result
+        } catch (error) {
+          await pglite.query('ROLLBACK')
+          throw error
+        }
+      })
     },
     async close() {
-      await pglite.close()
+      await serialize(() => pglite.close())
     },
   }
 }

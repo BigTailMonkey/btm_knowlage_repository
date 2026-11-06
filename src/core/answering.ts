@@ -4,11 +4,12 @@ import { tokenize } from '../adapters/embeddings/index.js'
 import { harness } from '../adapters/harness/index.js'
 import { newId } from './ids.js'
 import type { ChunkRow, DocumentRow, EntityRow } from './rows.js'
-import { retrieve, RetrievalResult, Hit } from './retrieval.js'
+import { retrieve, RetrievalResult, Hit, normalizeAsOf } from './retrieval.js'
 import { Principal } from './security.js'
 import { TraceRecorder } from './tracing.js'
+import { validateGrounding, type GroundingCheck } from './grounding.js'
 
-const CITATION = /\[(\d{1,2})\]/g
+const CITATION = /\[(\d+)\]/g
 const REFUSAL_MARKERS = ['REFUSE', '资料不足', '不足以回答', '无法回答', '没有足够']
 const FOLLOW_UP = /(它|他|她|这|那|该|此|其|上面|刚才|之前|上述|前面|还有|继续|再|那么)/
 
@@ -48,7 +49,7 @@ function formatEvidence(hits: Hit[], facts: Array<Record<string, unknown>>, memo
     const heading = hit.chunk.heading_path?.join(' / ') || '正文'
     const page = hit.chunk.page ? `第 ${hit.chunk.page} 页 | ` : ''
     blocks.push(
-      `[${index + 1}] 《${hit.document.title}》 | ${page}章节：${heading}\n${(hit.parentText || hit.chunk.text).slice(0, 1600)}`,
+      `[${index + 1}] 《${hit.document.title}》 | ${page}章节：${heading}\n${hit.chunk.text}\n${hit.parentText && hit.parentText !== hit.chunk.text ? `补充上下文：${hit.parentText.slice(0, 1600)}` : ''}`,
     )
   })
   if (facts.length) {
@@ -71,7 +72,8 @@ function formatEvidence(hits: Hit[], facts: Array<Record<string, unknown>>, memo
 
 async function memoryContext(principal: Principal, question: string): Promise<MemoryRow[]> {
   const rows = await query<MemoryRow>(
-    'SELECT id, text FROM memory_items WHERE tenant_id = $1 AND user_id = $2',
+    `SELECT id, text FROM memory_items WHERE tenant_id = $1 AND user_id = $2
+       AND (expires_at IS NULL OR expires_at > now())`,
     [principal.tenantId, principal.userId],
   )
   const queryTokens = new Set(tokenize(question))
@@ -118,7 +120,7 @@ function splitSentences(text: string): string[] {
     .filter(Boolean)
 }
 
-function extractiveAnswer(question: string, hits: Hit[]): string {
+function extractiveAnswer(question: string, hits: Hit[], mode: string): string {
   const queryTokens = new Set(tokenize(question))
   const selected: string[] = []
   for (const [index, hit] of hits.slice(0, 4).entries()) {
@@ -131,11 +133,15 @@ function extractiveAnswer(question: string, hits: Hit[]): string {
     for (const [overlap, sentence] of scored.slice(0, 2)) {
       if (sentence.length < 8) continue
       if (overlap === 0 && selected.length) continue
-      selected.push(`${sentence} [${index + 1}]`)
+      selected.push(mode === 'compare'
+        ? `| ${hit.document.title.replace(/\|/g, '／')} | ${sentence.replace(/\|/g, '／')} [${index + 1}] |`
+        : `- ${sentence} [${index + 1}]`)
     }
     if (selected.length >= 5) break
   }
-  return selected.length ? `根据现有资料：${selected.join('')}` : ''
+  return selected.length
+    ? mode === 'compare' ? `| 来源 | 原文依据 |\n| --- | --- |\n${selected.join('\n')}` : `根据现有资料：\n${selected.join('\n')}`
+    : ''
 }
 
 function refusal(hits: Hit[]): string {
@@ -180,10 +186,29 @@ async function upsertGap(principal: Principal, question: string): Promise<void> 
 function subqueries(question: string, mode: string): string[] {
   if (!['deep', 'compare'].includes(mode)) return [question]
   const parts = question
-    .split(/[；;？?]|以及|并且|\bvs\b|对比|比较/)
+    .split(mode === 'compare' ? /[；;？?、]|以及|并且|\bvs\b|对比|比较|与|和/ : /[；;？?]|以及|并且/)
     .map((part) => part.trim())
-    .filter((part) => part.length >= 4)
-  return parts.length <= 1 ? [question] : [question, ...parts.slice(0, 3)]
+    .map((part) => part.replace(/(?:有什么)?(?:区别|不同|优缺点)[？?]?$/, '').trim())
+    .filter((part) => part.length >= 2)
+  return [...new Set([question, ...parts])].slice(0, 4)
+}
+
+async function reflectQueries(question: string, hits: Hit[], tried: Set<string>, recorder: TraceRecorder, round: number): Promise<string[]> {
+  const prompt = `将知识库问题改写成最多3条用于补充证据的检索语句。不要回答问题，不要重复已检索内容。只返回JSON：{"queries":["..."]}。\n问题：${question}\n已检索：${JSON.stringify([...tried])}\n已有线索：${hits.slice(0, 3).map((hit) => `${hit.document.title}: ${hit.chunk.text.slice(0, 200)}`).join('\n')}`
+  let queries: string[] = []
+  try {
+    const result = await harness.complete(prompt, '你是知识库检索规划器，只改写查询，不生成事实。', 600)
+    const json = /\{[\s\S]*\}/.exec(result.text)?.[0]
+    const parsed = json ? JSON.parse(json) as { queries?: unknown } : null
+    if (Array.isArray(parsed?.queries)) queries = parsed.queries.filter((value): value is string => typeof value === 'string').map((value) => value.trim()).filter((value) => value.length >= 2 && value.length <= 300)
+  } catch { /* A missing planning model must not prevent source-based answers. */ }
+  if (!queries.length) {
+    const terms = [...new Set(tokenize(question).filter((token) => token.length >= 2))].slice(0, 10)
+    if (terms.length) queries.push(terms.join(' '))
+  }
+  queries = [...new Set(queries)].filter((value) => !tried.has(value)).slice(0, 3)
+  recorder.addSpan({ stage: 'retrieve.reflect', params: { round }, output: { queries }, inputValue: prompt })
+  return queries
 }
 
 interface Citation {
@@ -191,6 +216,7 @@ interface Citation {
   chunk_id: string
   doc_id: string
   doc_title: string
+  version_id: string
   page: number | null
   heading_path: string[]
   quote: string
@@ -212,8 +238,9 @@ export async function ask(
   const question = (input.question ?? '').trim()
   if (!question) throw Object.assign(new Error('问题不能为空'), { statusCode: 400 })
   const mode = input.mode ?? 'quick'
-  const topK = input.topK ?? 6
-  const asOf = input.asOf ?? null
+  if (!['quick', 'deep', 'graph', 'timeline', 'compare'].includes(mode)) throw Object.assign(new Error('不支持的问答模式'), { statusCode: 400 })
+  const topK = Math.min(30, Math.max(1, Math.floor(Number(input.topK) || 6)))
+  const asOf = normalizeAsOf(input.asOf ?? null)
   const recorder = new TraceRecorder(principal.tenantId, principal.userId, 'ask', question)
   recorder.addSpan({ stage: 'intent', params: { mode, as_of: asOf }, output: { question } })
 
@@ -227,18 +254,27 @@ export async function ask(
   const expandedQuestion = retrievalQuestion(question, history)
   recorder.addSpan({ stage: 'context.history', output: { messages: history.length, retrieval_question: expandedQuestion } })
 
-  const queries = subqueries(expandedQuestion, mode)
+  const memoryText = /^(?:请)?(?:帮我)?(?:记住|记一下|记下)(?:这个|以下内容)?[：:，,\s]*([\s\S]+)$/.exec(question)?.[1]?.trim()
+  const queries = memoryText ? [] : subqueries(expandedQuestion, mode)
   const results: RetrievalResult[] = []
   const merged = new Map<string, Hit>()
   const facts: Array<Record<string, unknown>> = []
-  for (const [index, subquery] of queries.entries()) {
-    const result = await retrieve(principal, subquery, {
+  const tried = new Set<string>()
+  let threshold = settings.rerankThreshold
+  if (['deep', 'compare'].includes(mode)) threshold *= 0.85
+  let pendingQueries = queries
+  let rounds = 0
+  while (pendingQueries.length && rounds < (mode === 'deep' ? 3 : 1)) {
+    rounds += 1
+    pendingQueries.forEach((value) => tried.add(value))
+    const batch = await Promise.all(pendingQueries.map((subquery) => retrieve(principal, subquery, {
       topK: ['deep', 'compare'].includes(mode) ? topK * 3 : topK,
       asOf,
-      recorder: index === 0 ? recorder : null,
+      recorder,
       mode,
       docIds: input.docIds ?? null,
-    })
+    })))
+    for (const result of batch) {
     results.push(result)
     for (const hit of result.hits) {
       const existing = merged.get(hit.chunk.id)
@@ -247,18 +283,27 @@ export async function ask(
     for (const fact of result.facts) {
       if (!facts.some((item) => item.fact_id === fact.fact_id)) facts.push(fact)
     }
+    }
+    if (mode !== 'deep' || rounds >= 3 || [...merged.values()].some((hit) => hit.rerank >= threshold)) break
+    pendingQueries = await reflectQueries(expandedQuestion, [...merged.values()], tried, recorder, rounds)
   }
 
   const hits = [...merged.values()].sort((a, b) => b.rerank - a.rerank).slice(0, topK)
   const memories = await memoryContext(principal, question)
   const topScore = hits[0]?.rerank ?? 0
-  let threshold = settings.rerankThreshold
-  if (['deep', 'compare'].includes(mode)) threshold *= 0.85
   let refused = !hits.length || topScore < threshold
   let answer: string
   let citations: Citation[] = []
+  let grounding: GroundingCheck = { valid: false, coverage: 0, sentences: 0, supported: 0, quotes: {}, reason: null }
+  let answerStrategy = 'generated'
 
-  if (refused) {
+  if (memoryText) {
+    const existing = await queryOne<{ id: string }>('SELECT id FROM memory_items WHERE tenant_id = $1 AND user_id = $2 AND text = $3 AND (expires_at IS NULL OR expires_at > now())', [principal.tenantId, principal.userId, memoryText])
+    if (!existing) await query(`INSERT INTO memory_items (id, tenant_id, user_id, scope, kind, text, confidence) VALUES ($1, $2, $3, 'personal', 'conversation_note', $4, 0.7)`, [newId('mem'), principal.tenantId, principal.userId, memoryText])
+    answer = '已记入个人记忆，可在记忆页查看与删除。'
+    refused = false
+    answerStrategy = 'memory'
+  } else if (refused) {
     answer = refusal(hits)
   } else {
     const evidence = formatEvidence(hits, facts, memories)
@@ -269,7 +314,7 @@ ${evidence}
 问题：${question}
 回答模式：${mode}${asOf ? `；时间切片：${asOf}` : ''}
 
-请严格按规则回答。`
+请严格按规则回答。${mode === 'compare' ? '请使用Markdown对比表格，每一行附证据引用；不要编造缺失的对比项。' : ''}`
     const generated = await harness.ask(
       conversation?.id ?? newId('ask'),
       prompt,
@@ -290,28 +335,31 @@ ${evidence}
     })
     if (generated.ok) recorder.recordUsage(generated, 'ask', 'answer.generate', span.id)
 
-    const text = generated.text.trim()
+    const text = generated.ok ? generated.text.trim() : ''
     const isRefusal = REFUSAL_MARKERS.some((marker) => text.includes(marker))
     if (isRefusal) {
       answer = refusal(hits)
       refused = true
-    } else if (!text) {
-      answer = extractiveAnswer(expandedQuestion, hits) || refusal(hits)
-      refused = !answer.startsWith('根据现有资料')
     } else {
+      grounding = validateGrounding(text, hits.map((hit) => ({ text: hit.chunk.text })))
       answer = text
+      if (!grounding.valid || (mode === 'compare' && !/^\s*\|.+\|\s*\n\s*\|[-\s|:]+\|/m.test(answer))) {
+        answerStrategy = 'extractive_fallback'
+        answer = extractiveAnswer(expandedQuestion, hits, mode)
+        grounding = validateGrounding(answer, hits.map((hit) => ({ text: hit.chunk.text })))
+      }
+      if (!grounding.valid) {
+        answer = refusal(hits)
+        refused = true
+      }
       const indices = new Set(
         [...answer.matchAll(CITATION)].map((match) => Number(match[1])).filter((index) => index >= 1 && index <= hits.length),
       )
-      citations = [...indices].sort((a, b) => a - b).map((index) => toCitation(index, hits[index - 1]!))
-      if (!citations.length) {
-        citations = hits.slice(0, 3).map((hit, position) => toCitation(position + 1, hit))
-        answer += '\n\n（注：模型未逐句标注引用，以上依据按相关度附上。）'
-      }
+      citations = refused ? [] : [...indices].sort((a, b) => a - b).map((index) => toCitation(index, hits[index - 1]!, grounding.quotes[index]))
     }
   }
 
-  const score = confidence(answer, hits, refused)
+  const score = memoryText ? 1 : confidence(answer, hits, refused)
   if (refused) await upsertGap(principal, question)
 
   let activeConversation = conversation
@@ -335,11 +383,11 @@ ${evidence}
      VALUES ($1, $2, 'assistant', $3, $4, $5, $6, $7)`,
     [assistantId, activeConversation.id, answer, mode, recorder.latencyMs, recorder.traceId, score],
   )
-  for (const [rank, citation] of citations.entries()) {
+  for (const citation of citations) {
     await query(
       `INSERT INTO citations (id, message_id, chunk_id, doc_id, quote, page, rank)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [newId('cit'), assistantId, citation.chunk_id, citation.doc_id, citation.quote, citation.page, rank + 1],
+      [newId('cit'), assistantId, citation.chunk_id, citation.doc_id, citation.quote, citation.page, citation.index],
     )
   }
 
@@ -353,6 +401,8 @@ ${evidence}
     retrieval: results.map((result) => result.stats),
     confidence: score,
     citations: citations.length,
+    retrieval_rounds: rounds,
+    answer_strategy: answerStrategy,
   }
   await recorder.finish(answer, refused ? 'refused' : 'ok')
   if (recorder.hasUsage) {
@@ -388,24 +438,29 @@ ${evidence}
       threshold: Number(threshold.toFixed(4)),
       evidence_count: hits.length,
       rejected_candidates: results.reduce((sum, result) => sum + result.rejectedCandidates, 0),
-      subqueries: queries,
+      subqueries: [...tried],
+      retrieval_rounds: rounds,
     },
     grounding: {
-      citation_coverage: citations.length / Math.max(1, hits.length),
-      note: '每个事实性句子应绑定引用；未逐句引用时已显式提示。',
+      citation_coverage: grounding.coverage,
+      sentences: grounding.sentences,
+      supported_sentences: grounding.supported,
+      strategy: answerStrategy,
+      note: answerStrategy === 'extractive_fallback' ? '生成回答未通过证据核对，已返回带引用的原文摘录。' : '逐句核对引用编号、数字与文字证据。',
     },
   }
 }
 
-function toCitation(index: number, hit: Hit): Citation {
+function toCitation(index: number, hit: Hit, quote?: string): Citation {
   return {
     index,
     chunk_id: hit.chunk.id,
     doc_id: hit.document.id,
     doc_title: hit.document.title,
+    version_id: hit.chunk.version_id,
     page: hit.chunk.page,
     heading_path: hit.chunk.heading_path,
-    quote: hit.chunk.text.slice(0, 420),
+    quote: quote || hit.chunk.text,
     rerank: hit.rerank,
   }
 }

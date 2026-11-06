@@ -9,6 +9,15 @@ export interface ParsedBlock {
   order: number
 }
 
+/** UTF-16 offsets into document_versions.text (the normalized, parsed text). */
+export interface ChunkSourceSpan {
+  blockOrder: number
+  start: number
+  end: number
+  page: number | null
+  bbox: number[] | null
+}
+
 export interface ChunkDraft {
   id: string
   seq: number
@@ -20,10 +29,12 @@ export interface ChunkDraft {
   tokenCount: number
   parentId: string | null
   isParent: boolean
+  sourceSpans: ChunkSourceSpan[]
 }
 
-export const MAX_CHARS = 460
-const OVERLAP = 60
+export const MAX_TOKENS = 512
+const OVERLAP_TOKENS = 64
+const ATOMIC_TYPES = new Set(['table', 'code', 'formula'])
 
 export function estimateTokens(text: string): number {
   let chinese = 0
@@ -35,124 +46,156 @@ export function estimateTokens(text: string): number {
   return Math.max(1, Math.floor(chinese / 1.7 + others / 4))
 }
 
-function child(
-  parentId: string,
-  seq: number,
-  key: string[],
-  first: ParsedBlock,
-  text: string,
-  blockType: string,
-): ChunkDraft {
-  return {
-    id: newId('ch'),
-    seq,
-    headingPath: key,
-    page: first.page,
-    bbox: first.bbox,
-    blockType,
-    text,
-    tokenCount: estimateTokens(text),
-    parentId,
-    isParent: false,
-  }
+interface Segment {
+  block: ParsedBlock
+  base: number
+  start: number
+  end: number
 }
 
-function splitLong(text: string): string[] {
-  if (text.length <= MAX_CHARS) return [text]
-  const sentences: string[] = []
-  let start = 0
-  for (let index = 0; index < text.length; index += 1) {
-    const ch = text[index]
-    if ('。！？!?；;\n'.includes(ch ?? '') && index + 1 - start >= 80) {
-      sentences.push(text.slice(start, index + 1).trim())
-      start = index + 1
-    }
-  }
-  if (start < text.length) sentences.push(text.slice(start).trim())
+function segmentText(segment: Segment): string {
+  return segment.block.text.slice(segment.start, segment.end)
+}
 
-  const pieces: string[] = []
-  let buffer = ''
-  for (const sentence of sentences) {
-    if (buffer.length + sentence.length <= MAX_CHARS) {
-      buffer += sentence
-      continue
-    }
-    if (buffer) pieces.push(buffer.trim())
-    if (sentence.length > MAX_CHARS) {
-      for (let i = 0; i < sentence.length; i += MAX_CHARS) {
-        pieces.push(sentence.slice(i, i + MAX_CHARS).trim())
-      }
-      buffer = ''
-    } else {
-      buffer = sentence
-    }
+function body(segments: Segment[]): string {
+  return segments.map(segmentText).join('\n\n')
+}
+
+function trimRange(text: string, start: number, end: number): [number, number] {
+  while (start < end && /\s/.test(text[start]!)) start += 1
+  while (end > start && /\s/.test(text[end - 1]!)) end -= 1
+  return [start, end]
+}
+
+function sourceSpans(segments: Segment[]): ChunkSourceSpan[] {
+  return segments.map(({ block, base, start, end }) => ({
+    blockOrder: block.order, start: base + start, end: base + end,
+    page: block.page, bbox: block.bbox,
+  }))
+}
+
+function boundingBox(segments: Segment[]): number[] | null {
+  if (segments.some(({ block }) => !block.bbox || block.bbox.length !== 4)) return null
+  const boxes = segments.map(({ block }) => block.bbox!)
+  return [
+    Math.min(...boxes.map((box) => box[0]!)), Math.min(...boxes.map((box) => box[1]!)),
+    Math.max(...boxes.map((box) => box[2]!)), Math.max(...boxes.map((box) => box[3]!)),
+  ]
+}
+
+/** Find a token-sized suffix without cutting a UTF-16 surrogate pair. */
+function suffixStart(text: string, start: number, end: number, tokens: number): number {
+  let cursor = end
+  let units = 0
+  while (cursor > start) {
+    let previous = cursor - 1
+    if (previous > start && /[\uDC00-\uDFFF]/.test(text[previous]!)) previous -= 1
+    const character = text.slice(previous, cursor)
+    const code = character.codePointAt(0) ?? 0
+    const cost = (code >= 0x3400 && code <= 0x9fff) || (code >= 0xf900 && code <= 0xfaff)
+      ? 1 / 1.7 : character.length / 4
+    if (units + cost > tokens) break
+    units += cost
+    cursor = previous
   }
-  if (buffer) pieces.push(buffer.trim())
-  return pieces.filter(Boolean)
+  return cursor
+}
+
+function splitParagraph(segment: Segment): Segment[] {
+  const { block } = segment
+  const pieces: Segment[] = []
+  let start = segment.start
+  while (start < segment.end) {
+    let end = start
+    let units = 0
+    let sentenceEnd = start
+    while (end < segment.end) {
+      const character = String.fromCodePoint(block.text.codePointAt(end)!)
+      const code = character.codePointAt(0)!
+      const cost = (code >= 0x3400 && code <= 0x9fff) || (code >= 0xf900 && code <= 0xfaff)
+        ? 1 / 1.7 : character.length / 4
+      if (units + cost > MAX_TOKENS) break
+      units += cost
+      end += character.length
+      if (units >= MAX_TOKENS / 2 && /[。！？!?；;\n]/.test(character)) sentenceEnd = end
+    }
+    if (end < segment.end && sentenceEnd > start) end = sentenceEnd
+    const [trimmedStart, trimmedEnd] = trimRange(block.text, start, end)
+    if (trimmedEnd > trimmedStart) pieces.push({ ...segment, start: trimmedStart, end: trimmedEnd })
+    if (end >= segment.end) break
+    const overlapStart = suffixStart(block.text, start, end, OVERLAP_TOKENS)
+    start = overlapStart > start ? overlapStart : end
+  }
+  return pieces
 }
 
 export function chunkBlocks(blocks: ParsedBlock[]): ChunkDraft[] {
-  const sections = new Map<string, { key: string[]; blocks: ParsedBlock[] }>()
-  const order: string[] = []
+  // Offsets follow ingestion's join, even for empty blocks.
+  let offset = 0
+  const sections: Array<{ key: string[]; segments: Segment[] }> = []
   for (const block of blocks) {
-    const key = block.headingPath.length ? block.headingPath : ['正文']
-    const id = key.join('\u0000')
-    if (!sections.has(id)) {
-      sections.set(id, { key, blocks: [] })
-      order.push(id)
+    const base = offset
+    offset += block.text.length + 2
+    const trimmed = trimRange(block.text, 0, block.text.length)
+    if (trimmed[1] <= trimmed[0]) continue
+    const [start, end] = ATOMIC_TYPES.has(block.type) ? [0, block.text.length] : trimmed
+    const key = block.headingPath.length ? [...block.headingPath] : ['正文']
+    let section = sections.at(-1)
+    if (!section || JSON.stringify(section.key) !== JSON.stringify(key)) {
+      section = { key, segments: [] }
+      sections.push(section)
     }
-    sections.get(id)!.blocks.push(block)
+    section.segments.push({ block, base, start, end })
   }
 
   const chunks: ChunkDraft[] = []
   let seq = 0
-  for (const sectionId of order) {
-    const section = sections.get(sectionId)!
-    const body = section.blocks.map((block) => block.text).join('\n\n').trim()
-    if (!body) continue
-    const first = section.blocks[0]!
+  for (const section of sections) {
     const parentId = newId('ch')
-    chunks.push({
-      id: parentId,
-      seq,
-      headingPath: section.key,
-      page: first.page,
-      bbox: first.bbox,
-      blockType: 'section',
-      text: body,
-      tokenCount: estimateTokens(body),
-      parentId: null,
-      isParent: true,
-    })
-    seq += 1
-
-    let pending = ''
-    let overlapTail = ''
-    for (const block of section.blocks) {
-      const text = block.text.trim()
-      if (!text) continue
-      const atomic = block.type === 'table' || block.type === 'code'
-      const pieces = atomic
-        ? text.length <= MAX_CHARS * 1.6
-          ? [text]
-          : splitLong(text)
-        : splitLong(text)
-      for (const piece of pieces) {
-        const candidate = pending ? `${pending}\n\n${piece}`.trim() : piece
-        if (candidate.length <= MAX_CHARS || !pending) {
-          pending = candidate
-          continue
-        }
-        chunks.push(child(parentId, seq, section.key, first, pending, block.type))
-        seq += 1
-        overlapTail = pending.slice(-OVERLAP)
-        pending = overlapTail ? `${overlapTail}\n\n${piece}`.trim() : piece
+    const emit = (segments: Segment[], blockType: string, isParent = false) => {
+      if (!segments.length) return
+      const text = body(segments)
+      const pages = new Set(segments.map(({ block }) => block.page))
+      chunks.push({
+        id: isParent ? parentId : newId('ch'), seq: seq++, headingPath: section.key,
+        page: pages.size === 1 ? segments[0]!.block.page : null,
+        bbox: pages.size === 1 ? boundingBox(segments) : null,
+        blockType, text, tokenCount: estimateTokens(text),
+        parentId: isParent ? null : parentId, isParent,
+        sourceSpans: sourceSpans(segments),
+      })
+    }
+    emit(section.segments, 'section', true)
+    let pending: Segment[] = []
+    const flush = () => {
+      emit(pending, pending.length === 1 ? pending[0]!.block.type : 'paragraph')
+      pending = []
+    }
+    for (const segment of section.segments) {
+      if (ATOMIC_TYPES.has(segment.block.type)) {
+        flush()
+        // Atomic structures can exceed the text budget. Their tails are never
+        // duplicated into another block or detached from the structure.
+        emit([segment], segment.block.type)
+        continue
       }
+      const pieces = splitParagraph(segment)
+      if (pieces.length > 1) {
+        flush()
+        for (const piece of pieces) emit([piece], segment.block.type)
+        continue
+      }
+      const piece = pieces[0]!
+      if (pending.length && pending[0]!.block.page !== piece.block.page) flush()
+      if (pending.length && estimateTokens(body([...pending, piece])) > MAX_TOKENS) {
+        const previous = pending.at(-1)!
+        const tail = { ...previous, start: suffixStart(previous.block.text, previous.start, previous.end, OVERLAP_TOKENS) }
+        flush()
+        if (estimateTokens(body([tail, piece])) <= MAX_TOKENS) pending.push(tail)
+      }
+      pending.push(piece)
     }
-    if (pending.trim()) {
-      chunks.push(child(parentId, seq, section.key, first, pending.trim(), section.blocks.at(-1)!.type))
-      seq += 1
-    }
+    flush()
   }
   return chunks
 }

@@ -55,6 +55,25 @@ function dshBin(): string {
   return join(settings.rootDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 }
 
+/** 用独立补丁加载知织界面，保留用户已有的运行时配置与完整对话功能。 */
+function ensureBrandingPatch(): string {
+  const patchPath = join(settings.dshWebHome, 'knowweave-branding.patch.yml')
+  const pluginPath = join(settings.rootDir, 'src', 'adapters', 'dsh-web', 'branding', 'index.mjs')
+  const content = [
+    '# managed by KnoWeave',
+    '- id: ui-brand-official',
+    '  disabled: true',
+    '- insert:',
+    '    - id: knowweave-branding',
+    `      name: ${JSON.stringify(pluginPath)}`,
+    '',
+  ].join('\n')
+  if (!existsSync(patchPath) || readFileSync(patchPath, 'utf8') !== content) {
+    writeFileSync(patchPath, content, 'utf8')
+  }
+  return patchPath
+}
+
 function scheduleRestart(): void {
   if (shuttingDown || restartTimer) return
   const delay = Math.min(30_000, 1_000 * 2 ** Math.min(restartAttempts, 5))
@@ -80,16 +99,17 @@ function capture(line: string): void {
 
 async function spawnAndWait(): Promise<void> {
   if (!existsSync(dshBin())) {
-    lastError = `找不到 dsh 运行时：${dshBin()}`
+    lastError = '找不到对话服务运行时，请先安装项目依赖'
     return
   }
   mkdirSync(settings.dshWebHome, { recursive: true })
   mkdirSync(settings.dshRuntimeCwd, { recursive: true })
   ensureQuietProfile()
+  const brandingPatch = ensureBrandingPatch()
 
   child = spawn(
     process.execPath,
-    [dshBin(), '--profile', 'web', '--no-open', '--port', String(settings.dshWebPort)],
+    [dshBin(), '--profile', 'web', '--patch', brandingPatch, '--no-open', '--port', String(settings.dshWebPort)],
     {
       cwd: settings.dshRuntimeCwd,
       env: {
@@ -114,7 +134,7 @@ async function spawnAndWait(): Promise<void> {
     managed = false
     ready = false
     if (!expected) {
-      lastError = `DSH Web 退出（code=${code ?? '-'} signal=${signal ?? '-'}）`
+      lastError = `对话服务退出（code=${code ?? '-'} signal=${signal ?? '-'}）`
       scheduleRestart()
     }
   })
@@ -131,7 +151,7 @@ async function spawnAndWait(): Promise<void> {
     if (child === null) return
     await new Promise((resolve) => setTimeout(resolve, 300))
   }
-  lastError = 'DSH Web 启动超时'
+  lastError = '对话服务启动超时'
   child?.kill('SIGKILL')
 }
 
@@ -145,9 +165,9 @@ export function ensureDshWeb(): Promise<void> {
   return starting
 }
 
-/** 启动即返回，不阻塞主服务；前端按状态轮询。 */
+/** 可选的独立运行时调试界面，不作为知识库聊天入口。 */
 export function startDshWeb(): void {
-  if (!settings.dshWebEnabled) return
+  if (!settings.dshWebEnabled || !settings.dshWebAutoStart) return
   void ensureDshWeb()
 }
 

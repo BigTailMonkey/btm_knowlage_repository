@@ -19,7 +19,7 @@ export interface ParsedBlock {
 }
 
 const HEADING = /^(#{1,6})\s+(.*)$/
-const CJK_SPACE = /(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])/
+const CJK_SPACE = /(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])/g
 
 function quality(text: string): number {
   if (!text.trim()) return 0
@@ -49,35 +49,53 @@ export function parseText(text: string, title: string): ParsedDocument {
 export function parseMarkdown(text: string, title: string): ParsedDocument {
   const blocks: ParsedBlock[] = []
   const headingStack: Array<[number, string]> = []
+  const lines = text.split('\n')
   let buffer: string[] = []
-  let inCode = false
-  let codeLines: string[] = []
-
   const headingPath = (): string[] => headingStack.map(([, name]) => name)
   const flush = () => {
     const body = buffer.join('\n').trim()
     buffer = []
-    if (!body) return
-    const isTable = body.split('\n').every((line) => line.trim().startsWith('|'))
-    blocks.push(block(isTable ? 'table' : 'paragraph', body, headingPath(), blocks.length))
+    if (body) blocks.push(block('paragraph', body, headingPath(), blocks.length))
   }
-
-  for (const raw of text.split('\n')) {
+  const separator = /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/
+  for (let index = 0; index < lines.length; index += 1) {
+    const raw = lines[index]!
     const line = raw.replace(/\s+$/, '')
-    if (line.trim().startsWith('```')) {
-      if (inCode) {
-        const code = codeLines.join('\n').trim()
-        if (code) blocks.push(block('code', code, headingPath(), blocks.length))
-        codeLines = []
-        inCode = false
-      } else {
-        flush()
-        inCode = true
+    const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+    if (fence) {
+      flush()
+      const marker = fence[1]![0]!
+      const width = fence[1]!.length
+      const code: string[] = []
+      for (index += 1; index < lines.length; index += 1) {
+        const next = lines[index]!
+        const closing = next.trim()
+        if (closing.length >= width && [...closing].every((character) => character === marker)) break
+        code.push(next)
       }
+      const body = code.join('\n').replace(/^\n+|\n+$/g, '')
+      if (body.trim()) blocks.push(block('code', body, headingPath(), blocks.length))
       continue
     }
-    if (inCode) {
-      codeLines.push(raw)
+    if (line.trim().startsWith('$$')) {
+      flush()
+      const opening = line.trim().slice(2)
+      const formula: string[] = []
+      if (opening.endsWith('$$')) {
+        formula.push(opening.slice(0, -2))
+      } else {
+        if (opening) formula.push(opening)
+        for (index += 1; index < lines.length; index += 1) {
+          const next = lines[index]!
+          if (next.trimEnd().endsWith('$$')) {
+            formula.push(next.trimEnd().slice(0, -2))
+            break
+          }
+          formula.push(next)
+        }
+      }
+      const body = formula.join('\n').trim()
+      if (body) blocks.push(block('formula', body, headingPath(), blocks.length))
       continue
     }
     const match = HEADING.exec(line)
@@ -89,27 +107,21 @@ export function parseMarkdown(text: string, title: string): ParsedDocument {
       headingStack.push([level, name])
       continue
     }
-    if (!line.trim()) {
+    if (line.trim().startsWith('|') || (line.includes('|') && separator.test(lines[index + 1] ?? ''))) {
       flush()
+      const rows = [line]
+      while (index + 1 < lines.length && lines[index + 1]!.trim() && lines[index + 1]!.includes('|')) {
+        rows.push(lines[++index]!)
+      }
+      blocks.push(block('table', rows.join('\n').trim(), headingPath(), blocks.length))
       continue
     }
-    buffer.push(line)
+    if (!line.trim()) flush()
+    else buffer.push(line)
   }
   flush()
-  if (inCode && codeLines.length) blocks.push(block('code', codeLines.join('\n'), headingPath(), blocks.length))
-
-  const merged: ParsedBlock[] = []
-  for (const item of blocks) {
-    const previous = merged.at(-1)
-    if (previous && item.text.startsWith('|') && previous.text.startsWith('|')) {
-      previous.text += `\n${item.text}`
-    } else {
-      merged.push(item)
-    }
-  }
-  return { title, blocks: merged, parser: 'markdown', quality: quality(text), meta: { chars: text.length } }
+  return { title, blocks, parser: 'markdown', quality: quality(text), meta: { chars: text.length } }
 }
-
 function stripTags(text: string): string {
   return decodeEntities(text.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
 }
@@ -146,13 +158,16 @@ export function parseHtml(html: string, title: string, parserName = 'html'): Par
     }
     let type = 'paragraph'
     let text = stripTags(inner)
-    if (tag === 'pre') type = 'code'
+    if (tag === 'pre') {
+      type = 'code'
+      text = decodeEntities(inner.replace(/<[^>]+>/g, '')).replace(/^\n+|\n+$/g, '')
+    }
     if (tag === 'table') {
       type = 'table'
       text = [...inner.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)]
         .map((row) =>
-          [...(row[1] ?? '').matchAll(/<(?:th|td)[^>]*>([\s\S]*?)<\/\1>/gi)]
-            .map((cell) => stripTags(cell[1] ?? ''))
+          [...(row[1] ?? '').matchAll(/<(th|td)[^>]*>([\s\S]*?)<\/\1>/gi)]
+            .map((cell) => stripTags(cell[2] ?? ''))
             .join(' | '),
         )
         .join('\n')
@@ -208,6 +223,6 @@ export async function parseBytes(filename: string, data: Buffer, title?: string 
 }
 
 export function parseTextContent(text: string, title?: string | null): ParsedDocument {
-  if (HEADING.test(text ?? '')) return parseMarkdown(text, title || '粘贴的文本')
+  if (/^(?:#{1,6}\s|\s*(?:`{3,}|~{3,}|\$\$|\|))|^.*\|.*\n\s*\|?\s*:?-{3,}/m.test(text ?? '')) return parseMarkdown(text, title || '粘贴的文本')
   return parseText(text, title || '粘贴的文本')
 }

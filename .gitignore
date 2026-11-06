@@ -8,6 +8,7 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 node_modules/
+.pnpm-store/
 dist/
 build/
 *.log
@@ -21,3 +22,4 @@ knowweave/data/
 knowweave/config.toml
 # Node 主服务本地配置含密钥，不提交
 config.toml
+/.openidea/

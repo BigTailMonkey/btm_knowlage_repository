@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify'
 
 import { authenticate, currentPrincipal } from '../server.js'
-import { query, queryOne } from '../../db/index.js'
+import { query, queryOne, transaction } from '../../db/index.js'
 import { ask } from '../../core/answering.js'
 import { retrieve } from '../../core/retrieval.js'
 import { newId } from '../../core/ids.js'
@@ -116,8 +116,11 @@ export async function askRoutes(app: FastifyInstance): Promise<void> {
         quote: string
         page: number | null
         rank: number
+        version_id: string | null
       }>(
-        'SELECT chunk_id, doc_id, quote, page, rank FROM citations WHERE message_id = $1 ORDER BY rank',
+        `SELECT ci.chunk_id, ci.doc_id, ci.quote, ci.page, ci.rank, c.version_id
+         FROM citations ci LEFT JOIN chunks c ON c.id = ci.chunk_id
+         WHERE ci.message_id = $1 ORDER BY ci.rank`,
         [message.id],
       )
       for (const citation of citations) if (citation.doc_id) docIds.add(citation.doc_id)
@@ -153,19 +156,42 @@ export async function askRoutes(app: FastifyInstance): Promise<void> {
       value: number
       comment?: string
     }
+    if (![1, -1].includes(payload.value)) throw Object.assign(new Error('反馈值必须是 1 或 -1'), { statusCode: 400 })
+    const chunkIds: string[] = []
     if (payload.target_type === 'chunk') {
       const chunk = await queryOne<ChunkRow>('SELECT * FROM chunks WHERE id = $1', [payload.target_id])
       if (!chunk || chunk.tenant_id !== principal.tenantId) {
         throw Object.assign(new Error('chunk 不存在'), { statusCode: 404 })
       }
-      const weight = Math.max(0.5, Math.min(1.6, chunk.weight + 0.12 * payload.value))
-      await query('UPDATE chunks SET weight = $1 WHERE id = $2', [weight, chunk.id])
+      chunkIds.push(chunk.id)
     }
-    await query(
-      `INSERT INTO feedback (id, tenant_id, user_id, target_type, target_id, value, comment)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [newId('fb'), principal.tenantId, principal.userId, payload.target_type, payload.target_id, payload.value, payload.comment ?? null],
-    )
+    if (payload.target_type === 'message') {
+      const message = await queryOne<{ id: string }>(
+        `SELECT m.id FROM messages m JOIN conversations c ON c.id = m.conversation_id
+         WHERE m.id = $1 AND m.role = 'assistant' AND c.tenant_id = $2 AND c.user_id = $3`,
+        [payload.target_id, principal.tenantId, principal.userId],
+      )
+      if (!message) throw Object.assign(new Error('回答不存在'), { statusCode: 404 })
+      const citations = await query<{ chunk_id: string }>('SELECT DISTINCT chunk_id FROM citations WHERE message_id = $1 AND chunk_id IS NOT NULL', [message.id])
+      chunkIds.push(...citations.map((citation) => citation.chunk_id))
+    }
+    await transaction(async (client) => {
+      const previous = (await client.query<{ id: string; value: number }>(
+        'SELECT id, value FROM feedback WHERE tenant_id = $1 AND user_id = $2 AND target_type = $3 AND target_id = $4 ORDER BY created_at DESC LIMIT 1',
+        [principal.tenantId, principal.userId, payload.target_type, payload.target_id],
+      ))[0]
+      const delta = payload.value - (previous?.value ?? 0)
+      for (const chunkId of new Set(chunkIds)) {
+        await client.query('UPDATE chunks SET weight = greatest(0.5, least(1.6, weight + $1)) WHERE id = $2 AND tenant_id = $3', [0.12 * delta, chunkId, principal.tenantId])
+        await client.query('UPDATE fact_evidence SET weight = greatest(0.5, least(1.6, weight + $1)) WHERE chunk_id = $2', [0.12 * delta, chunkId])
+      }
+      if (previous) await client.query('UPDATE feedback SET value = $1, comment = $2 WHERE id = $3', [payload.value, payload.comment ?? null, previous.id])
+      else await client.query(
+        `INSERT INTO feedback (id, tenant_id, user_id, target_type, target_id, value, comment)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [newId('fb'), principal.tenantId, principal.userId, payload.target_type, payload.target_id, payload.value, payload.comment ?? null],
+      )
+    })
     const recorder = new TraceRecorder(principal.tenantId, principal.userId, 'feedback')
     recorder.addSpan({
       stage: 'feedback',
@@ -173,6 +199,6 @@ export async function askRoutes(app: FastifyInstance): Promise<void> {
       output: { value: payload.value },
     })
     await recorder.finish(payload.comment ?? '')
-    return { status: 'ok', message: '反馈已记录' }
+    return { status: 'ok', message: chunkIds.length ? '反馈已应用到引用证据' : '反馈已记录', updated_chunks: new Set(chunkIds).size }
   })
 }

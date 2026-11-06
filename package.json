@@ -13,7 +13,8 @@
     "start": "node dist/src/main.js",
     "migrate": "tsx scripts/migrate.ts",
     "sidecar": "knowweave/.venv/bin/python -m uvicorn sidecar.main:app --host 127.0.0.1 --port 8732",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "node --import tsx --test --test-concurrency=1 tests/*.test.ts"
   },
   "dependencies": {
     "@deepseek-ai/dsh": "0.2.2-alpha.3",

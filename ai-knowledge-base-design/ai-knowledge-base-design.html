@@ -621,6 +621,13 @@
         <h2>一句话结论<span class="en">Executive Summary</span></h2>
       </div>
 
+      <div class="callout teal">
+        <div class="kicker">实现状态 · 2026-11-06</div>
+        <p>本页正文保留目标架构与 M0–M3 路线图。当前实现、接口与验证边界以仓库的 <code>README.md</code> 和 <code>docs/current-implementation.md</code> 为准；组件清单与路线图不代表全部能力已经可用。</p>
+        <p>本轮优先修复知识库与问答：原生聊天接入知识库检索，同源文档版本更新，结构块与跨页引用定位，事实出处与审阅，历史检索、有界图遍历、补充检索、逐句引用核对、对话记忆和引用反馈。权限、计费和预算的审计问题按当前迭代范围暂缓。</p>
+        <p>当前使用 PGlite / PostgreSQL、云端稠密向量、词频稀疏召回与规则重排，PDF / DOCX 使用轻量解析边车。Docling / MinerU、OCR / ASR、Qdrant、持久队列、语义重排与社区摘要仍属于后续目标；规则引用核对不等同于完整语义蕴含验证。</p>
+      </div>
+
       <div class="callout">
         <div class="kicker">核心判断</div>
         <p>
@@ -630,7 +637,7 @@
         </p>
         <p>
           所以本方案不重写解析器，也不重写向量库。成熟组件直接复用；与大模型的交互交给
-          <strong>内嵌的 DeepSeek Harness</strong>，编排、检索、权限与计量由我们用 TypeScript 实现，
+          <strong>内嵌的智能体引擎</strong>，编排、检索、权限与计量由我们用 TypeScript 实现，
           解析、OCR 与向量化下沉到无状态的 Python 边车。
           自研进一步收敛到四块：<strong>事实层</strong>（实体 / 关系 / 断言 / 证据 / 有效期）、
           <strong>学习层</strong>（增量合并、冲突仲裁、反思巩固）、
@@ -800,7 +807,7 @@
 
       <p>
         五层主链路 + 一个横切的学习层。主服务用 <strong>Node.js 24 + TypeScript</strong> 实现，
-        DeepSeek Harness 作为 npm 库<strong>进程内嵌</strong>在其中；需要 Python 生态的解析、OCR、ASR、
+        智能体引擎作为 npm 库<strong>进程内嵌</strong>在其中；需要 Python 生态的解析、OCR、ASR、
         Embedding 与重排收进一个<strong>无状态边车</strong>，只做“格式进、结构出”。
         主链路负责“把文档变成可检索的证据”，学习层负责“把证据变成可演化的知识”，
         编排由 TypeScript 代码完成，权限与计量则贯穿每一层。
@@ -863,17 +870,17 @@ flowchart TB
         ③④与应用层是 Node 主路径，边车不可用时问答与既有知识不受影响。
       </p>
 
-      <h3><span class="idx">3.1</span>运行底座：内嵌 DeepSeek Harness</h3>
+      <h3><span class="idx">3.1</span>运行底座：内嵌智能体引擎</h3>
       <p>
         实现语言定为 <strong>Node.js 24 LTS + TypeScript</strong>。选它的直接原因就是
-        Harness 以 npm 包发布：<strong>只有同运行时才能真正进程内嵌</strong>，省掉跨语言桥接、额外服务与一次网络跳转。
-        Harness 不是独立服务，也不是插件平台，它只做一件事：<strong>执行与大模型的交互</strong>——
+        智能体引擎以 npm 包发布：<strong>只有同运行时才能真正进程内嵌</strong>，省掉跨语言桥接、额外服务与一次网络跳转。
+        智能体引擎不是独立服务，也不是插件平台，它只做一件事：<strong>执行与大模型的交互</strong>——
         模型调用、流式输出、多轮会话、工具调用循环、重试与限流、token 用量回调、trace 上下文。
         检索编排、权限、计量与学习合并由 TypeScript 主服务负责；文档解析、OCR、ASR、Embedding 与重排由 Python 边车负责。
       </p>
 
       <p>
-        这样分工的理由很直接：主路径（问答、检索、权限、计量）与 Harness 同进程，没有网络跳转与序列化损耗；
+        这样分工的理由很直接：主路径（问答、检索、权限、计量）与智能体引擎同进程，没有网络跳转与序列化损耗；
         Python 只出现在摄取侧的异步任务里，问答链路的可用性不依赖它；
         也不引入插件协议，避免“为了接一个解析器先写一套插件”的过度设计。
       </p>
@@ -884,26 +891,26 @@ flowchart TB
             <tr><th>能力</th><th>归属</th><th>说明</th></tr>
           </thead>
           <tbody>
-            <tr><td><strong>模型调用 / 流式</strong></td><td>Harness（进程内）</td><td>抹平 provider 差异，统一取消与超时</td></tr>
-            <tr><td><strong>多轮会话</strong></td><td>Harness（仅进程内）</td><td>持久会话与游标写 Postgres，重启可恢复</td></tr>
-            <tr><td><strong>工具调用循环</strong></td><td>Harness</td><td>我们注册工具函数与 JSON Schema，循环由它跑</td></tr>
-            <tr><td><strong>重试 / 限流</strong></td><td>Harness</td><td>预算、超时与降级策略由我们注入</td></tr>
-            <tr><td><strong>用量与 trace 回调</strong></td><td>Harness → 主服务</td><td>回写 <code>usage_ledger</code> 与 trace span</td></tr>
-            <tr><td><strong>检索 / 编排 / 权限 / 计量 / 学习合并</strong></td><td>TypeScript 主服务</td><td>Harness 不参与，也不注册为插件</td></tr>
+            <tr><td><strong>模型调用 / 流式</strong></td><td>智能体引擎（进程内）</td><td>抹平 provider 差异，统一取消与超时</td></tr>
+            <tr><td><strong>多轮会话</strong></td><td>智能体引擎（仅进程内）</td><td>持久会话与游标写 Postgres，重启可恢复</td></tr>
+            <tr><td><strong>工具调用循环</strong></td><td>智能体引擎</td><td>我们注册工具函数与 JSON Schema，循环由它跑</td></tr>
+            <tr><td><strong>重试 / 限流</strong></td><td>智能体引擎</td><td>预算、超时与降级策略由我们注入</td></tr>
+            <tr><td><strong>用量与 trace 回调</strong></td><td>智能体引擎 → 主服务</td><td>回写 <code>usage_ledger</code> 与 trace span</td></tr>
+            <tr><td><strong>检索 / 编排 / 权限 / 计量 / 学习合并</strong></td><td>TypeScript 主服务</td><td>智能体引擎不参与，也不注册为插件</td></tr>
             <tr><td><strong>解析 / OCR / ASR / Embedding / 重排</strong></td><td>Python 边车</td><td>无状态；只接收文件或文本，返回结构化结果与向量</td></tr>
-            <tr><td><strong>权限判定</strong></td><td>TypeScript 网关</td><td>在调用 Harness 之前完成，模型看不到越权内容</td></tr>
+            <tr><td><strong>权限判定</strong></td><td>TypeScript 网关</td><td>在调用智能体引擎之前完成，模型看不到越权内容</td></tr>
           </tbody>
         </table>
       </div>
 
       <p class="note">
-        两条硬边界：业务代码不直接 <code>import</code> Harness 的内部模块，只依赖我们定义的
-        <code>LLMHarness</code> 接口（<code>complete / stream / run_tools / usage / health</code>）；
+        两条硬边界：业务代码不直接 <code>import</code> 智能体引擎的内部模块，只依赖我们定义的
+        <code>LLMRuntime</code> 接口（<code>complete / stream / run_tools / usage / health</code>）；
         边车只暴露 <code>/parse</code>、<code>/ocr</code>、<code>/asr</code>、<code>/embed</code>、<code>/rerank</code>，
         不允许直接写业务表，也不允许持有会话状态。这两条边界是后面能安全升级的前提。
       </p>
 
-      <h3><span class="idx">3.2</span>内嵌 Harness 的升级设计</h3>
+      <h3><span class="idx">3.2</span>内嵌智能体引擎的升级设计</h3>
       <p>
         内嵌不等于绑死。升级能力要写进架构，而不是等出事再想办法：
       </p>
@@ -914,11 +921,11 @@ flowchart TB
             <tr><th>机制</th><th>做法</th><th>解决什么</th></tr>
           </thead>
           <tbody>
-            <tr><td><strong>适配层</strong></td><td>所有调用经 <code>LLMHarness</code> 接口；新旧版本各实现一套 adapter</td><td>升级只改 adapter，不动业务代码</td></tr>
+            <tr><td><strong>适配层</strong></td><td>所有调用经 <code>LLMRuntime</code> 接口；新旧版本各实现一套 adapter</td><td>升级只改 adapter，不动业务代码</td></tr>
             <tr><td><strong>版本约束</strong></td><td><code>package.json</code> 限定 <code>&gt;=1.6, &lt;2.0</code>，<code>pnpm-lock.yaml</code> 锁精确版本</td><td>避免一次 <code>pnpm update</code> 把线上跑挂</td></tr>
             <tr><td><strong>启动自检</strong></td><td><code>capabilities()</code> 探测流式、工具、取消、usage 回调</td><td>能力缺失时快速失败，或走兼容路径</td></tr>
             <tr><td><strong>契约测试</strong></td><td>流式分片、工具参数、错误码、超时、取消、usage 字段</td><td>升级前后行为一致，回归可测</td></tr>
-            <tr><td><strong>双版本影子</strong></td><td>新旧 Harness 同时接小流量，对比延迟 / token / 错误率</td><td>用真实请求验证，而不是只看单元测试</td></tr>
+            <tr><td><strong>双版本影子</strong></td><td>新旧智能体引擎同时接小流量，对比延迟 / token / 错误率</td><td>用真实请求验证，而不是只看单元测试</td></tr>
             <tr><td><strong>快速回滚</strong></td><td>保留上一版本 tarball 与镜像标签，环境变量切换，一分钟回退</td><td>升级出问题时业务不停</td></tr>
             <tr><td><strong>状态外置</strong></td><td>会话、工具结果、游标全部落 Postgres</td><td>升级不迁移内部状态，重启即恢复</td></tr>
             <tr><td><strong>边车解耦</strong></td><td>主服务与边车只通过版本化 HTTP schema 交互，schema 不变即可各自升级</td><td>换解析器或 Embedding 模型不牵动主路径</td></tr>
@@ -934,7 +941,7 @@ flowchart TB
       <div class="two-col">
         <div>
           <h4>问答编排器</h4>
-          <p>意图 → 召回 → 门控 → 生成。由 TypeScript 主服务编排，Harness 只执行模型调用。</p>
+          <p>意图 → 召回 → 门控 → 生成。由 TypeScript 主服务编排，智能体引擎只执行模型调用。</p>
         </div>
         <div>
           <h4>学习编排器</h4>
@@ -951,8 +958,8 @@ flowchart TB
       </div>
 
       <p class="note">
-        Harness 不持真相：会话与知识状态都在 Postgres，它崩溃或升级，重启即可恢复。
-        也不要把解析器、检索器做成 Harness 插件——那是把领域逻辑绑到运行时版本上，升级时最痛。
+        智能体引擎不持真相：会话与知识状态都在 Postgres，它崩溃或升级，重启即可恢复。
+        也不要把解析器、检索器做成智能体引擎插件——那是把领域逻辑绑到运行时版本上，升级时最痛。
       </p>
 
       <h3><span class="idx">3.3</span>主辅边界：Node 主路径，Python 只做边车</h3>
@@ -1354,10 +1361,10 @@ flowchart TD
             <tr><th>层</th><th>组件</th><th>首选</th><th>备选</th><th>选择理由</th></tr>
           </thead>
           <tbody>
-            <tr><td>后端</td><td>语言 / 框架</td><td>Node.js 24 LTS + TypeScript + Fastify</td><td>Go + Fiber</td><td>Harness 是 npm 包，同运行时才能进程内嵌；主路径不跨语言</td></tr>
+            <tr><td>后端</td><td>语言 / 框架</td><td>Node.js 24 LTS + TypeScript + Fastify</td><td>Go + Fiber</td><td>智能体引擎是 npm 包，同运行时才能进程内嵌；主路径不跨语言</td></tr>
             <tr><td>前端</td><td>Web UI</td><td>Next.js + React + Tailwind + shadcn/ui</td><td>Vue + Nuxt</td><td>组件成熟，图谱与 PDF 预览生态好</td></tr>
             <tr><td>实现语言</td><td>主路径与编排</td><td>Node.js + TypeScript（类型即契约）</td><td>Rust</td><td>主路径迭代快；Python 只出现在边车，边界清晰</td></tr>
-            <tr><td>LLM 运行时</td><td>模型交互</td><td>DeepSeek Harness（npm 包，进程内嵌 + 版本锁定 + 适配层）</td><td>自研 OpenAI SDK 调用层</td><td>统一模型调用 / 流式 / 工具循环 / 用量回调，升级可控</td></tr>
+            <tr><td>LLM 运行时</td><td>模型交互</td><td>智能体引擎（npm 包，进程内嵌 + 版本锁定 + 适配层）</td><td>自研 OpenAI SDK 调用层</td><td>统一模型调用 / 流式 / 工具循环 / 用量回调，升级可控</td></tr>
             <tr><td>任务</td><td>异步队列</td><td>Redis + BullMQ</td><td>Temporal</td><td>解析与抽取是长任务，必须异步、可重试</td></tr>
             <tr><td>解析</td><td>通用文档</td><td>Docling（Python 边车）</td><td>Unstructured 服务</td><td>多格式、结构化输出、CPU 可跑</td></tr>
             <tr><td>解析</td><td>中文 / 扫描 / 公式</td><td>MinerU（Python 边车）</td><td>PaddleOCR-VL</td><td>中文版面、表格、公式识别更强</td></tr>
@@ -1372,9 +1379,9 @@ flowchart TD
             <tr><td>存储</td><td>图</td><td>一期：PG 邻接表 + 递归 CTE</td><td>二期：Neo4j Community</td><td>个人规模不需要独立图库，先省运维</td></tr>
             <tr><td>存储</td><td>对象</td><td>本地文件系统</td><td>MinIO</td><td>原文、图片、解析中间产物</td></tr>
             <tr><td>模型</td><td>LLM 网关</td><td>LiteLLM</td><td>自研适配层</td><td>统一 OpenAI 协议，云 / 本地随意切换</td></tr>
-            <tr><td>模型</td><td>生成</td><td>云端 API（DeepSeek / 通义 / OpenAI 兼容）</td><td>本地 Ollama / vLLM（仅私有化场景）</td><td>按 token 付费，无硬件折旧；换模型只改配置</td></tr>
-            <tr><td>编排</td><td>Agent 循环</td><td>自研 TypeScript 编排器（问答 / 学习 / 运维）</td><td>Temporal Workflows</td><td>编排归我们，Harness 只执行模型交互；写操作走审阅或事务</td></tr>
-            <tr><td>可观测</td><td>Tracing</td><td>Harness Trace + OpenTelemetry Node SDK + Langfuse</td><td>Grafana</td><td>全量 span 落账本、可回放；Langfuse 看链路与成本</td></tr>
+            <tr><td>模型</td><td>生成</td><td>云端 API（通义 / OpenAI 兼容等）</td><td>本地 Ollama / vLLM（仅私有化场景）</td><td>按 token 付费，无硬件折旧；换模型只改配置</td></tr>
+            <tr><td>编排</td><td>Agent 循环</td><td>自研 TypeScript 编排器（问答 / 学习 / 运维）</td><td>Temporal Workflows</td><td>编排归我们，智能体引擎只执行模型交互；写操作走审阅或事务</td></tr>
+            <tr><td>可观测</td><td>Tracing</td><td>智能体引擎 Trace + OpenTelemetry Node SDK + Langfuse</td><td>Grafana</td><td>全量 span 落账本、可回放；Langfuse 看链路与成本</td></tr>
             <tr><td>计量</td><td>成本审计</td><td>自研 <code>usage_ledger</code> + 单价表</td><td>LiteLLM 计量 / Langfuse</td><td>逐次调用按单价快照结算，可按租户 / 用户 / 功能归因</td></tr>
             <tr><td>权限</td><td>多租户 / ACL</td><td>Postgres RLS + Qdrant payload 过滤</td><td>应用层过滤</td><td>检索前生效；chunk、事实、引用都带 <code>acl_scope</code></td></tr>
             <tr><td>评测</td><td>离线评测</td><td>自建黄金集 + promptfoo（Node 原生）</td><td>RAGAS（在边车里跑）</td><td>把“感觉变好了”变成可回归的数字</td></tr>
@@ -1387,7 +1394,7 @@ flowchart TD
       <div class="callout">
         <div class="kicker">最小可运行组合</div>
         <p>
-          <code>Node.js + DeepSeek Harness + Postgres + Qdrant + Redis + Next.js + LiteLLM 网关</code>，
+          <code>Node.js + 智能体引擎 + Postgres + Qdrant + Redis + Next.js + LiteLLM 网关</code>，
           外加一个轻量的 <strong>Python 边车</strong>（Docling / MinerU）。
           一台 16–24GB 内存的普通服务器即可跑起来，<strong>默认不需要 GPU</strong>：
           生成、Embedding 与重排走云端 API；只有必须全本地、或批量重排确实成为瓶颈时，才启用边车里的本地模型。
@@ -1625,7 +1632,7 @@ const repos: Repositories = {
 }
 
 const uow = new PgUnitOfWork(db, () =&gt; repos)
-const ask = new AskService(repos, uow, harness, aclGate)</code></pre>
+const ask = new AskService(repos, uow, modelRuntime, aclGate)</code></pre>
 
       <div class="table-wrap">
         <table>
@@ -1887,8 +1894,8 @@ flowchart LR
   "user_id": "u_1024",
   "feature": "ask",
   "stage": "answer.generate",
-  "provider": "deepseek",
-  "model": "deepseek-chat",
+  "provider": "configured-provider",
+  "model": "configured-model",
   "tokens_in": 3120,
   "tokens_out": 480,
   "cached_tokens": 0,
@@ -2136,7 +2143,7 @@ flowchart LR
             <tr><td><strong>架构过度设计</strong></td><td>永远跑不起来</td><td>M0 不引入事实层与图库；先验证“有人真的天天用”</td></tr>
             <tr><td><strong>供应商锁定</strong></td><td>换模型 / 换库成本高</td><td>端口与适配器、LiteLLM 网关、派生索引可重建</td></tr>
             <tr><td><strong>权限泄漏</strong></td><td>检索到不该看的内容</td><td>ACL 进数据模型：Qdrant 检索前过滤 + PG RLS + 输出复核；引用与事实继承文档权限；越权请求写审计</td></tr>
-            <tr><td><strong>Harness 升级破坏</strong></td><td>内嵌库一升级，调用层与业务一起挂</td><td>适配层契约测试 + 主版本固定 + 状态外置 + 双版本影子，出问题一分钟回滚</td></tr>
+            <tr><td><strong>智能体引擎升级破坏</strong></td><td>内嵌库一升级，调用层与业务一起挂</td><td>适配层契约测试 + 主版本固定 + 状态外置 + 双版本影子，出问题一分钟回滚</td></tr>
             <tr><td><strong>双栈与边车故障</strong></td><td>Python 边车崩溃或版本漂移，新文档进不来</td><td>主路径不同步依赖边车；队列重试 + 健康检查 + 版本化 HTTP 契约；边车挂掉只降级摄入</td></tr>
             <tr><td><strong>回放不可复现</strong></td><td>日志看了，问题还是定位不了</td><td>检索快照、prompt hash、随机种子、模型版本、外部返回全部录制</td></tr>
             <tr><td><strong>日志成本与隐私</strong></td><td>全量轨迹又贵又敏感</td><td>热温冷分层 + 列式压缩 + 租户密钥加密 + 审计角色授权</td></tr>
