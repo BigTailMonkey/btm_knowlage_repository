@@ -7,9 +7,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal, get_db
-from .ingestion import ingest_text, ingest_upload, ingest_url, tombstone_document
+from .ingestion import list_ingest_jobs, submit_ingest, tombstone_document
 from .learning import extract_facts_for_document
-from .models import Chunk, Document, DocumentVersion, Entity, Fact, FactEvidence
+from .models import Chunk, Document, DocumentVersion, Entity, Fact, FactEvidence, User
 from .security import Principal, can_read, get_principal, require_editor
 from .serializers import chunk_dict, document_dict, entity_dict, fact_dict
 
@@ -60,18 +60,15 @@ def upload_document(
         raise HTTPException(status_code=400, detail="文件为空")
     if len(data) > 30 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="文件超过 30MB")
-    try:
-        result = ingest_upload(
-            db,
-            principal,
-            file.filename or "document.txt",
-            data,
-            title=title,
-            acl=_parse_acl(acl),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return result
+    return submit_ingest(
+        db,
+        principal,
+        "file",
+        title=title,
+        filename=file.filename or "document.txt",
+        data=data,
+        acl=_parse_acl(acl),
+    )
 
 
 @router.post("/text")
@@ -81,12 +78,9 @@ def add_text_document(
     db: Session = Depends(get_db),
 ):
     require_editor(principal)
-    try:
-        return ingest_text(
-            db, principal, payload.text, title=payload.title, acl=payload.acl
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return submit_ingest(
+        db, principal, "text", title=payload.title, text=payload.text, acl=payload.acl
+    )
 
 
 @router.post("/url")
@@ -96,10 +90,32 @@ def add_url_document(
     db: Session = Depends(get_db),
 ):
     require_editor(principal)
-    try:
-        return ingest_url(db, principal, payload.url, title=payload.title, acl=payload.acl)
-    except Exception as exc:  # noqa: BLE001 - network boundary
-        raise HTTPException(status_code=400, detail=f"抓取失败：{exc}") from exc
+    if not payload.url.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="仅支持 http/https URL")
+    return submit_ingest(
+        db, principal, "url", title=payload.title, url=payload.url, acl=payload.acl
+    )
+
+
+@router.get("/jobs")
+def ingest_jobs(
+    active: bool = Query(default=False),
+    principal: Principal = Depends(get_principal),
+):
+    """当前用户的异步入库作业列表，供前端轮询阶段进度。"""
+    return {"items": list_ingest_jobs(principal, active_only=active)}
+
+
+@router.get("/acl-options")
+def acl_options(
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    """可授予的权限组：当前租户内用户所属的全部组名。"""
+    groups: set[str] = set()
+    for user in db.scalars(select(User).where(User.tenant_id == principal.tenant_id)):
+        groups.update(user.groups or [])
+    return {"groups": sorted(groups)}
 
 
 @router.get("")

@@ -5,6 +5,8 @@ be swapped without touching business services.
 """
 from __future__ import annotations
 
+import os
+import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,6 +34,7 @@ def _resolve_path(value: str, fallback: Path) -> Path:
 class Settings:
     database_url: str = ""
     seed_demo: bool = True
+    timezone: str = "Asia/Shanghai"
 
     harness_enabled: bool = True
     dsh_repo: Path = Path.home() / "projects" / "deepseek-harness"
@@ -73,6 +76,9 @@ class Settings:
             or f"sqlite:///{(data_dir / 'knowweave.db').as_posix()}"
         )
         settings.seed_demo = bool(database.get("seed", True))
+
+        time_cfg = raw.get("time", {})
+        settings.timezone = time_cfg.get("timezone", settings.timezone)
 
         model = raw.get("model", {})
         settings.provider = model.get("provider", settings.provider)
@@ -129,3 +135,9 @@ class Settings:
 
 
 settings = Settings.from_file()
+
+# 进程时区以配置为准，保证日志、date.today() 等本地时间与业务日历一致。
+# 容器部署时仍建议显式设置 TZ 环境变量，二者需保持一致。
+os.environ["TZ"] = settings.timezone
+if hasattr(time, "tzset"):
+    time.tzset()

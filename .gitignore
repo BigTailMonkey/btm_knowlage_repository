@@ -13,7 +13,11 @@ build/
 *.log
 *.db
 *.sqlite3
+data/
+.dsh/
 knowweave/.venv/
 knowweave/data/
 # 本地配置含密钥，模板见 knowweave/config.example.toml
 knowweave/config.toml
+# Node 主服务本地配置含密钥，不提交
+config.toml

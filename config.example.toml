@@ -1,0 +1,75 @@
+[storage]
+# 相对路径以项目根目录为基准
+data_dir = "data"
+
+[database]
+# 留空则使用 data 下的 PGlite（PostgreSQL 兼容嵌入式实现）；生产环境填写 postgresql://...
+url = ""
+seed = true
+
+[server]
+host = "0.0.0.0"
+port = 8730
+
+[time]
+timezone = "Asia/Shanghai"
+
+[dsh]
+# 完整版 DeepSeek Harness：官方 SDK + sdk 全量 profile
+profile = "sdk"
+home = ".dsh"
+workspace = "data/dsh-workspace"
+# 对话页嵌入的 DSH Web GUI，由主服务托管
+web_enabled = true
+web_auto_start = true
+web_port = 3081
+web_home = "data/dsh-web-home"
+
+[model]
+provider = "volcengine-ark"
+model = "deepseek-v4.1-flash"
+harness_enabled = true
+api_key = ""
+base_url = "https://ark.cn-beijing.volces.com/api/coding/v3"
+fallback_model = "deepseek-v4.1-flash"
+
+[embedding]
+provider = "volcengine-ark"
+base_url = "https://ark.cn-beijing.volces.com/api/coding/v3"
+api_key = ""
+model = "doubao-embedding-vision"
+dim = 1024
+path = "/embeddings/multimodal"
+instructions = """Target_modality: text.
+Instruction: Compress the text into one dense vector for semantic retrieval.
+Query:"""
+batch_size = 32
+timeout_seconds = 30
+
+[sidecar]
+url = "http://127.0.0.1:8732"
+enabled = true
+# 由主服务自动拉起与关闭；已在运行则直接复用
+auto_start = true
+# 解释器路径，相对路径以项目根目录为基准；需安装 pypdf / python-docx / fastapi / uvicorn
+python = "knowweave/.venv/bin/python"
+
+[retrieval]
+rerank_threshold = 0.36
+
+[reflection]
+enabled = true
+interval_seconds = 21600
+
+[tenant]
+default_id = "tn_knowweave"
+
+[prices."deepseek-v4.1-flash"]
+input_per_1m = 2.0
+output_per_1m = 8.0
+currency = "CNY"
+
+[prices."deepseek-chat"]
+input_per_1m = 2.0
+output_per_1m = 8.0
+currency = "CNY"

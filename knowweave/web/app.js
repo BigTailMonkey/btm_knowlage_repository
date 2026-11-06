@@ -11,6 +11,8 @@ const state = {
   chatConversationId: null,
   chatBusy: false,
   chatDraft: false,
+  chatFilter: "",
+  chatEvidence: null,
   tourIndex: 0,
   tourReturnPage: null,
   source: "",
@@ -23,6 +25,8 @@ const state = {
   opsTab: "traces",
   harness: null,
   file: null,
+  aclOptions: null,
+  jobs: [],
   lastAsk: null,
   conversationId: null,
 };
@@ -41,9 +45,6 @@ const PAGE_META = {
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
 
-function setSub(page, text) {
-  if (state.page === page) $("#page-sub").textContent = text;
-}
 
 const FEATURE_LABEL = {
   ask: "问答",
@@ -115,7 +116,7 @@ function shortDate(value) {
   if (!value) return "无";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  return date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Shanghai" });
 }
 
 function dayOnly(value) {
@@ -186,7 +187,8 @@ function stampNow() {
   const el = $("#freshness");
   if (!el) return;
   const now = new Date();
-  el.textContent = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} 更新`; // taste-skill-ignore
+  const clock = now.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Shanghai" });
+  el.textContent = `${clock} 更新`; // taste-skill-ignore
 }
 
 /* ============ Shell ============ */
@@ -201,10 +203,6 @@ function showPage(page) {
     else item.removeAttribute("aria-current");
   });
   $$(".page").forEach((section) => section.classList.toggle("active", section.id === `page-${page}`));
-  $("#topbar-title").textContent = PAGE_META[page];
-  $("#page-title").textContent = PAGE_META[page];
-  $("#page-sub").textContent = "";
-  $("#open-ingest").hidden = page !== "library";
   $("#sheet").scrollTop = 0;
   if (location.hash !== `#${page}`) history.replaceState(null, "", `#${page}`);
   closeSidebar();
@@ -214,8 +212,8 @@ function showPage(page) {
 function loadPage(page) {
   if (page === "chat") loadChat();
   if (page === "dashboard") loadDashboard();
-  if (page === "library") loadDocs();
-  if (page === "ask") loadConversations();
+  if (page === "library") { loadDocs(); loadIngestJobs(); }
+  if (page === "ask") loadAsk();
   if (page === "entities") { loadEntities(); loadGraph(); }
   if (page === "review") loadReview();
   if (page === "ops") loadOps(state.opsTab);
@@ -277,8 +275,6 @@ function runtimeView() {
 
 function renderRuntime() {
   const view = runtimeView();
-  const summary = $("#setting-runtime-summary");
-  if (summary) summary.textContent = view.available ? `${view.adapter} · ${view.mode}` : "运行时降级";
   const target = $("#settings-runtime");
   if (!target) return;
   const rows = [
@@ -341,7 +337,6 @@ function renderStats() {
   $("#stat-facts").textContent = num(stats.facts_active || 0);
   $("#stat-refusal").textContent = pct(stats.refusal_rate_7d || 0);
 
-  setSub("dashboard", `${num(documents)} 篇文档 · ${num(chunks)} 个检索单元 · ${num(entities)} 个实体`);
 
   const reviews = Number(stats.reviews_open || 0);
   const badge = $("#nav-review-count");
@@ -418,6 +413,95 @@ function docQuery() {
   return $("#doc-search")?.value.trim() || "";
 }
 
+const JOB_POLL_MS = 1500;
+let jobPollTimer = null;
+let jobStatusCache = null;
+
+function stopJobPoll() {
+  if (jobPollTimer) {
+    clearTimeout(jobPollTimer);
+    jobPollTimer = null;
+  }
+}
+
+function scheduleJobPoll() {
+  if (jobPollTimer) return;
+  jobPollTimer = setTimeout(() => {
+    jobPollTimer = null;
+    loadIngestJobs();
+  }, JOB_POLL_MS);
+}
+
+function trackIngestJob(job) {
+  if (!job?.job_id) return;
+  jobStatusCache = jobStatusCache || new Map();
+  jobStatusCache.set(job.job_id, job.status);
+  state.jobs = state.jobs.filter((item) => item.job_id !== job.job_id);
+  state.jobs.unshift(job);
+  renderIngestJobs();
+  scheduleJobPoll();
+}
+
+async function loadIngestJobs() {
+  if (state.page !== "library") {
+    stopJobPoll();
+    return;
+  }
+  try {
+    const data = await api("/documents/jobs");
+    state.jobs = data.items;
+    renderIngestJobs();
+    const current = new Map(state.jobs.map((job) => [job.job_id, job.status]));
+    if (jobStatusCache) {
+      current.forEach((status, id) => {
+        const previous = jobStatusCache.get(id);
+        if (previous !== status && (status === "done" || status === "failed")) {
+          const job = state.jobs.find((item) => item.job_id === id);
+          if (!job) return;
+          if (status === "done") {
+            toast(job.duplicate ? "内容与已有版本相同，未重复入库" : `已接入 ${num(job.chunks)} 个检索单元 · v${job.version}`);
+            loadDocs();
+            loadDashboard();
+          } else {
+            toast(`处理失败：${job.error || "未知错误"}`);
+          }
+        }
+      });
+    }
+    jobStatusCache = current;
+    const hasActive = state.jobs.some((job) => job.status === "pending" || job.status === "running");
+    if (hasActive) scheduleJobPoll();
+    else stopJobPoll();
+  } catch (error) {
+    stopJobPoll();
+  }
+}
+
+function renderIngestJobs() {
+  const box = $("#ingest-jobs");
+  if (!box) return;
+  const jobs = state.jobs.filter((job) => ["pending", "running", "failed"].includes(job.status));
+  box.hidden = !jobs.length;
+  if (!jobs.length) {
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML = jobs.map((job) => {
+    const failed = job.status === "failed";
+    const percent = failed ? 100 : Math.max(3, Number(job.percent) || 3);
+    const stage = failed ? job.error || "处理失败" : job.stage || "排队中";
+    return `
+      <div class="job-card${failed ? " failed" : ""}">
+        <div class="job-line">
+          <span class="job-title">${esc(job.title)}</span>
+          <span class="job-stage" title="${esc(stage)}">${esc(stage)}</span>
+          <span class="job-percent">${failed ? "失败" : `${percent}%`}</span>
+        </div>
+        <div class="job-progress"><i style="width:${percent}%"></i></div>
+      </div>`;
+  }).join("");
+}
+
 async function loadDocs() {
   const params = new URLSearchParams({ limit: "100" });
   const q = docQuery();
@@ -428,7 +512,6 @@ async function loadDocs() {
     state.docs = data.items;
     renderDocs();
     const totalChunks = data.items.reduce((sum, doc) => sum + Number(doc.chunks || 0), 0);
-    setSub("library", `共 ${num(data.items.length)} 篇 · ${num(totalChunks)} 个检索单元`);
     $("#doc-count").textContent = `${num(data.items.length)} 篇`;
     stampNow();
   } catch (error) {
@@ -569,7 +652,194 @@ async function handleDocAction(action, docId, button) {
   }
 }
 
+const aclPickerState = new WeakMap();
+let aclOptionsRequest = null;
+
+function aclValues(picker) {
+  const controller = picker && aclPickerState.get(picker);
+  return controller ? Array.from(controller.selected) : [];
+}
+
+function aclOptionLabel(value) {
+  const option = (state.aclOptions || []).find((item) => item.value === value);
+  if (option) return option.label;
+  return value === "tenant:public" ? "全员可见" : value.replace(/^[^:]+:/, "");
+}
+
+function fuzzyScore(text, query) {
+  const haystack = text.toLowerCase();
+  const needle = query.trim().toLowerCase();
+  if (!needle) return 0;
+  const index = haystack.indexOf(needle);
+  if (index >= 0) return index;
+  let cursor = 0;
+  for (const char of haystack) {
+    if (char === needle[cursor]) cursor += 1;
+    if (cursor === needle.length) return 100 + haystack.length;
+  }
+  return -1;
+}
+
+function loadAclOptions() {
+  if (state.aclOptions) return Promise.resolve(state.aclOptions);
+  if (!aclOptionsRequest) {
+    aclOptionsRequest = api("/documents/acl-options")
+      .then((data) => {
+        state.aclOptions = [
+          { value: "tenant:public", label: "全员可见", kind: "范围" },
+          ...(data.groups || []).map((name) => ({ value: `group:${name}`, label: name, kind: "组" })),
+        ];
+        return state.aclOptions;
+      })
+      .catch((error) => {
+        aclOptionsRequest = null;
+        throw error;
+      });
+  }
+  return aclOptionsRequest;
+}
+
+function setupAclPicker(picker) {
+  const input = $("[data-acl-input]", picker);
+  const tagBox = $("[data-acl-tags]", picker);
+  const menu = $("[data-acl-menu]", picker);
+  const selected = new Set(["tenant:public"]);
+  let filtered = [];
+  let activeIndex = 0;
+
+  function renderTags() {
+    tagBox.innerHTML = Array.from(selected).map((value) => {
+      const label = aclOptionLabel(value);
+      return `<span class="acl-tag">${esc(label)}<button type="button" data-remove="${esc(value)}" aria-label="移除 ${esc(label)}">×</button></span>`;
+    }).join("");
+  }
+
+  function renderMenu() {
+    const query = input.value.trim();
+    if (!state.aclOptions) {
+      filtered = [];
+      menu.innerHTML = `<div class="acl-empty">加载中</div>`;
+      return;
+    }
+    const matches = state.aclOptions
+      .map((option) => ({ option, score: fuzzyScore(`${option.label} ${option.value}`, query) }))
+      .filter((item) => item.score >= 0);
+    if (query) {
+      matches.sort((a, b) => a.score - b.score || a.option.label.localeCompare(b.option.label, "zh-CN"));
+    }
+    filtered = matches.map((item) => item.option);
+    if (!filtered.length) {
+      menu.innerHTML = `<div class="acl-empty">没有匹配的权限组</div>`;
+      return;
+    }
+    activeIndex = Math.min(activeIndex, filtered.length - 1);
+    menu.innerHTML = filtered.map((option, index) => `
+      <div class="acl-option${index === activeIndex ? " is-active" : ""}" role="option" data-value="${esc(option.value)}" aria-selected="${selected.has(option.value)}">
+        <span>${esc(option.label)}</span>
+        <span class="acl-option-kind">${esc(option.kind)}</span>
+      </div>`).join("");
+  }
+
+  function open() {
+    menu.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+  }
+
+  function close() {
+    menu.hidden = true;
+    activeIndex = 0;
+    input.setAttribute("aria-expanded", "false");
+  }
+
+  function toggle(value) {
+    if (value === "tenant:public") {
+      selected.clear();
+      selected.add(value);
+    } else {
+      selected.delete("tenant:public");
+      if (selected.has(value)) selected.delete(value);
+      else selected.add(value);
+    }
+    input.value = "";
+    activeIndex = 0;
+    renderTags();
+    renderMenu();
+  }
+
+  input.addEventListener("focus", () => {
+    open();
+    renderMenu();
+    loadAclOptions().then(renderMenu).catch((error) => toast(error.message));
+  });
+  input.addEventListener("input", () => {
+    activeIndex = 0;
+    open();
+    renderMenu();
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      if (menu.hidden) open();
+      activeIndex = filtered.length ? (activeIndex + 1) % filtered.length : 0;
+      renderMenu();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      if (menu.hidden) open();
+      activeIndex = filtered.length ? (activeIndex - 1 + filtered.length) % filtered.length : 0;
+      renderMenu();
+    } else if (event.key === "Enter") {
+      if (menu.hidden) return;
+      event.preventDefault();
+      const option = filtered[activeIndex];
+      if (option) toggle(option.value);
+    } else if (event.key === "Escape") {
+      close();
+    } else if (event.key === "Backspace" && !input.value) {
+      const values = Array.from(selected);
+      if (values.length) {
+        selected.delete(values[values.length - 1]);
+        renderTags();
+        renderMenu();
+      }
+    }
+  });
+  menu.addEventListener("mousedown", (event) => event.preventDefault());
+  menu.addEventListener("click", (event) => {
+    const option = event.target.closest(".acl-option");
+    if (option) toggle(option.dataset.value);
+  });
+  tagBox.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-remove]");
+    if (!button) return;
+    selected.delete(button.dataset.remove);
+    renderTags();
+    renderMenu();
+    input.focus();
+    open();
+  });
+
+  aclPickerState.set(picker, {
+    selected,
+    close,
+    reset() {
+      selected.clear();
+      selected.add("tenant:public");
+      input.value = "";
+      close();
+      renderTags();
+    },
+  });
+  renderTags();
+}
+
 function setupIngest() {
+  $$("[data-acl-picker]").forEach(setupAclPicker);
+  document.addEventListener("click", (event) => {
+    $$("[data-acl-picker]").forEach((picker) => {
+      if (!picker.contains(event.target)) aclPickerState.get(picker)?.close();
+    });
+  });
+
   $$("#ingest-tabs .tab").forEach((button) => {
     button.addEventListener("click", () => {
       $$("#ingest-tabs .tab").forEach((item) => {
@@ -583,13 +853,22 @@ function setupIngest() {
     });
   });
 
-  $("#open-ingest").addEventListener("click", () => $("#ingest-dialog").showModal());
+  $("#open-ingest").addEventListener("click", () => {
+    $("#ingest-dialog").showModal();
+    loadAclOptions().catch((error) => toast(error.message));
+  });
 
   const fileInput = $("#file-input");
   const dropLabel = $("#file-drop-label");
+  const applyFileTitle = (file) => {
+    const name = file?.name || "";
+    const dot = name.lastIndexOf(".");
+    $("#file-title").value = dot > 0 ? name.slice(0, dot) : name;
+  };
   fileInput.addEventListener("change", () => {
     state.file = fileInput.files?.[0] || null;
     dropLabel.textContent = state.file ? state.file.name : "选择文件";
+    if (state.file) applyFileTitle(state.file);
   });
   ["dragenter", "dragover"].forEach((event) => $("#file-drop").addEventListener(event, (e) => { e.preventDefault(); }));
   $("#file-drop").addEventListener("drop", (event) => {
@@ -599,6 +878,7 @@ function setupIngest() {
     state.file = file;
     fileInput.files = event.dataTransfer.files;
     dropLabel.textContent = file.name;
+    applyFileTitle(file);
   });
 
   $("#ingest-file-form").addEventListener("submit", async (event) => {
@@ -608,16 +888,15 @@ function setupIngest() {
     const form = new FormData();
     form.append("file", state.file);
     const title = $("#file-title").value.trim();
-    const acl = $("#file-acl").value.trim();
+    const acl = aclValues($("#file-acl")).join(",");
     if (title) form.append("title", title);
     if (acl) form.append("acl", acl);
-    setBusy(button, true, "解析中");
+    setBusy(button, true, "提交中");
     try {
       const result = await api("/documents/upload", { method: "POST", body: form });
-      toast(result.duplicate ? result.message : `已接入 ${num(result.chunks)} 个检索单元 · v${result.version}`);
       closeIngest();
-      loadDocs();
-      loadDashboard();
+      toast("已提交，正在后台处理");
+      trackIngestJob(result);
     } catch (error) {
       toast(error.message);
     } finally {
@@ -630,20 +909,20 @@ function setupIngest() {
     const text = $("#text-input").value.trim();
     if (!text) { toast("内容不能为空"); return; }
     const button = event.submitter;
-    setBusy(button, true, "写入中");
+    setBusy(button, true, "提交中");
+    const acl = aclValues($("#text-acl"));
     try {
       const result = await api("/documents/text", {
         method: "POST",
         body: {
           text,
           title: $("#text-title").value.trim() || null,
-          acl: $("#text-acl").value.trim() ? [$("#text-acl").value.trim()] : null,
+          acl: acl.length ? acl : null,
         },
       });
-      toast(result.duplicate ? result.message : `已写入 ${num(result.chunks)} 个检索单元`);
       closeIngest();
-      loadDocs();
-      loadDashboard();
+      toast("已提交，正在后台处理");
+      trackIngestJob(result);
     } catch (error) {
       toast(error.message);
     } finally {
@@ -656,20 +935,20 @@ function setupIngest() {
     const url = $("#url-input").value.trim();
     if (!url) { toast("网址不能为空"); return; }
     const button = event.submitter;
-    setBusy(button, true, "抓取中");
+    setBusy(button, true, "提交中");
+    const acl = aclValues($("#url-acl"));
     try {
       const result = await api("/documents/url", {
         method: "POST",
         body: {
           url,
           title: $("#url-title").value.trim() || null,
-          acl: $("#url-acl").value.trim() ? [$("#url-acl").value.trim()] : null,
+          acl: acl.length ? acl : null,
         },
       });
-      toast(result.duplicate ? result.message : `已抓取 ${num(result.chunks)} 个检索单元`);
       closeIngest();
-      loadDocs();
-      loadDashboard();
+      toast("已提交，正在后台处理");
+      trackIngestJob(result);
     } catch (error) {
       toast(error.message);
     } finally {
@@ -703,6 +982,7 @@ function closeIngest() {
   $("#ingest-file-form").reset();
   $("#ingest-text-form").reset();
   $("#ingest-url-form").reset();
+  $$("[data-acl-picker]").forEach((picker) => aclPickerState.get(picker)?.reset());
   state.file = null;
   $("#file-drop-label").textContent = "选择文件";
 }
@@ -716,16 +996,45 @@ const CHAT_MODE_LABEL = {
   compare: "对比",
 };
 
+const BRAND_MARK = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <path d="M3 9c4.5 0 4.5-5 9-5s4.5 5 9 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  <path d="M3 15c4.5 0 4.5 5 9 5s4.5-5 9-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+</svg>`;
+
+function chatWhen(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const now = new Date();
+  if (date.toDateString() === now.toDateString()) {
+    return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+  }
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) return "昨天";
+  return `${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
 function renderChatList() {
   const list = $("#chat-list");
   if (!state.conversations.length) {
-    list.innerHTML = `<div class="empty-block">暂无会话</div>`;
+    list.innerHTML = `<div class="rail-empty">暂无会话</div>`;
     return;
   }
-  list.innerHTML = state.conversations.map((conversation) => `
+  const query = state.chatFilter.trim().toLowerCase();
+  const items = query
+    ? state.conversations.filter((conversation) => (conversation.title || "未命名会话").toLowerCase().includes(query))
+    : state.conversations;
+  if (!items.length) {
+    list.innerHTML = `<div class="rail-empty">没有匹配的会话</div>`;
+    return;
+  }
+  list.innerHTML = items.map((conversation) => `
     <button class="chat-item ${conversation.id === state.chatConversationId ? "active" : ""}" type="button" data-chat="${esc(conversation.id)}">
-      <span class="chat-item-title">${esc(conversation.title || "未命名会话")}</span>
-      <span class="chat-item-sub">${num(conversation.messages)} 条 · ${shortDate(conversation.created_at)}</span>
+      <span class="chat-item-top">
+        <span class="chat-item-title">${esc(conversation.title || "未命名会话")}</span>
+        <span class="chat-item-time">${chatWhen(conversation.created_at)}</span>
+      </span>
+      <span class="chat-item-sub">${num(conversation.messages)} 条消息</span>
     </button>`).join("");
   $$("#chat-list [data-chat]").forEach((item) => {
     item.addEventListener("click", () => openChatConversation(item.dataset.chat));
@@ -736,16 +1045,58 @@ async function fetchChatList() {
   const data = await api("/conversations?limit=30");
   state.conversations = data.items;
   renderChatList();
-  setSub("chat", data.items.length ? `${num(data.items.length)} 个会话` : "");
   return data.items;
 }
 
+function lastAssistantIndex(messages) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === "assistant") return index;
+  }
+  return -1;
+}
+
+let dshRetryTimer = null;
+
+async function loadDshChat() {
+  const wrap = $("#dsh-chat");
+  const frame = $("#dsh-chat-frame");
+  const layout = $(".chat-layout");
+  if (!wrap || !frame) return false;
+  try {
+    const info = await api("/dsh-web");
+    if (info && info.ready && info.url) {
+      if (frame.dataset.url !== info.url) {
+        frame.dataset.url = info.url;
+        frame.src = info.url;
+      }
+      wrap.hidden = false;
+      if (layout) layout.hidden = true;
+      if (dshRetryTimer) {
+        clearTimeout(dshRetryTimer);
+        dshRetryTimer = null;
+      }
+      return true;
+    }
+  } catch (_) { /* 回退到内置对话 */ }
+  wrap.hidden = true;
+  if (layout) layout.hidden = false;
+  if (!dshRetryTimer && state.page === "chat") {
+    dshRetryTimer = setTimeout(() => {
+      dshRetryTimer = null;
+      if (state.page === "chat" && $("#dsh-chat")?.hidden) loadDshChat();
+    }, 2500);
+  }
+  return false;
+}
+
 async function loadChat() {
+  if (await loadDshChat()) return;
   try {
     const items = await fetchChatList();
     if (!items.length) {
       state.chatConversationId = null;
       state.chatMessages = [];
+      state.chatEvidence = null;
       renderChatThread();
       return;
     }
@@ -770,6 +1121,7 @@ async function openChatConversation(conversationId) {
       trace_id: message.trace_id,
       citations: message.citations || [],
     }));
+    state.chatEvidence = lastAssistantIndex(state.chatMessages);
     renderChatThread();
     renderChatList();
   } catch (error) {
@@ -782,11 +1134,21 @@ function newChat() {
   state.chatConversationId = null;
   state.chatDraft = true;
   state.chatMessages = [];
+  state.chatEvidence = null;
   renderChatThread();
   renderChatList();
   $("#chat-input").value = "";
   resizeChatInput();
   $("#chat-input").focus();
+}
+
+function setChatMode(mode) {
+  state.chatMode = CHAT_MODE_LABEL[mode] ? mode : "quick";
+  $$("#chat-modes .seg").forEach((button) => {
+    const active = button.dataset.mode === state.chatMode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
 }
 
 function chatMessageHtml(message, id) {
@@ -797,22 +1159,26 @@ function chatMessageHtml(message, id) {
   }
   const refused = message.refused ?? /^现有资料不足/.test(message.content || "");
   const citations = message.citations || [];
+  const modeLabel = CHAT_MODE_LABEL[message.mode] || message.mode || "";
   const body = message.pending
     ? loadingLines()
     : message.failed
       ? `<p class="msg-error">${esc(message.content)}</p>`
       : answerHtml(message.content, refused);
-  const status = [];
-  if (message.pending) status.push(`<span class="pill">${esc(CHAT_MODE_LABEL[message.mode] || message.mode || "快速")}</span>`);
-  else {
-    if (message.mode) status.push(`<span class="pill">${esc(CHAT_MODE_LABEL[message.mode] || message.mode)}</span>`);
-    if (message.failed) status.push(`<span class="pill bad">失败</span>`);
-    else if (refused) status.push(`<span class="pill warn">证据不足</span>`);
-    if (Number(message.confidence) > 0) status.push(`<span>置信度 ${esc(message.confidence)}</span>`);
-    if (message.latency_ms) status.push(`<span>${num(message.latency_ms)} ms</span>`);
-    if (message.trace_id) status.push(`<button class="text-btn" type="button" data-trace="${esc(message.trace_id)}">轨迹</button>`);
+  const foot = [];
+  if (!message.pending) {
+    if (message.failed) foot.push(`<span class="pill bad">失败</span>`);
+    else if (refused) foot.push(`<span class="pill warn">证据不足</span>`);
+    if (citations.length) foot.push(`<button class="text-btn" type="button" data-evidence="${id}">查看 ${num(citations.length)} 条引用</button>`);
+    if (Number(message.confidence) > 0) foot.push(`<span>置信度 ${Math.round(Number(message.confidence) * 100)}%</span>`);
+    if (message.latency_ms) foot.push(`<span>${message.latency_ms >= 1000 ? `${(message.latency_ms / 1000).toFixed(1)} s` : `${num(message.latency_ms)} ms`}</span>`);
+    if (message.trace_id) foot.push(`<button class="text-btn push" type="button" data-trace="${esc(message.trace_id)}">轨迹</button>`);
   }
   return `<article class="msg msg-assistant" data-msg="${id}">
+    <header class="msg-head">
+      <span class="msg-author">${BRAND_MARK}<span>知织</span></span>
+      ${modeLabel ? `<span class="msg-dot">·</span><span class="msg-mode">${esc(modeLabel)}</span>` : ""}
+    </header>
     <div class="msg-body">${body}</div>
     ${citations.length ? `<details class="msg-cites">
       <summary>${num(citations.length)} 条引用</summary>
@@ -821,22 +1187,90 @@ function chatMessageHtml(message, id) {
           <span class="cite-num">${index + 1}</span>
           <div>
             <div class="cite-quote">${esc(plain(citation.quote))}</div>
-            <div class="cite-meta">${citation.doc_title ? `${esc(citation.doc_title)} · ` : ""}${citation.page ? `p.${esc(citation.page)}` : "正文"}</div>
+            <div class="cite-meta">${citation.doc_title ? `${esc(citation.doc_title)} · ` : ""}${citation.page ? `第 ${esc(citation.page)} 页` : "正文"}</div>
           </div>
         </div>`).join("")}</div>
     </details>` : ""}
-    ${status.length ? `<div class="msg-status">${status.join("")}</div>` : ""}
+    ${foot.length ? `<div class="msg-foot">${foot.join("")}</div>` : ""}
   </article>`;
+}
+
+function evidenceIndex() {
+  if (Number.isInteger(state.chatEvidence) && state.chatMessages[state.chatEvidence]?.role === "assistant") {
+    return state.chatEvidence;
+  }
+  return lastAssistantIndex(state.chatMessages);
+}
+
+function renderChatEvidence() {
+  const body = $("#chat-evidence-body");
+  const countEl = $("#chat-evidence-count");
+  if (!body || !countEl) return;
+  const index = evidenceIndex();
+  if (index < 0) {
+    countEl.textContent = "";
+    body.innerHTML = `<div class="rail-empty">暂无引用</div>`;
+    return;
+  }
+  const message = state.chatMessages[index];
+  if (message.pending) {
+    countEl.textContent = "";
+    body.innerHTML = loadingLines();
+    return;
+  }
+  const citations = message.citations || [];
+  if (!citations.length) {
+    countEl.textContent = "";
+    const note = message.failed ? "回答失败，没有引用" : message.refused ? "证据不足，没有引用原文" : "这条回答没有引用";
+    body.innerHTML = `<div class="rail-empty">${note}</div>`;
+    return;
+  }
+  countEl.textContent = `${num(citations.length)} 条`;
+  body.innerHTML = citations.map((citation, indexNumber) => `
+    <button class="evr-item" type="button" data-ev-index="${indexNumber + 1}">
+      <span class="evr-head">
+        <span class="evr-num">${indexNumber + 1}</span>
+        <span class="evr-doc">${esc(citation.doc_title || "未命名文档")}</span>
+      </span>
+      <span class="evr-quote">${esc(plain(citation.quote))}</span>
+      <span class="evr-meta">${citation.page ? `第 ${esc(citation.page)} 页` : "正文"}</span>
+    </button>`).join("");
+}
+
+function renderChatHeading() {
+  const conversation = state.conversations.find((item) => item.id === state.chatConversationId);
+  const firstQuestion = state.chatMessages.find((message) => message.role === "user");
+  const title = state.chatConversationId ? (conversation?.title || firstQuestion?.content || "对话") : "新对话";
+  $("#chat-main-head").hidden = !state.chatMessages.length;
+  $("#chat-title").textContent = title;
+  $("#chat-title-meta").textContent = state.chatMessages.length ? `${num(state.chatMessages.length)} 条消息` : "";
 }
 
 function renderChatThread() {
   const thread = $("#chat-thread");
+  renderChatHeading();
   if (!state.chatMessages.length) {
-    thread.innerHTML = `<div class="empty-block">暂无消息</div>`;
-    return;
+    thread.innerHTML = `<div class="chat-empty">
+      <span class="mark">${BRAND_MARK}</span>
+      <h2>向知识库提问</h2>
+      <p>回答标注原文引用，可逐条核对。</p>
+    </div>`;
+  } else {
+    thread.innerHTML = state.chatMessages.map((message, index) => chatMessageHtml(message, index)).join("");
+    thread.scrollTop = thread.scrollHeight;
   }
-  thread.innerHTML = state.chatMessages.map((message, index) => chatMessageHtml(message, index)).join("");
-  thread.scrollTop = thread.scrollHeight;
+  renderChatEvidence();
+}
+
+function focusChatEvidence(index, number) {
+  state.chatEvidence = index;
+  renderChatEvidence();
+  if (number == null) return;
+  const body = $("#chat-evidence-body");
+  const item = body?.querySelector(`[data-ev-index="${number}"]`);
+  if (!item) return;
+  $$(".evr-item", body).forEach((row) => row.classList.toggle("is-target", row === item));
+  item.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 function resizeChatInput() {
@@ -851,7 +1285,7 @@ async function sendChat() {
   const input = $("#chat-input");
   const question = input.value.trim();
   if (!question) return;
-  const mode = $("#chat-mode-select").value || "quick";
+  const mode = state.chatMode || "quick";
   state.chatBusy = true;
   $("#chat-send").disabled = true;
   input.value = "";
@@ -859,6 +1293,8 @@ async function sendChat() {
   state.chatMessages.push({ role: "user", content: question });
   const pending = { role: "assistant", content: "", mode, pending: true };
   state.chatMessages.push(pending);
+  const pendingIndex = state.chatMessages.length - 1;
+  state.chatEvidence = pendingIndex;
   renderChatThread();
   try {
     const payload = { question, mode, top_k: 6 };
@@ -866,28 +1302,22 @@ async function sendChat() {
     const result = await api("/ask", { method: "POST", body: payload });
     state.chatConversationId = result.conversation_id;
     state.chatDraft = false;
-    const index = state.chatMessages.indexOf(pending);
-    if (index >= 0) {
-      state.chatMessages[index] = {
-        role: "assistant",
-        content: result.answer,
-        mode: result.mode,
-        confidence: result.confidence,
-        latency_ms: result.latency_ms,
-        trace_id: result.trace_id,
-        refused: result.refused,
-        citations: (result.citations || []).map((citation) => ({
-          quote: citation.quote,
-          page: citation.page,
-          doc_title: citation.doc_title,
-        })),
-      };
-    }
+    state.chatMessages[pendingIndex] = {
+      role: "assistant",
+      content: result.answer,
+      mode: result.mode,
+      confidence: result.confidence,
+      latency_ms: result.latency_ms,
+      trace_id: result.trace_id,
+      refused: result.refused,
+      citations: (result.citations || []).map((citation) => ({
+        quote: citation.quote,
+        page: citation.page,
+        doc_title: citation.doc_title,
+      })),
+    };
   } catch (error) {
-    const index = state.chatMessages.indexOf(pending);
-    if (index >= 0) {
-      state.chatMessages[index] = { role: "assistant", content: error.message, mode, failed: true };
-    }
+    state.chatMessages[pendingIndex] = { role: "assistant", content: error.message, mode, failed: true };
     toast(error.message);
   } finally {
     state.chatBusy = false;
@@ -911,33 +1341,69 @@ function setupChat() {
     }
   });
   $("#chat-input").addEventListener("input", resizeChatInput);
-  $("#chat-mode-select").addEventListener("change", (event) => {
-    state.chatMode = event.target.value;
+  $("#chat-filter").addEventListener("input", (event) => {
+    state.chatFilter = event.target.value;
+    renderChatList();
+  });
+  $("#chat-modes").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-mode]");
+    if (button) setChatMode(button.dataset.mode);
+  });
+  $("#chat-evidence-body").addEventListener("click", (event) => {
+    const item = event.target.closest("[data-ev-index]");
+    if (!item) return;
+    const index = evidenceIndex();
+    const article = $(`.msg-assistant[data-msg="${index}"]`);
+    const cite = article?.querySelector(`[data-cite="${Number(item.dataset.evIndex)}"]`);
+    $$(".evr-item", $("#chat-evidence-body")).forEach((row) => row.classList.toggle("is-target", row === item));
+    article?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (!cite) return;
+    $$(".cite.is-target").forEach((target) => target.classList.remove("is-target"));
+    cite.classList.add("is-target");
+    setTimeout(() => cite.classList.remove("is-target"), 1600);
   });
   $("#chat-thread").addEventListener("click", (event) => {
+    const evidence = event.target.closest("[data-evidence]");
+    if (evidence) {
+      const article = evidence.closest(".msg-assistant");
+      const details = article?.querySelector(".msg-cites");
+      if ($("#chat-evidence").offsetParent === null && details) {
+        details.open = !details.open;
+        return;
+      }
+      focusChatEvidence(Number(evidence.dataset.evidence), null);
+      $("#chat-evidence-body").scrollTop = 0;
+      return;
+    }
     const cite = event.target.closest("[data-cite]");
     if (cite) {
       const article = cite.closest(".msg-assistant");
-      const details = article?.querySelector(".msg-cites");
-      if (!details) return;
-      details.open = true;
-      const item = details.querySelector(`[data-cite-item="${Number(cite.dataset.cite)}"]`);
-      if (item) {
-        $$(".cite-item", details).forEach((row) => row.classList.remove("is-target"));
-        item.classList.add("is-target");
-        item.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      if (!article) return;
+      if ($("#chat-evidence").offsetParent === null) {
+        const details = article.querySelector(".msg-cites");
+        if (!details) return;
+        details.open = true;
+        const item = details.querySelector(`[data-cite-item="${Number(cite.dataset.cite)}"]`);
+        if (item) {
+          $$(".cite-item", details).forEach((row) => row.classList.remove("is-target"));
+          item.classList.add("is-target");
+          item.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }
+        return;
       }
+      focusChatEvidence(Number(article.dataset.msg), Number(cite.dataset.cite));
       return;
     }
     const trace = event.target.closest("[data-trace]");
     if (trace) openTrace(trace.dataset.trace);
   });
+  setChatMode(state.chatMode);
   resizeChatInput();
 }
 
 /* ============ Tour ============ */
 const TOUR_STEPS = [
-  { page: "chat", title: "对话", body: "直接输入问题。回答带引用编号，点开可查看原文；支持连续追问，会话自动保存。" },
+  { page: "chat", title: "对话", body: "在 DeepSeek Harness 对话界面中输入问题，会话自动保存。" },
   { page: "dashboard", title: "概览", body: "汇总待审内容、争议事实、知识缺口与近 7 日问答量。" },
   { page: "library", title: "知识库", body: "添加文档，查看切片数量、权限与接入状态。" },
   { page: "ask", title: "研究台", body: "单次检索入口，提供快速、深度、图谱、时间线、对比五种模式。" },
@@ -1103,21 +1569,38 @@ function answerHtml(text, refused) {
 }
 
 function setupAsk() {
-  $$("#mode-tabs .tab").forEach((button) => {
+  $$("#mode-tabs [data-mode]").forEach((button) => {
     button.addEventListener("click", () => {
       state.mode = button.dataset.mode;
-      $$("#mode-tabs .tab").forEach((item) => {
+      $$("#mode-tabs [data-mode]").forEach((item) => {
         const active = item === button;
         item.classList.toggle("active", active);
-        item.setAttribute("aria-selected", active ? "true" : "false");
+        item.setAttribute("aria-pressed", active ? "true" : "false");
       });
     });
   });
-  $("#ask-btn").addEventListener("click", runAsk);
+  $("#ask-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    runAsk();
+  });
   $("#question").addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") runAsk();
   });
-  $("#conversations-refresh").addEventListener("click", loadConversations);
+  $("#question").addEventListener("input", resizeAskInput);
+  resizeAskInput();
+}
+
+function resizeAskInput() {
+  const input = $("#question");
+  if (!input) return;
+  input.style.height = "auto";
+  input.style.height = `${Math.min(input.scrollHeight, 132)}px`;
+}
+
+function latencyLabel(value) {
+  const ms = Number(value) || 0;
+  if (!ms) return "";
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${num(ms)} ms`;
 }
 
 function askPayload(question, conversationId = null) {
@@ -1129,55 +1612,69 @@ function askPayload(question, conversationId = null) {
 }
 
 async function runAsk() {
-  const question = $("#question").value.trim();
+  const input = $("#question");
+  const question = input.value.trim();
   if (!question) { toast("问题不能为空"); return; }
   const button = $("#ask-btn");
+  $(".ask-layout").classList.remove("is-empty");
   setBusy(button, true, "检索中");
-  $("#ask-result").innerHTML = `<div class="answer">${loadingLines()}</div>`;
+  $("#ask-result").innerHTML = `<article class="answer answer-loading">${loadingLines()}</article>`;
+  $("#evidence-gate").innerHTML = "";
+  $("#evidence-count").textContent = "";
   $("#evidence-body").innerHTML = loadingLines();
   try {
     const result = await api("/ask", { method: "POST", body: askPayload(question, state.conversationId) });
     state.lastAsk = result;
     state.conversationId = result.conversation_id;
-    renderAsk(result);
+    renderAsk(result, question);
+    input.value = "";
+    resizeAskInput();
     loadConversations();
     loadDashboard();
   } catch (error) {
-    $("#ask-result").innerHTML = `<div class="answer"><div class="empty-block">${esc(error.message)}</div></div>`;
+    $("#ask-result").innerHTML = `<article class="answer"><div class="answer-error">${esc(error.message)}</div></article>`;
+    $("#evidence-body").innerHTML = `<div class="rail-empty">暂无证据</div>`;
+    $(".ask-layout").classList.add("is-empty");
     toast(error.message);
   } finally {
     setBusy(button, false);
   }
 }
 
-function renderAsk(result) {
+function askEmptyHtml() {
+  const stats = state.stats || {};
+  const documents = Number(stats.documents || 0);
+  const scope = documents
+    ? `可检索 ${num(documents)} 份文档 · ${num(stats.chunks || 0)} 个检索单元 · ${num(stats.entities || 0)} 个实体 · ${num(stats.facts_active || 0)} 条事实`
+    : "";
+  return scope ? `<div class="ask-empty"><div class="ask-empty-intro"><div class="ask-scope">${esc(scope)}</div></div></div>` : "";
+}
+
+function renderAsk(result, question = $("#question").value.trim() || "检索结果") {
+  $(".ask-layout").classList.remove("is-empty");
   const refused = Boolean(result.refused);
-  const modeName = state.meta?.modes?.find((mode) => mode.id === result.mode)?.name || result.mode;
-  const citations = result.citations || [];
-  const facts = result.facts || [];
+  const compact = refused || String(result.answer || "").length < 220;
+  const modeName = state.meta?.modes?.find((mode) => mode.id === result.mode)?.name || result.mode || "";
+  const confidence = Number(result.confidence) > 0 ? Math.round(Number(result.confidence) * 100) : 0;
   $("#ask-result").innerHTML = `
-    <article class="answer">
-      <div class="answer-status">
-        <span class="pill ${refused ? "warn" : "ok"}">${refused ? "证据不足" : "已回答"}</span>
-        <span class="pill">${esc(modeName)}</span>
-        <span class="pill">置信度 ${esc(result.confidence)}</span>
-        <span class="pill">${num(result.latency_ms)} ms</span>
-        <span class="pill">${num(citations.length)} 条引用</span>
-      </div>
+    <article class="answer ${compact ? "is-compact" : ""}">
+      <header class="answer-head">
+        <h2 class="answer-question" title="${esc(question)}">${esc(question)}</h2>
+        <div class="answer-meta">
+          <span>${esc(modeName)}</span>
+          <span class="pill ${refused ? "warn" : "ok"}">${refused ? "证据不足" : "已回答"}</span>
+          ${confidence ? `<span>置信度 ${confidence}%</span>` : ""}
+          ${result.latency_ms ? `<span>${latencyLabel(result.latency_ms)}</span>` : ""}
+        </div>
+      </header>
       <div class="answer-body">${answerHtml(result.answer, refused)}</div>
-      ${facts.length ? `<div class="answer-facts"><span class="caption">事实</span>${facts.slice(0, 6).map((fact) => `
-        <div class="answer-fact"><b>${esc(fact.subject)}</b> ${esc(fact.predicate)} ${esc(fact.object || "")}</div>`).join("")}</div>` : ""}
-      <div class="answer-foot">
-        <div class="answer-metrics">
-          <span>top ${(result.stats?.top_score ?? 0).toFixed(3)} / 阈值 ${(result.stats?.threshold ?? 0).toFixed(3)}</span>
-          <span>证据 ${num(result.stats?.evidence_count || 0)} · 淘汰 ${num(result.stats?.rejected_candidates || 0)}</span>
-        </div>
+      <footer class="answer-foot">
         <div class="answer-actions">
-          <button class="btn" data-feedback="1">有帮助</button>
-          <button class="btn" data-feedback="-1">需改进</button>
-          <button class="btn" data-open-trace="${esc(result.trace_id)}">查看轨迹</button>
+          <button class="text-btn" type="button" data-feedback="1">有帮助</button>
+          <button class="text-btn" type="button" data-feedback="-1">需改进</button>
+          ${result.trace_id ? `<button class="text-btn" type="button" data-open-trace="${esc(result.trace_id)}">查看轨迹</button>` : ""}
         </div>
-      </div>
+      </footer>
     </article>`;
   $$("[data-feedback]", $("#ask-result")).forEach((button) => {
     button.addEventListener("click", () => sendFeedback(result.message_id, Number(button.dataset.feedback)));
@@ -1189,32 +1686,85 @@ function renderAsk(result) {
     link.addEventListener("click", () => focusEvidence(Number(link.dataset.cite)));
   });
   renderEvidence(result);
+  renderRecentState();
   stampNow();
+}
+
+function gateHtml(stats) {
+  const top = Math.min(1, Math.max(0, Number(stats.top_score) || 0));
+  const threshold = Math.min(1, Math.max(0, Number(stats.threshold) || 0));
+  if (!top || !threshold) return "";
+  return `<div class="gate" role="img" aria-label="最高检索分 ${top.toFixed(3)}，检索阈值 ${threshold.toFixed(3)}">
+    <div class="gate-head"><span>检索阈值</span><span><b>最高 ${top.toFixed(3)}</b> · 阈值 ${threshold.toFixed(3)}</span></div>
+    <div class="gate-track">
+      <span class="gate-fill" style="width:${(top * 100).toFixed(2)}%"></span>
+      <span class="gate-tick" style="left:${(threshold * 100).toFixed(2)}%"></span>
+    </div>
+  </div>`;
 }
 
 function renderEvidence(result) {
   const evidence = result.evidence || [];
   const facts = result.facts || [];
-  $("#evidence-count").textContent = `${evidence.length} 条`;
-  if (!evidence.length && !facts.length) {
-    $("#evidence-body").innerHTML = `<div class="empty-block">暂无证据</div>`;
+  const stats = result.stats || {};
+  const gate = $("#evidence-gate");
+  const body = $("#evidence-body");
+  const countEl = $("#evidence-count");
+  gate.innerHTML = gateHtml(stats);
+  if (!evidence.length) {
+    countEl.textContent = "";
+    body.innerHTML = facts.length ? factsHtml(facts) : `<div class="rail-empty">暂无证据</div>`;
     return;
   }
-  $("#evidence-body").innerHTML = evidence.map((item, index) => `
-    <div class="evidence-item" data-evidence-index="${index + 1}">
-      <div class="ev-head"><span class="ev-num">${index + 1}</span><span class="ev-title">${esc(item.doc_title)}</span></div>
-      <div class="ev-quote">${esc(plain(item.quote || item.text || ""))}</div>
-      <div class="ev-meta">${item.page ? `p.${esc(item.page)}` : "正文"} · ${esc(item.heading_path?.join(" / ") || "")} · ${Number(item.scores?.rerank || 0).toFixed(3)}</div>
-    </div>`).join("") + (facts.length ? `<div class="evidence-item"><div class="ev-head"><span class="ev-num">·</span><span class="ev-title">事实层</span></div>${facts.slice(0, 6).map((fact) => `
-      <div class="ev-meta" style="margin-top:4px">${esc(fact.subject)} ${esc(fact.predicate)} <b style="color:var(--text);font-weight:500">${esc(fact.object || "")}</b></div>`).join("")}</div>` : "");
+  const rejected = Number(stats.rejected_candidates) || 0;
+  countEl.textContent = stats.top_score != null
+    ? `入选 ${num(evidence.length)} · 淘汰 ${num(rejected)}`
+    : `${num(evidence.length)} 条`;
+  body.innerHTML = evidence.map((item, index) => {
+    const score = Number(item.scores?.rerank);
+    const path = (item.heading_path || []).slice(-2).join(" / ");
+    const meta = [item.page ? `第 ${esc(item.page)} 页` : "正文", path ? esc(path) : ""].filter(Boolean).join(" · ");
+    return `<button class="evr-item" type="button" data-evidence-index="${index + 1}">
+      <span class="evr-head">
+        <span class="evr-num">${index + 1}</span>
+        <span class="evr-doc">${esc(item.doc_title || "未命名文档")}</span>
+        ${Number.isFinite(score) ? `<span class="evr-score">${score.toFixed(3)}</span>` : ""}
+      </span>
+      <span class="evr-quote">${esc(plain(item.quote || item.text || ""))}</span>
+      <span class="evr-meta">${meta}</span>
+    </button>`;
+  }).join("") + factsHtml(facts);
+  $$("#evidence-body [data-evidence-index]").forEach((item) => {
+    item.addEventListener("click", () => {
+      $$("#evidence-body [data-evidence-index]").forEach((row) => row.classList.toggle("is-target", row === item));
+      flashAskCite(Number(item.dataset.evidenceIndex));
+    });
+  });
+}
+
+function factsHtml(facts) {
+  if (!facts.length) return "";
+  return `<div class="facts-block">
+    <div class="facts-head"><span>事实层</span><span>${num(facts.length)} 条</span></div>
+    ${facts.slice(0, 6).map((fact) => `<div class="fact"><span>${esc(fact.subject)}</span> · ${esc(fact.predicate)} <span class="fact-object">${esc(fact.object || "")}</span></div>`).join("")}
+  </div>`;
+}
+
+function flashAskCite(index) {
+  const cite = $(`#ask-result [data-cite="${index}"]`);
+  if (!cite) return;
+  $$(".cite.is-target").forEach((el) => el.classList.remove("is-target"));
+  cite.classList.add("is-target");
+  cite.scrollIntoView({ behavior: "smooth", block: "center" });
+  setTimeout(() => cite.classList.remove("is-target"), 1600);
 }
 
 function focusEvidence(index) {
-  const item = $(`[data-evidence-index="${index}"]`);
+  const item = $(`#evidence-body [data-evidence-index="${index}"]`);
   if (!item) return;
-  $$(".evidence-item").forEach((el) => el.classList.remove("is-target"));
+  $$("#evidence-body [data-evidence-index]").forEach((el) => el.classList.remove("is-target"));
   item.classList.add("is-target");
-  item.scrollIntoView({ behavior: "smooth", block: "center" });
+  item.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 async function sendFeedback(messageId, value) {
@@ -1229,86 +1779,90 @@ async function sendFeedback(messageId, value) {
   }
 }
 
+async function loadAsk() {
+  loadConversations();
+  if ($("#ask-result .answer")) return;
+  $(".ask-layout").classList.add("is-empty");
+  $("#ask-result").innerHTML = askEmptyHtml();
+  try {
+    state.stats = await api("/stats");
+  } catch (_) {
+    return;
+  }
+  if (!$("#ask-result .answer")) $("#ask-result").innerHTML = askEmptyHtml();
+}
+
 async function loadConversations() {
   try {
-    const data = await api("/conversations?limit=12");
+    const data = await api("/conversations?limit=8");
     state.conversations = data.items;
-    const target = $("#conversation-list");
-    if (!data.items.length) {
-      target.innerHTML = `<div class="empty-block">暂无会话</div>`;
-      return;
-    }
-    target.innerHTML = data.items.map((conversation) => `
-      <button class="row" type="button" data-conversation="${esc(conversation.id)}">
-        <span class="row-main">
-          <span class="row-title">${esc(conversation.title || "未命名会话")}</span>
-          <span class="row-sub">${num(conversation.messages)} 条消息 · ${shortDate(conversation.created_at)}</span>
-        </span>
-        <span class="row-end">打开</span>
-      </button>`).join("");
-    $$("#conversation-list [data-conversation]").forEach((row) => {
-      row.addEventListener("click", () => loadConversation(row.dataset.conversation));
-    });
+    renderRecentState();
   } catch (_) { /* ignore */ }
 }
 
-async function loadConversation(conversationId) {
-  try {
-    const data = await api(`/conversations/${conversationId}`);
-    state.conversationId = conversationId;
-    const messages = data.messages || [];
-    $("#ask-result").innerHTML = `
-      <article class="answer">
-        <div class="answer-status">
-          <span class="pill">会话</span>
-          <button class="text-btn" id="back-to-ask">新提问</button>
-        </div>
-        <div class="answer-body">
-          ${messages.map((message) => `
-            <div style="padding:10px 0;border-top:1px solid var(--rule)">
-              <div class="ev-meta" style="margin:0 0 4px">${message.role === "user" ? "你" : "知织"} · ${shortDate(message.created_at)}${message.role === "assistant" && message.confidence != null ? ` · 置信度 ${esc(message.confidence)}` : ""}</div>
-              ${message.role === "assistant" ? linkifyCitations(message.content, false).replace(/\n/g, "<br>") : esc(message.content)}
-            </div>`).join("")}
-        </div>
-      </article>`;
-    $("#back-to-ask").addEventListener("click", () => {
-      state.conversationId = null;
-      $("#ask-result").innerHTML = `<div class="empty-block">尚无检索结果</div>`;
-    });
-    $$("[data-cite]", $("#ask-result")).forEach((link) => {
-      link.addEventListener("click", () => {
-        const citation = messages.flatMap((message) => message.citations || [])[Number(link.dataset.cite) - 1];
-        if (citation) toast(plain(citation.quote) || "引用片段");
-      });
-    });
-    $("#evidence-body").innerHTML = `<div class="empty-block">暂无证据</div>`;
-    $("#evidence-count").textContent = "";
-  } catch (error) {
-    toast(error.message);
+function renderRecentState() {
+  const target = $("#conversation-list");
+  if (!target) return;
+  const items = state.conversations.slice(0, 8);
+  if (!items.length) {
+    target.hidden = true;
+    target.innerHTML = "";
+    return;
   }
+  target.hidden = false;
+  target.innerHTML = `<span class="recent-label">最近</span>` + items.map((conversation) => `
+    <button class="recent-item ${conversation.id === state.conversationId ? "active" : ""}" type="button" data-conversation="${esc(conversation.id)}" title="${esc(conversation.title || "未命名会话")}">
+      <span class="recent-title">${esc(conversation.title || "未命名会话")}</span>
+      <span class="recent-time">${chatWhen(conversation.created_at)}</span>
+    </button>`).join("");
+  $$("#conversation-list [data-conversation]").forEach((row) => {
+    row.addEventListener("click", () => continueConversation(row.dataset.conversation));
+  });
+}
+
+function continueConversation(conversationId) {
+  state.chatConversationId = conversationId;
+  state.chatDraft = false;
+  state.chatMessages = [];
+  state.chatEvidence = null;
+  showPage("chat");
+  openChatConversation(conversationId);
+}
+
+const NODE_TYPE_LABEL = { concept: "概念", org: "机构", person: "人物", location: "地点", event: "事件", literal: "字面值" };
+
+function nodeTypeLabel(type) {
+  return NODE_TYPE_LABEL[type] || type || "实体";
+}
+
+function setEntitySub() {
+  const nodes = state.graph?.nodes?.length ?? state.entities.length;
+  const edges = state.graph?.edges?.length;
 }
 
 /* ============ Entities ============ */
 async function loadEntities(q = "") {
   try {
     const data = await api(`/entities?limit=80${q ? `&q=${encodeURIComponent(q)}` : ""}`);
-    state.entities = data.items;
-    setSub("entities", `${num(data.items.length)} 个实体`);
+    const items = [...data.items].sort((a, b) => (b.facts || 0) - (a.facts || 0) || a.name.localeCompare(b.name, "zh"));
+    state.entities = items;
+    setEntitySub();
     const target = $("#entity-list");
-    $("#entity-count").textContent = `${num(data.items.length)} 个`;
-    if (!data.items.length) {
+    $("#entity-count").textContent = `${num(items.length)} 个`;
+    if (!items.length) {
       target.innerHTML = `<div class="empty-block">暂无实体</div>`;
       return;
     }
-    target.innerHTML = data.items.map((entity) => `
+    target.innerHTML = items.map((entity) => `
       <button class="row ${state.activeEntity === entity.id ? "selected" : ""}" type="button" data-entity="${esc(entity.id)}">
         <span class="row-main">
           <span class="row-title">${esc(entity.name)}</span>
-          <span class="row-sub">${esc(entity.type)} · ${num(entity.facts)} 条事实</span>
+          <span class="row-sub">${esc(nodeTypeLabel(entity.type))} · ${num(entity.facts)} 条事实</span>
         </span>
       </button>`).join("");
     $$("#entity-list [data-entity]").forEach((row) => row.addEventListener("click", () => selectEntity(row.dataset.entity)));
-    if (!state.activeEntity && data.items[0]) selectEntity(data.items[0].id);
+    const hasActive = items.some((entity) => entity.id === state.activeEntity);
+    if (!hasActive && items[0]) selectEntity(items[0].id);
   } catch (error) {
     toast(error.message);
   }
@@ -1317,131 +1871,421 @@ async function loadEntities(q = "") {
 async function selectEntity(entityId) {
   state.activeEntity = entityId;
   $$("#entity-list [data-entity]").forEach((row) => row.classList.toggle("selected", row.dataset.entity === entityId));
+  drawGraph(entityId);
   const target = $("#entity-detail");
   target.innerHTML = loadingLines();
   try {
     const data = await api(`/entities/${entityId}`);
     const entity = data.entity;
     const facts = data.facts || [];
+    const documents = data.documents || [];
     target.innerHTML = `
-      <div class="entity-head">
-        <h2>${esc(entity.name)}</h2>
-        <span class="pill">${esc(entity.type)}</span>
+      <div class="entity-head"><h2>${esc(entity.name)}</h2></div>
+      <div class="entity-tags">
+        <span class="pill">${esc(nodeTypeLabel(entity.type))}</span>
         <span class="pill ${entity.acl_label === "全员可见" ? "" : "warn"}">${esc(entity.acl_label)}</span>
       </div>
       ${entity.description ? `<p class="entity-desc">${esc(plain(entity.description))}</p>` : ""}
 
-      <div class="section">
-        <h3>事实时间线</h3>
-        ${facts.length ? `<ol class="timeline">${facts.map((fact) => `
-          <li class="tl-item">
-            <span class="tl-date">${fact.valid_from ? dayOnly(fact.valid_from) : "无"}</span>
-            <div class="tl-body">
-              <div class="tl-triple">${esc(fact.subject)} <span class="pred">${esc(fact.predicate)}</span> <span class="obj">${esc(fact.object || "")}</span></div>
-              ${fact.evidence?.[0]?.quote ? `<div class="tl-quote">${esc(plain(fact.evidence[0].quote))}</div>` : ""}
-              <div class="tl-meta">${factPill(fact.status)}<span>置信度 ${esc(fact.confidence)}</span><span>${fact.valid_to ? `截至 ${dayOnly(fact.valid_to)}` : "至今"}</span></div>
-            </div>
-          </li>`).join("")}</ol>` : `<div class="empty-block">暂无事实</div>`}
+      <div class="entity-section">
+        <div class="entity-section-head"><h3>事实</h3><span>${num(facts.length)} 条</span></div>
+        ${facts.length ? `<div class="entity-facts">${facts.map(entityFactHtml).join("")}</div>` : `<div class="rail-empty">暂无事实</div>`}
       </div>
 
-      <div class="section">
-        <h3>相关文档</h3>
+      <div class="entity-section">
+        <div class="entity-section-head"><h3>相关文档</h3><span>${num(documents.length)} 份</span></div>
         <div class="doc-links">
-          ${(data.documents || []).map((doc) => `<button class="doc-link" type="button" data-doc="${esc(doc.id)}">${esc(doc.title)}</button>`).join("") || `<span class="muted small">暂无</span>`}
+          ${documents.map((doc) => `<button class="doc-link" type="button" data-doc="${esc(doc.id)}">${esc(doc.title)}</button>`).join("") || `<div class="rail-empty">暂无</div>`}
         </div>
       </div>`;
     $$("#entity-detail [data-doc]").forEach((button) => button.addEventListener("click", () => openDoc(button.dataset.doc)));
-    drawGraph(entityId);
   } catch (error) {
     target.innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
   }
+}
+
+function entityFactHtml(fact) {
+  const object = fact.object || fact.object_literal || "";
+  const status = fact.status && fact.status !== "active" ? factPill(fact.status) : "";
+  const date = fact.valid_from
+    ? `${dayOnly(fact.valid_from)} → ${fact.valid_to ? dayOnly(fact.valid_to) : "至今"}`
+    : (fact.recorded_at ? `记录于 ${dayOnly(fact.recorded_at)}` : "");
+  const quote = fact.evidence?.[0]?.quote ? `<div class="fact-quote">${esc(plain(fact.evidence[0].quote))}</div>` : "";
+  return `<div class="entity-fact">
+    <div class="fact-triple">
+      <span class="fact-pred">${esc(fact.predicate)}</span>
+      ${object ? `<span class="fact-arrow">→</span><span class="fact-obj">${esc(object)}</span>` : ""}
+    </div>
+    <div class="fact-meta">
+      ${status}
+      ${fact.confidence != null ? `<span>置信度 ${esc(fact.confidence)}</span>` : ""}
+      ${date ? `<span>${esc(date)}</span>` : ""}
+    </div>
+    ${quote}
+  </div>`;
 }
 
 async function loadGraph() {
   try {
     const data = await api("/graph?limit=80");
     state.graph = data;
+    setEntitySub();
     drawGraph(state.activeEntity);
   } catch (error) {
     toast(error.message);
   }
 }
 
+function graphTextLabel(text, limit) {
+  const chars = Array.from(text || "");
+  return chars.length > limit ? `${chars.slice(0, limit - 1).join("")}…` : chars.join("");
+}
+
+function graphTextWidth(text) {
+  return Array.from(text || "").reduce((width, ch) => width + (/[\u3000-\u9fff\uff00-\uffef]/.test(ch) ? 11.2 : 6.4), 0);
+}
+
+function splitGraph(nodes, edges) {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const adjacency = new Map(nodes.map((node) => [node.id, []]));
+  edges.forEach((edge) => {
+    (adjacency.get(edge.source) || []).push(edge.target);
+    (adjacency.get(edge.target) || []).push(edge.source);
+  });
+  const seen = new Set();
+  const components = [];
+  nodes.forEach((node) => {
+    if (seen.has(node.id)) return;
+    const stack = [node.id];
+    const ids = [];
+    seen.add(node.id);
+    while (stack.length) {
+      const id = stack.pop();
+      ids.push(id);
+      (adjacency.get(id) || []).forEach((other) => {
+        if (!seen.has(other)) {
+          seen.add(other);
+          stack.push(other);
+        }
+      });
+    }
+    const idSet = new Set(ids);
+    components.push({
+      nodes: ids.map((id) => byId.get(id)),
+      edges: edges.filter((edge) => idSet.has(edge.source) && idSet.has(edge.target)),
+    });
+  });
+  return components.sort((a, b) => b.nodes.length - a.nodes.length || a.nodes[0].name.localeCompare(b.nodes[0].name, "zh"));
+}
+
+function localComponent(component, radiusOf, compact) {
+  const degree = new Map(component.nodes.map((node) => [node.id, 0]));
+  component.edges.forEach((edge) => {
+    degree.set(edge.source, (degree.get(edge.source) || 0) + 1);
+    degree.set(edge.target, (degree.get(edge.target) || 0) + 1);
+  });
+  const hub = component.nodes.reduce((best, node) => (degree.get(node.id) > degree.get(best.id) ? node : best), component.nodes[0]);
+  const positions = new Map([[hub.id, { x: 0, y: 0 }]]);
+  const others = component.nodes.filter((node) => node.id !== hub.id);
+  const radius = compact ? 34 : 48;
+  if (others.length === 1) {
+    positions.set(others[0].id, { x: radius, y: 0 });
+  } else {
+    const step = (Math.PI * 2) / Math.max(1, others.length);
+    others.forEach((node, index) => {
+      const angle = -Math.PI / 2 + index * step;
+      positions.set(node.id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
+    });
+  }
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  component.nodes.forEach((node) => {
+    const point = positions.get(node.id);
+    const nodeRadius = radiusOf(node);
+    minX = Math.min(minX, point.x - nodeRadius);
+    maxX = Math.max(maxX, point.x + nodeRadius);
+    minY = Math.min(minY, point.y - nodeRadius);
+    maxY = Math.max(maxY, point.y + nodeRadius);
+  });
+  return { positions, minX, maxX, minY, maxY };
+}
+
+function graphLayout(nodes, edges, width, height, radiusOf, centerId, compact, gridMode) {
+  const components = splitGraph(nodes, edges);
+  const selected = components.find((component) => component.nodes.some((node) => node.id === centerId)) || components[0];
+  const rest = components.filter((component) => component !== selected);
+  const layouts = new Map(components.map((component) => [component, localComponent(component, radiusOf, compact)]));
+  const centers = new Map();
+  if (gridMode) {
+    const ordered = [selected, ...rest];
+    const cols = 2;
+    const rows = Math.max(1, Math.ceil(ordered.length / cols));
+    const cellW = width / cols;
+    const cellH = height / rows;
+    ordered.forEach((component, index) => {
+      centers.set(component, {
+        x: cellW * ((index % cols) + 0.5),
+        y: cellH * (Math.floor(index / cols) + 0.5),
+      });
+    });
+  } else {
+    centers.set(selected, { x: width / 2, y: height / 2 });
+    const radiusX = Math.max(70, width / 2 - 108);
+    const radiusY = Math.max(60, height / 2 - 100);
+    rest.forEach((component, index) => {
+      const angle = -Math.PI / 2 + (index * Math.PI * 2) / Math.max(1, rest.length);
+      centers.set(component, {
+        x: width / 2 + Math.cos(angle) * radiusX,
+        y: height / 2 + Math.sin(angle) * radiusY,
+      });
+    });
+  }
+  const points = new Map();
+  components.forEach((component) => {
+    const layout = layouts.get(component);
+    const center = centers.get(component);
+    const offsetX = center.x - (layout.minX + layout.maxX) / 2;
+    const offsetY = center.y - (layout.minY + layout.maxY) / 2;
+    component.nodes.forEach((node) => {
+      const point = layout.positions.get(node.id);
+      points.set(node.id, { id: node.id, node, x: point.x + offsetX, y: point.y + offsetY });
+    });
+  });
+  return points;
+}
+
 function drawGraph(centerId) {
   const svg = $("#graph-canvas");
   if (!svg) return;
-  const nodes = (state.graph.nodes || []).slice(0, 30);
-  const edges = (state.graph.edges || []).filter((edge) => nodes.some((node) => node.id === edge.source) && nodes.some((node) => node.id === edge.target));
-  $("#graph-meta").textContent = `${num(nodes.length)} 个节点 · ${num(edges.length)} 条关系`;
-  svg.innerHTML = "";
+  const legend = $("#graph-legend");
+  const allNodes = state.graph?.nodes || [];
+  const allEdges = state.graph?.edges || [];
+  const width = Math.max(300, Math.round(svg.clientWidth || 600));
+  const height = Math.max(220, Math.round(svg.clientHeight || 460));
   const NS = "http://www.w3.org/2000/svg";
-  const width = Math.max(280, svg.clientWidth || 960);
-  const height = Math.max(180, svg.clientHeight || 320);
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  const cx = width / 2, cy = height / 2;
-  if (!nodes.length) {
+  svg.innerHTML = "";
+  if (legend) legend.innerHTML = "";
+  if (!allNodes.length) {
     const text = document.createElementNS(NS, "text");
-    text.setAttribute("x", String(cx));
-    text.setAttribute("y", String(cy));
+    text.setAttribute("x", String(width / 2));
+    text.setAttribute("y", String(height / 2));
     text.setAttribute("text-anchor", "middle");
-    text.setAttribute("fill", "#6d7478");
+    text.setAttribute("fill", "var(--muted)");
     text.setAttribute("font-size", "12");
-    text.textContent = "暂无图谱";
+    text.textContent = "暂无实体关系";
     svg.appendChild(text);
     return;
   }
+
+  let nodes = allNodes.slice(0, 40);
+  if (!nodes.some((node) => node.id === centerId)) {
+    const active = allNodes.find((node) => node.id === centerId);
+    if (active) nodes = [...nodes.slice(0, 39), active];
+  }
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = allEdges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
   const center = nodes.find((node) => node.id === centerId) || nodes[0];
-  const others = nodes.filter((node) => node.id !== center.id);
-  const spanX = width / 2 - 64;
-  const spanY = height / 2 - (width < 480 ? 46 : 52);
-  const positions = { [center.id]: { x: cx, y: cy } };
-  others.forEach((node, index) => {
-    const angle = (index / Math.max(1, others.length)) * Math.PI * 2 - Math.PI / 2;
-    const scale = 0.74 + (index % 3) * 0.12;
-    positions[node.id] = { x: cx + Math.cos(angle) * spanX * scale, y: cy + Math.sin(angle) * spanY * scale };
-  });
+  const degree = new Map(nodes.map((node) => [node.id, 0]));
   edges.forEach((edge) => {
-    const a = positions[edge.source];
-    const b = positions[edge.target];
+    degree.set(edge.source, (degree.get(edge.source) || 0) + 1);
+    degree.set(edge.target, (degree.get(edge.target) || 0) + 1);
+  });
+  const compact = width < 420;
+  const gridMode = width < 560;
+  const radiusOf = (node) => {
+    if (node.id === center.id) return compact ? 19 : 24;
+    return (compact ? 8 : 9) + Math.min(compact ? 6 : 8, (degree.get(node.id) || 0) * (compact ? 1.6 : 2));
+  };
+  const points = graphLayout(nodes, edges, width, height, radiusOf, center.id, compact, gridMode);
+
+  const types = [...new Set(nodes.map((node) => node.type).filter(Boolean))];
+  if (legend) {
+    legend.innerHTML = types.map((type) => {
+      const typeClass = String(type).replace(/[^a-z]/gi, "").toLowerCase();
+      return `<span class="graph-legend-item"><i class="graph-mark ${typeClass}"></i>${esc(nodeTypeLabel(type))}</span>`;
+    }).join("");
+  }
+
+  svg.innerHTML = "";
+
+  edges.forEach((edge) => {
+    const a = points.get(edge.source);
+    const b = points.get(edge.target);
     if (!a || !b) return;
+    const source = nodes.find((node) => node.id === edge.source);
+    const target = nodes.find((node) => node.id === edge.target);
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const distance = Math.sqrt(dx * dx + dy * dy) || 1;
+    if (distance < radiusOf(source) + radiusOf(target) + 6) return;
+    const ux = dx / distance;
+    const uy = dy / distance;
+    const incident = edge.source === center.id || edge.target === center.id;
     const line = document.createElementNS(NS, "line");
-    line.setAttribute("x1", a.x);
-    line.setAttribute("y1", a.y);
-    line.setAttribute("x2", b.x);
-    line.setAttribute("y2", b.y);
-    line.setAttribute("class", `g-link ${edge.status === "disputed" ? "disputed" : ""}`);
+    line.setAttribute("x1", String(a.x + ux * (radiusOf(source) + 1)));
+    line.setAttribute("y1", String(a.y + uy * (radiusOf(source) + 1)));
+    line.setAttribute("x2", String(b.x - ux * (radiusOf(target) + 3)));
+    line.setAttribute("y2", String(b.y - uy * (radiusOf(target) + 3)));
+    line.setAttribute("class", `g-link${incident ? " strong" : ""}${edge.status === "disputed" ? " disputed" : ""}`);
+    const title = document.createElementNS(NS, "title");
+    title.textContent = `${source.name} — ${edge.label || "关系"} → ${target.name}`;
+    line.appendChild(title);
     svg.appendChild(line);
   });
+
+  const labelBoxes = [];
+  const nodeLabels = new Map();
+  const sortedNodes = [...nodes].sort((a, b) => {
+    if (a.id === center.id) return -1;
+    if (b.id === center.id) return 1;
+    return (degree.get(b.id) || 0) - (degree.get(a.id) || 0);
+  });
+  sortedNodes.forEach((node) => {
+    const point = points.get(node.id);
+    const limit = node.id === center.id ? (compact ? 8 : 10) : (compact ? 6 : 8);
+    const labelText = graphTextLabel(node.name, limit);
+    const labelWidth = graphTextWidth(labelText);
+    const radius = radiusOf(node);
+    const half = labelWidth / 2 + 2;
+    const belowY = point.y + radius + 15;
+    const aboveY = point.y - radius - 8;
+    const sideY = point.y + 4;
+    const candidates = [
+      { x: point.x, y: belowY, anchor: "middle", box: { x1: point.x - half, x2: point.x + half, y1: belowY - 10, y2: belowY + 4 } },
+      { x: point.x, y: aboveY, anchor: "middle", box: { x1: point.x - half, x2: point.x + half, y1: aboveY - 10, y2: aboveY + 4 } },
+      { x: point.x + radius + 7, y: sideY, anchor: "start", box: { x1: point.x + radius + 5, x2: point.x + radius + 7 + labelWidth, y1: sideY - 10, y2: sideY + 4 } },
+      { x: point.x - radius - 7, y: sideY, anchor: "end", box: { x1: point.x - radius - 7 - labelWidth, x2: point.x - radius - 5, y1: sideY - 10, y2: sideY + 4 } },
+      { x: point.x, y: belowY + 14, anchor: "middle", box: { x1: point.x - half, x2: point.x + half, y1: belowY + 4, y2: belowY + 18 } },
+      { x: point.x, y: aboveY - 14, anchor: "middle", box: { x1: point.x - half, x2: point.x + half, y1: aboveY - 24, y2: aboveY - 10 } },
+    ];
+    let label = null;
+    for (const candidate of candidates) {
+      if (candidate.box.x1 < 6 || candidate.box.x2 > width - 6 || candidate.box.y1 < 6 || candidate.box.y2 > height - 6) continue;
+      const hitsLabel = labelBoxes.some((other) => candidate.box.x2 > other.x1 && candidate.box.x1 < other.x2 && candidate.box.y2 > other.y1 && candidate.box.y1 < other.y2);
+      const hitsNode = nodes.some((other) => {
+        if (other.id === node.id) return false;
+        const otherPoint = points.get(other.id);
+        const otherRadius = radiusOf(other) + 2;
+        return candidate.box.x2 > otherPoint.x - otherRadius && candidate.box.x1 < otherPoint.x + otherRadius && candidate.box.y2 > otherPoint.y - otherRadius && candidate.box.y1 < otherPoint.y + otherRadius;
+      });
+      if (!hitsLabel && !hitsNode) {
+        label = candidate;
+        break;
+      }
+    }
+    if (!label) {
+      if (node.id !== center.id) return;
+      label = candidates[0];
+    }
+    labelBoxes.push(label.box);
+    nodeLabels.set(node.id, { text: labelText, x: label.x, y: label.y, anchor: label.anchor });
+  });
+
   nodes.forEach((node) => {
-    const position = positions[node.id];
-    if (!position) return;
+    const point = points.get(node.id);
+    const radius = radiusOf(node);
+    const typeClass = String(node.type || "").replace(/[^a-z]/gi, "").toLowerCase();
     const group = document.createElementNS(NS, "g");
-    const classes = ["g-node"];
-    if (node.type === "literal") classes.push("literal");
-    if (node.id === center.id) classes.push("center");
-    group.setAttribute("class", classes.join(" "));
-    group.setAttribute("transform", `translate(${position.x},${position.y})`);
-    if (node.id !== center.id && !node.id.startsWith("lit_")) group.style.cursor = "pointer";
-    const radius = node.id === center.id ? (width < 480 ? 21 : 27) : (width < 480 ? 13 : 17);
-    const circle = document.createElementNS(NS, "circle");
-    circle.setAttribute("r", radius);
-    group.appendChild(circle);
-    const label = document.createElementNS(NS, "text");
-    label.setAttribute("text-anchor", "middle");
-    label.setAttribute("y", String(radius + 15));
-    const chars = Array.from(node.name || "");
-    const limit = node.id === center.id ? (width < 480 ? 8 : 12) : (width < 480 ? 7 : 9);
-    label.textContent = chars.length > limit ? chars.slice(0, limit - 1).join("") + "…" : chars.join("");
-    group.appendChild(label);
+    group.setAttribute("class", `g-node${node.id === center.id ? " selected" : ""}${typeClass === "literal" ? " literal" : ""}`);
+    group.setAttribute("transform", `translate(${point.x},${point.y})`);
+    let shape;
+    if (typeClass === "org") {
+      shape = document.createElementNS(NS, "rect");
+      shape.setAttribute("x", String(-radius));
+      shape.setAttribute("y", String(-radius));
+      shape.setAttribute("width", String(radius * 2));
+      shape.setAttribute("height", String(radius * 2));
+      shape.setAttribute("rx", "4");
+    } else if (typeClass === "literal") {
+      shape = document.createElementNS(NS, "path");
+      shape.setAttribute("d", `M0,${-radius} L${radius},0 L0,${radius} L${-radius},0 Z`);
+    } else {
+      shape = document.createElementNS(NS, "circle");
+      shape.setAttribute("r", String(radius));
+    }
+    shape.setAttribute("class", "g-shape");
+    group.appendChild(shape);
+    const label = nodeLabels.get(node.id);
+    if (label) {
+      const text = document.createElementNS(NS, "text");
+      text.setAttribute("text-anchor", label.anchor);
+      text.setAttribute("x", String(label.x - point.x));
+      text.setAttribute("y", String(label.y - point.y));
+      text.textContent = label.text;
+      group.appendChild(text);
+    }
     const title = document.createElementNS(NS, "title");
-    title.textContent = node.name || "";
+    title.textContent = `${node.name} · ${nodeTypeLabel(node.type)}`;
     group.appendChild(title);
-    if (node.id !== center.id && !node.id.startsWith("lit_")) {
+    if (node.id !== center.id) {
+      group.setAttribute("tabindex", "0");
+      group.setAttribute("role", "button");
+      group.setAttribute("aria-label", `选择实体 ${node.name}`);
       group.addEventListener("click", () => selectEntity(node.id));
+      group.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          selectEntity(node.id);
+        }
+      });
+    } else {
+      group.style.cursor = "default";
     }
     svg.appendChild(group);
   });
+
+  edges.forEach((edge) => {
+    if (!edge.label) return;
+    const a = points.get(edge.source);
+    const b = points.get(edge.target);
+    if (!a || !b) return;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const distance = Math.sqrt(dx * dx + dy * dy) || 1;
+    if (distance < 100) return;
+    const mx = (a.x + b.x) / 2;
+    const my = (a.y + b.y) / 2;
+    const textValue = graphTextLabel(edge.label, compact ? 7 : 9);
+    const textWidth = graphTextWidth(textValue);
+    const box = { x1: mx - textWidth / 2 - 5, x2: mx + textWidth / 2 + 5, y1: my - 9, y2: my + 4 };
+    const hitsLabel = labelBoxes.some((other) => box.x2 > other.x1 && box.x1 < other.x2 && box.y2 > other.y1 && box.y1 < other.y2);
+    const hitsNode = nodes.some((node) => {
+      const point = points.get(node.id);
+      const nodeRadius = radiusOf(node) + 4;
+      return box.x2 > point.x - nodeRadius && box.x1 < point.x + nodeRadius && box.y2 > point.y - nodeRadius && box.y1 < point.y + nodeRadius;
+    });
+    if (hitsLabel || hitsNode) return;
+    const group = document.createElementNS(NS, "g");
+    group.setAttribute("pointer-events", "none");
+    const bg = document.createElementNS(NS, "rect");
+    bg.setAttribute("class", "g-edge-bg");
+    bg.setAttribute("x", String(box.x1));
+    bg.setAttribute("y", String(box.y1));
+    bg.setAttribute("width", String(box.x2 - box.x1));
+    bg.setAttribute("height", String(box.y2 - box.y1));
+    bg.setAttribute("rx", "2");
+    group.appendChild(bg);
+    const text = document.createElementNS(NS, "text");
+    text.setAttribute("class", "g-edge-label");
+    text.setAttribute("x", String(mx));
+    text.setAttribute("y", String(my));
+    text.setAttribute("text-anchor", "middle");
+    text.setAttribute("dominant-baseline", "middle");
+    text.textContent = textValue;
+    group.appendChild(text);
+    svg.appendChild(group);
+  });
 }
+
+let graphResizeTimer = 0;
+window.addEventListener("resize", () => {
+  if (document.body.dataset.page !== "entities") return;
+  window.clearTimeout(graphResizeTimer);
+  graphResizeTimer = window.setTimeout(() => drawGraph(state.activeEntity), 180);
+});
 
 /* ============ Review ============ */
 async function loadReview() {
@@ -1449,7 +2293,6 @@ async function loadReview() {
   target.innerHTML = loadingLines();
   try {
     const data = await api("/review?status=open");
-    setSub("review", `${num(data.items.length)} 项待审`);
     stampNow();
     if (!data.items.length) {
       target.innerHTML = `<div class="empty-block">暂无待审项</div>`;
@@ -1488,7 +2331,6 @@ async function loadReview() {
       button.addEventListener("click", () => resolveReview(button.dataset.review, button.dataset.action, button));
     });
   } catch (error) {
-    setSub("review", "");
     target.innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
   }
 }
@@ -1537,7 +2379,6 @@ async function loadTraces() {
     const total = data.items.length;
     const refused = data.items.filter((trace) => trace.status === "refused").length;
     const avg = total ? Math.round(data.items.reduce((sum, trace) => sum + Number(trace.latency_ms || 0), 0) / total) : 0;
-    setSub("ops", `${num(total)} 条轨迹`);
     $("#ops-body").innerHTML = `
       <div class="metrics cols-3">
         <div class="metric"><span class="metric-label">轨迹</span><div class="metric-value">${num(total)}</div></div>
@@ -1659,7 +2500,6 @@ async function loadCosts() {
     const models = Object.entries(data.by_model || {});
     const days = data.by_day || [];
     const maxAmount = Math.max(0.00001, ...features.map(([, value]) => value.amount));
-    setSub("ops", `近 30 日 · ${money(data.total_amount)}`);
     $("#ops-body").innerHTML = `
       <div class="metrics cols-3">
         <div class="metric"><span class="metric-label">金额</span><div class="metric-value">${money(data.total_amount)}</div></div>
@@ -1712,7 +2552,6 @@ async function loadGaps() {
   $("#ops-body").innerHTML = `<div class="block">${loadingLines()}</div>`;
   try {
     const data = await api("/gaps?status=open");
-    setSub("ops", `${num(data.items.length)} 个缺口`);
     $("#ops-body").innerHTML = `<section class="block">
       ${data.items.length ? `<div class="gap-list">${data.items.map((gap) => `
         <div class="gap-row">
@@ -1751,7 +2590,6 @@ async function loadEvals() {
   $("#ops-body").innerHTML = `<div class="block">${loadingLines()}</div>`;
   try {
     const data = await api("/evals/cases");
-    setSub("ops", `${num(data.total)} 道评测题`);
     $("#ops-body").innerHTML = `<section class="block">
       <div class="block-head" style="margin-bottom:10px">
         <h2>评测集</h2>
@@ -1815,8 +2653,6 @@ async function runEvals() {
 function renderIdentity() {
   const me = state.me;
   if (!me) return;
-  const summary = $("#setting-identity-summary");
-  if (summary) summary.textContent = `${me.name} · ${me.role}`;
   const target = $("#settings-identity");
   if (!target) return;
   const rows = [
@@ -1834,8 +2670,6 @@ async function loadSettings() {
   renderRuntime();
   try {
     const data = await api("/prices");
-    const summary = $("#setting-price-summary");
-    if (summary) summary.textContent = `${num(data.items.length)} 个模型 · 当前 ${data.current_runtime?.model || "无"}`;
     $("#settings-prices").innerHTML = data.items.map((price) => `
       <tr>
         <td><strong style="font-weight:500">${esc(price.model)}</strong> <span class="muted small">${esc(price.provider)}</span></td>
@@ -1849,8 +2683,6 @@ async function loadSettings() {
   -H "Content-Type: application/json" \\
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
        "params":{"name":"kb_ask","arguments":{"question":"知识库的架构约束是什么？"}}}'`;
-  const mcpSummary = $("#setting-mcp-summary");
-  if (mcpSummary) mcpSummary.textContent = `JSON-RPC · /api/v1/mcp`;
   stampNow();
 }
 
@@ -1871,11 +2703,18 @@ async function boot() {
     state.chatDraft = false;
     state.chatMessages = [];
     state.chatBusy = false;
-    $("#chat-thread").innerHTML = `<div class="empty-block">暂无消息</div>`;
+    state.chatEvidence = null;
+    state.chatFilter = "";
+    $("#chat-filter").value = "";
     $("#chat-list").innerHTML = "";
-    $("#ask-result").innerHTML = `<div class="empty-block">尚无检索结果</div>`;
-    $("#evidence-body").innerHTML = `<div class="empty-block">暂无证据</div>`;
+    renderChatThread();
+    $("#ask-result").innerHTML = askEmptyHtml();
+    $(".ask-layout").classList.add("is-empty");
+    $("#evidence-gate").innerHTML = "";
+    $("#evidence-body").innerHTML = `<div class="rail-empty">暂无证据</div>`;
     $("#evidence-count").textContent = "";
+    $("#conversation-list").innerHTML = "";
+    $("#conversation-list").hidden = true;
     await refreshShell();
     await loadMetaAndHealth();
     loadPage(state.page);
@@ -1894,22 +2733,6 @@ async function boot() {
     else openSidebar();
   });
   $("#scrim").addEventListener("click", closeSidebar);
-
-  $("#refresh-page").addEventListener("click", () => {
-    refreshShell();
-    loadMetaAndHealth();
-    loadPage(state.page);
-    toast("已刷新");
-  });
-
-  $("#global-search").addEventListener("submit", (event) => {
-    event.preventDefault();
-    const query = $("#global-search-input").value.trim();
-    if (!query) return;
-    $("#doc-search").value = query;
-    showPage("library");
-    loadDocs();
-  });
 
   $("#entity-search").addEventListener("input", (event) => {
     clearTimeout(window.__entityTimer);

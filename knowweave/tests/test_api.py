@@ -2,8 +2,21 @@
 from __future__ import annotations
 
 import json
+import time
 
 from conftest import AGENT, OUTSIDER, OWNER, VIEWER
+
+
+def _wait_ingest(client, job_id: str, timeout: float = 10.0) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        items = client.get("/api/v1/documents/jobs", headers=OWNER).json()["items"]
+        job = next((item for item in items if item["job_id"] == job_id), None)
+        if job and job["status"] in {"done", "failed"}:
+            assert job["status"] == "done", job.get("error")
+            return job
+        time.sleep(0.05)
+    raise AssertionError(f"ingest job {job_id} did not finish in time")
 
 
 def test_health_and_identity(client):
@@ -101,7 +114,8 @@ def test_upload_requires_editor_and_indexes_content(client):
     assert denied.status_code == 403
     created = client.post("/api/v1/documents/text", json=body, headers=OWNER)
     assert created.status_code == 200
-    doc_id = created.json()["document_id"]
+    job = _wait_ingest(client, created.json()["job_id"])
+    doc_id = job["doc_id"]
     detail = client.get(f"/api/v1/documents/{doc_id}", headers=OWNER).json()
     assert detail["document"]["title"] == "新员工入门手册"
     assert detail["chunks"]
@@ -112,7 +126,7 @@ def test_upload_requires_editor_and_indexes_content(client):
 
 
 def test_private_acl_document_is_hidden_from_outsider(client):
-    client.post(
+    created = client.post(
         "/api/v1/documents/text",
         json={
             "title": "董事会纪要",
@@ -121,6 +135,7 @@ def test_private_acl_document_is_hidden_from_outsider(client):
         },
         headers=OWNER,
     )
+    _wait_ingest(client, created.json()["job_id"])
     docs = client.get("/api/v1/documents", headers=OUTSIDER).json()["items"]
     assert not any(item["title"] == "董事会纪要" for item in docs)
     outsider_search = client.post(

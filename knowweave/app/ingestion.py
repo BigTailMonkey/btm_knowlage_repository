@@ -5,7 +5,9 @@ import hashlib
 import io
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 from sqlalchemy import select
@@ -69,7 +71,13 @@ def ingest_parsed(
     uri: str | None = None,
     acl: list[str] | None = None,
     background: bool = True,
+    progress: Callable[[str, float], None] | None = None,
+    job_id: str | None = None,
 ) -> dict:
+    def report(stage: str, percent: float):
+        if progress:
+            progress(stage, percent)
+
     started = time.time()
     full_text = "\n\n".join(block.text for block in parsed.blocks)
     content_hash = hashlib.sha256(full_text.encode("utf-8")).hexdigest()
@@ -149,6 +157,7 @@ def ingest_parsed(
         )
 
     chunks = chunk_blocks(parsed.blocks)
+    report("切分", 45)
     embedding_inputs: list[tuple[str, str]] = []
     for item in chunks:
         if item["is_parent"]:
@@ -159,12 +168,16 @@ def ingest_parsed(
                 f"标题：{document.title}｜章节：{' / '.join(item['heading_path'])}\n{item['text']}",
             )
         )
-    embeddings = dict(
-        zip(
-            [chunk_id for chunk_id, _ in embedding_inputs],
-            embedder.embed_many([text for _, text in embedding_inputs]),
-        )
-    )
+    embedding_batch = max(1, settings.embedding_batch_size)
+    embeddings: dict = {}
+    total_inputs = len(embedding_inputs)
+    for start in range(0, total_inputs, embedding_batch):
+        batch = embedding_inputs[start : start + embedding_batch]
+        vectors = embedder.embed_many([text for _, text in batch])
+        for (chunk_id, _), embedding in zip(batch, vectors):
+            embeddings[chunk_id] = embedding
+        report("向量化", 50 + 40 * ((start + len(batch)) / total_inputs))
+    report("写入索引", 92)
     for item in chunks:
         item_text = item["text"]
         embedding = embeddings.get(item["id"])
@@ -202,15 +215,17 @@ def ingest_parsed(
             )
         )
 
-    job = Job(
-        id=new_id("job"),
-        tenant_id=principal.tenant_id,
-        type="ingest",
-        status="done",
-        input_hash=content_hash,
-        payload={"doc_id": document.id, "version": version_number, "parser": parsed.parser},
-    )
-    db.add(job)
+    if job_id:
+        job = db.get(Job, job_id)
+        if job is None:
+            job = Job(id=job_id, tenant_id=principal.tenant_id, type="ingest")
+            db.add(job)
+    else:
+        job = Job(id=new_id("job"), tenant_id=principal.tenant_id, type="ingest")
+        db.add(job)
+    job.status = "done"
+    job.input_hash = content_hash
+    job.payload = {"doc_id": document.id, "version": version_number, "parser": parsed.parser}
     recorder.add_span(
         "ingest.parse",
         params={"parser": parsed.parser, "source_type": source_type},
@@ -258,6 +273,233 @@ def _schedule_enrichment(doc_id: str, principal: Principal):
 
     thread = threading.Thread(target=run, name=f"enrich-{doc_id}", daemon=True)
     thread.start()
+
+
+# ---------------------------------------------------------------------------
+# Async ingestion jobs
+# ---------------------------------------------------------------------------
+
+INGEST_JOBS: dict[str, dict] = {}
+_JOBS_LOCK = threading.Lock()
+_JOB_KEEP_SECONDS = 3600
+_ACTIVE_STATUSES = {"pending", "running"}
+
+
+def _job_update(job_id: str, **fields):
+    with _JOBS_LOCK:
+        record = INGEST_JOBS.get(job_id)
+        if record:
+            record.update(fields)
+
+
+def _public_job(record: dict) -> dict:
+    job = {"job_id": record.get("id")}
+    for key in (
+        "title",
+        "source",
+        "status",
+        "stage",
+        "percent",
+        "doc_id",
+        "chunks",
+        "version",
+        "duplicate",
+        "message",
+        "error",
+        "created_at",
+    ):
+        job[key] = record.get(key)
+    return job
+
+
+def list_ingest_jobs(principal: Principal, active_only: bool = False) -> list[dict]:
+    with _JOBS_LOCK:
+        records = [
+            dict(record)
+            for record in INGEST_JOBS.values()
+            if record["tenant_id"] == principal.tenant_id
+            and record["user_id"] == principal.user_id
+            and (not active_only or record["status"] in _ACTIVE_STATUSES)
+        ]
+    records.sort(key=lambda record: record["created_at"], reverse=True)
+    return [_public_job(record) for record in records]
+
+
+def _prune_jobs():
+    cutoff = time.time() - _JOB_KEEP_SECONDS
+    with _JOBS_LOCK:
+        for job_id, record in list(INGEST_JOBS.items()):
+            if record["status"] not in _ACTIVE_STATUSES and record["_ts"] < cutoff:
+                del INGEST_JOBS[job_id]
+
+
+def submit_ingest(
+    db: Session,
+    principal: Principal,
+    source: str,
+    *,
+    title: str | None = None,
+    filename: str | None = None,
+    data: bytes | None = None,
+    text: str | None = None,
+    url: str | None = None,
+    acl: list[str] | None = None,
+) -> dict:
+    """登记一次异步入库并立刻返回作业快照。"""
+    _prune_jobs()
+    job_id = new_id("job")
+    if title:
+        display_title = title
+    elif filename:
+        display_title = Path(filename).stem or filename
+    elif url:
+        display_title = url
+    else:
+        display_title = "未命名文档"
+    record = {
+        "id": job_id,
+        "tenant_id": principal.tenant_id,
+        "user_id": principal.user_id,
+        "title": display_title,
+        "source": source,
+        "status": "pending",
+        "stage": "排队中",
+        "percent": 0,
+        "doc_id": None,
+        "chunks": 0,
+        "version": 0,
+        "duplicate": False,
+        "message": "",
+        "error": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "_ts": time.time(),
+    }
+    with _JOBS_LOCK:
+        INGEST_JOBS[job_id] = record
+    db.add(
+        Job(
+            id=job_id,
+            tenant_id=principal.tenant_id,
+            type="ingest",
+            status="pending",
+            attempts=1,
+            payload={"source": source, "title": display_title},
+        )
+    )
+    db.commit()
+    thread = threading.Thread(
+        target=_run_ingest_job,
+        kwargs={
+            "job_id": job_id,
+            "principal": principal,
+            "source": source,
+            "title": title,
+            "filename": filename,
+            "data": data,
+            "text": text,
+            "url": url,
+            "acl": acl,
+        },
+        name=f"ingest-{job_id}",
+        daemon=True,
+    )
+    thread.start()
+    return _public_job(dict(record))
+
+
+def _finish_job_row(db: Session, job_id: str, status: str, payload: dict):
+    try:
+        job = db.get(Job, job_id)
+        if job:
+            job.status = status
+            job.error = payload.get("error")
+            job.payload = payload
+            db.commit()
+    except Exception:  # noqa: BLE001 - job bookkeeping must not mask the result
+        db.rollback()
+
+
+def _run_ingest_job(
+    job_id: str,
+    principal: Principal,
+    source: str,
+    title: str | None,
+    filename: str | None,
+    data: bytes | None,
+    text: str | None,
+    url: str | None,
+    acl: list[str] | None,
+):
+    _job_update(job_id, status="running", stage="解析", percent=5)
+
+    def report(stage: str, percent: float):
+        _job_update(job_id, stage=stage, percent=int(max(0, min(100, percent))))
+
+    db = SessionLocal()
+    try:
+        if source == "file":
+            assert filename and data is not None
+            report("解析", 10)
+            parsed = parse_bytes(filename, data, title=title)
+            source_type = filename.rsplit(".", 1)[-1].lower() if "." in filename else "file"
+            result = ingest_parsed(
+                db,
+                principal,
+                parsed,
+                source_type=source_type,
+                uri=f"upload:{filename}:{sha256_bytes(data)[:16]}",
+                acl=acl,
+                progress=report,
+                job_id=job_id,
+            )
+        elif source == "text":
+            assert text is not None
+            report("切分", 40)
+            result = ingest_parsed(
+                db,
+                principal,
+                parse_text_content(text, title=title),
+                source_type="text",
+                acl=acl,
+                progress=report,
+                job_id=job_id,
+            )
+        else:
+            assert url is not None
+            report("抓取", 12)
+            parsed, source_type = _fetch_url(url, title)
+            report("切分", 40)
+            result = ingest_parsed(
+                db,
+                principal,
+                parsed,
+                source_type=source_type,
+                uri=url,
+                acl=acl,
+                progress=report,
+                job_id=job_id,
+            )
+
+        _job_update(
+            job_id,
+            status="done",
+            stage="完成",
+            percent=100,
+            doc_id=result.get("document_id"),
+            chunks=result.get("chunks", 0),
+            version=result.get("version", 0),
+            duplicate=result.get("duplicate", False),
+            message=result.get("message", ""),
+        )
+        _finish_job_row(db, job_id, "done", result)
+    except Exception as exc:  # noqa: BLE001 - background boundary
+        db.rollback()
+        error = str(exc)[:300] or exc.__class__.__name__
+        _job_update(job_id, status="failed", stage="失败", error=error)
+        _finish_job_row(db, job_id, "failed", {"error": error})
+    finally:
+        db.close()
+
 
 
 def ingest_upload(
@@ -310,6 +552,19 @@ def ingest_url(
     acl: list[str] | None = None,
     background: bool = True,
 ) -> dict:
+    parsed, source_type = _fetch_url(url, title)
+    return ingest_parsed(
+        db,
+        principal,
+        parsed,
+        source_type=source_type,
+        uri=url,
+        acl=acl,
+        background=background,
+    )
+
+
+def _fetch_url(url: str, title: str | None) -> tuple[ParsedDocument, str]:
     if not url.lower().startswith(("http://", "https://")):
         raise ValueError("仅支持 http/https URL")
     response = httpx.get(
@@ -321,20 +576,8 @@ def ingest_url(
     response.raise_for_status()
     content_type = response.headers.get("content-type", "")
     if "pdf" in content_type or url.lower().endswith(".pdf"):
-        parsed = parse_bytes(url, response.content, title=title)
-        source_type = "pdf"
-    else:
-        parsed = parse_html(response.text, title or url)
-        source_type = "web"
-    return ingest_parsed(
-        db,
-        principal,
-        parsed,
-        source_type=source_type,
-        uri=url,
-        acl=acl,
-        background=background,
-    )
+        return parse_bytes(url, response.content, title=title), "pdf"
+    return parse_html(response.text, title or url), "web"
 
 
 def tombstone_document(db: Session, principal: Principal, doc_id: str) -> dict:

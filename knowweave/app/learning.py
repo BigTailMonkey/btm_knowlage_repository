@@ -27,6 +27,7 @@ from .models import (
     new_id,
 )
 from .security import Principal
+from .timeutil import today_local
 
 EXTRACT_SYSTEM = """你是 KnoWeave 的事实抽取器。只抽取原文明确陈述、可被引用验证的断言。
 输出一个 JSON 数组，不要输出任何解释或 Markdown。每项字段：
@@ -128,7 +129,14 @@ def get_or_create_entity(
 
 def find_chunk_for_quote(db: Session, doc_id: str, quote: str) -> Chunk | None:
     chunks = db.execute(
-        select(Chunk).where(Chunk.doc_id == doc_id, Chunk.is_parent.is_(False))
+        select(Chunk)
+        .join(DocumentVersion, Chunk.version_id == DocumentVersion.id)
+        .join(Document, Document.id == Chunk.doc_id)
+        .where(
+            Chunk.doc_id == doc_id,
+            Chunk.is_parent.is_(False),
+            DocumentVersion.version == Document.current_version,
+        )
     ).scalars().all()
     clean = " ".join(quote.split())
     best: Chunk | None = None
@@ -151,9 +159,14 @@ def extract_candidates(
     db: Session, principal: Principal, document: Document, version: DocumentVersion
 ) -> list[Candidate]:
     chunks = db.execute(
-        select(Chunk).where(
-            Chunk.doc_id == document.id, Chunk.is_parent.is_(False)
-        ).order_by(Chunk.seq)
+        select(Chunk)
+        .join(DocumentVersion, Chunk.version_id == DocumentVersion.id)
+        .where(
+            Chunk.doc_id == document.id,
+            Chunk.is_parent.is_(False),
+            DocumentVersion.version == document.current_version,
+        )
+        .order_by(Chunk.seq)
     ).scalars().all()
     if not chunks:
         return []
@@ -207,7 +220,7 @@ def rule_extract_candidates(text: str, chunks: list[Chunk]) -> list[Candidate]:
     """Deterministic fallback so ingestion still produces facts without an LLM."""
     pattern = re.compile(
         r"([\u4e00-\u9fffA-Za-z0-9·\-]{2,24})"
-        r"(采用|使用|基于|依赖|支持|提供|发布|推出|属于|位于|成立于|由|的)"
+        r"(采用|使用|基于|依赖|支持|提供|发布|推出|属于|位于|成立于|由)"
         r"([^，。；：\n]{2,40})"
     )
     candidates: list[Candidate] = []
@@ -462,7 +475,7 @@ def resolve_review(
     if action in {"accept_new", "supersede"}:
         for old in old_facts:
             old.status = "superseded"
-            old.valid_to = new_fact.valid_from if new_fact and new_fact.valid_from else date.today()
+            old.valid_to = new_fact.valid_from if new_fact and new_fact.valid_from else today_local()
             old.superseded_by = new_fact.id if new_fact else None
         if new_fact:
             new_fact.status = "active"

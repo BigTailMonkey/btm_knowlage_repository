@@ -23,9 +23,8 @@
       </a>
 
       <nav class="nav" aria-label="主导航">
-        <button class="nav-item active" data-page="chat" aria-current="page">
+        <button class="nav-item active" data-page="chat" aria-current="page" aria-label="对话">
           <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M13.5 8.6a5.2 5.2 0 0 1-5.6 5.1L3 15l.9-3.4A5.2 5.2 0 1 1 13.5 8.6Z"/></svg></span>
-          <span>对话</span>
         </button>
         <button class="nav-item" data-page="dashboard">
           <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg></span>
@@ -74,57 +73,63 @@
         <button class="icon-btn nav-toggle" id="nav-toggle" aria-label="打开导航" aria-expanded="false">
           <svg viewBox="0 0 16 16" fill="none"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg>
         </button>
-        <span class="topbar-title" id="topbar-title">对话</span>
-        <form class="global-search" id="global-search" role="search">
-          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.2 10.2 3 3"/></svg>
-          <input id="global-search-input" type="search" placeholder="搜索文档" aria-label="搜索文档" autocomplete="off" />
-        </form>
         <div class="topbar-right">
           <span class="stamp" id="freshness"></span>
-          <button class="icon-btn" id="refresh-page" aria-label="刷新">
-            <svg viewBox="0 0 16 16" fill="none"><path d="M13 8a5 5 0 1 1-1.7-3.7"/><path d="M13 2.5v3h-3"/></svg>
-          </button>
         </div>
       </header>
 
       <main class="sheet" id="sheet">
         <div class="stage-wrap">
-          <header class="page-head">
-            <div>
-              <h1 id="page-title">对话</h1>
-              <p class="sub" id="page-sub"></p>
-            </div>
-            <div class="page-head-actions">
-              <button class="btn primary" id="open-ingest" hidden>添加文档</button>
-            </div>
-          </header>
 
           <!-- 对话 -->
           <section class="page active" id="page-chat">
             <div class="chat-layout">
               <aside class="chat-rail" aria-label="会话">
                 <div class="chat-rail-head">
-                  <button class="text-btn" id="chat-new" type="button">新对话</button>
+                  <h2>会话</h2>
+                  <button class="btn sm" id="chat-new" type="button">
+                    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
+                    新对话
+                  </button>
+                </div>
+                <div class="search-field compact chat-search">
+                  <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.2 10.2 3 3"/></svg>
+                  <input id="chat-filter" type="search" placeholder="搜索会话" aria-label="搜索会话" autocomplete="off" />
                 </div>
                 <div class="chat-list" id="chat-list"></div>
               </aside>
 
               <section class="chat-main" aria-label="对话内容">
+                <div class="chat-main-head" id="chat-main-head">
+                  <h2 class="chat-title" id="chat-title">新对话</h2>
+                  <span class="chat-title-meta" id="chat-title-meta"></span>
+                </div>
                 <div class="chat-thread" id="chat-thread"></div>
                 <form class="chat-composer" id="chat-form">
-                  <textarea id="chat-input" rows="1" aria-label="输入问题"></textarea>
+                  <textarea id="chat-input" rows="1" placeholder="输入问题" aria-label="输入问题"></textarea>
                   <div class="chat-composer-bar">
-                    <select id="chat-mode-select" class="chat-mode-select" aria-label="回答模式">
-                      <option value="quick">快速</option>
-                      <option value="deep">深度</option>
-                      <option value="graph">图谱</option>
-                      <option value="timeline">时间线</option>
-                      <option value="compare">对比</option>
-                    </select>
+                    <div class="segmented" id="chat-modes" role="group" aria-label="回答模式">
+                      <button type="button" class="seg active" data-mode="quick" aria-pressed="true">快速</button>
+                      <button type="button" class="seg" data-mode="deep" aria-pressed="false">深度</button>
+                      <button type="button" class="seg" data-mode="graph" aria-pressed="false">图谱</button>
+                      <button type="button" class="seg" data-mode="timeline" aria-pressed="false">时间线</button>
+                      <button type="button" class="seg" data-mode="compare" aria-pressed="false">对比</button>
+                    </div>
                     <button class="btn primary" id="chat-send" type="submit">发送</button>
                   </div>
                 </form>
               </section>
+
+              <aside class="chat-evidence" id="chat-evidence" aria-label="引用证据">
+                <div class="chat-evidence-head">
+                  <h2>引用证据</h2>
+                  <span class="muted" id="chat-evidence-count"></span>
+                </div>
+                <div class="chat-evidence-body" id="chat-evidence-body"></div>
+              </aside>
+            </div>
+            <div class="dsh-chat" id="dsh-chat" hidden>
+              <iframe id="dsh-chat-frame" title="DSH 对话" allow="clipboard-write"></iframe>
             </div>
           </section>
 
@@ -202,7 +207,10 @@
                 <input id="doc-search" type="search" placeholder="搜索标题" aria-label="搜索文档标题" />
               </div>
               <span class="muted" id="doc-count"></span>
+              <button class="btn primary" id="open-ingest">添加文档</button>
             </div>
+
+            <div class="ingest-jobs" id="ingest-jobs" hidden></div>
 
             <div class="table-wrap">
               <table class="table docs-table">
@@ -224,44 +232,51 @@
 
           <!-- 研究台 -->
           <section class="page" id="page-ask">
-            <div class="tabs" id="mode-tabs" role="tablist" aria-label="检索模式">
-              <button class="tab active" data-mode="quick" role="tab" aria-selected="true">快速</button>
-              <button class="tab" data-mode="deep" role="tab" aria-selected="false">深度</button>
-              <button class="tab" data-mode="graph" role="tab" aria-selected="false">图谱</button>
-              <button class="tab" data-mode="timeline" role="tab" aria-selected="false">时间线</button>
-              <button class="tab" data-mode="compare" role="tab" aria-selected="false">对比</button>
-            </div>
+            <form class="ask-composer" id="ask-form">
+              <textarea id="question" rows="2" placeholder="输入问题" aria-label="输入问题"></textarea>
+              <div class="ask-composer-bar">
+                <div class="segmented" id="mode-tabs" role="group" aria-label="检索模式">
+                  <button type="button" class="seg active" data-mode="quick" aria-pressed="true">快速</button>
+                  <button type="button" class="seg" data-mode="deep" aria-pressed="false">深度</button>
+                  <button type="button" class="seg" data-mode="graph" aria-pressed="false">图谱</button>
+                  <button type="button" class="seg" data-mode="timeline" aria-pressed="false">时间线</button>
+                  <button type="button" class="seg" data-mode="compare" aria-pressed="false">对比</button>
+                </div>
+                <div class="ask-composer-actions">
+                  <div class="ask-asof">
+                    <label for="as-of">截至</label>
+                    <input type="date" id="as-of" />
+                  </div>
+                  <button class="btn primary" id="ask-btn" type="submit">提问</button>
+                </div>
+              </div>
+            </form>
 
-            <div class="ask-layout">
+            <div class="recent-strip" id="conversation-list" aria-label="最近会话" hidden></div>
+
+            <div class="ask-layout is-empty">
               <div class="ask-main">
-                <section class="composer" aria-labelledby="composer-label">
-                  <label class="field-label" id="composer-label" for="question">问题</label>
-                  <div class="composer-body">
-                    <textarea id="question" rows="3"></textarea>
-                    <div class="composer-bar">
-                      <div class="composer-opt">
-                        <label for="as-of">截至</label>
-                        <input type="date" id="as-of" />
-                      </div>
-                      <button class="btn primary" id="ask-btn">提问</button>
+                <div class="ask-result" id="ask-result">
+                  <div class="ask-empty">
+                    <div class="ask-empty-intro">
+                      <span class="mark" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none">
+                          <path d="M3 9c4.5 0 4.5-5 9-5s4.5 5 9 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                          <path d="M3 15c4.5 0 4.5 5 9 5s4.5-5 9-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                      </span>
+                      <h2>从一条问题开始</h2>
+                      <p>每条回答都附原文片段与检索分数。</p>
                     </div>
                   </div>
-                </section>
-
-                <div class="ask-result" id="ask-result">
-                  <div class="empty-block">尚无检索结果</div>
                 </div>
-
-                <section class="block">
-                  <div class="block-head"><h2>最近会话</h2><button class="text-btn" id="conversations-refresh">刷新</button></div>
-                  <div class="rows" id="conversation-list"></div>
-                </section>
               </div>
 
               <aside class="ask-side">
                 <section class="block evidence-block">
                   <div class="block-head"><h2>证据</h2><span class="muted" id="evidence-count"></span></div>
-                  <div id="evidence-body"><div class="empty-block">暂无证据</div></div>
+                  <div id="evidence-gate"></div>
+                  <div id="evidence-body"><div class="rail-empty">暂无证据</div></div>
                 </section>
               </aside>
             </div>
@@ -279,18 +294,19 @@
                 <div class="rows scroll-rows" id="entity-list"></div>
               </section>
 
-              <div class="entity-main">
-                <section class="block entity-detail">
-                  <div id="entity-detail"><div class="empty-block">选择实体</div></div>
-                </section>
+              <section class="block graph-panel">
+                <div class="graph-head">
+                  <h2>关系图谱</h2>
+                  <div class="graph-legend" id="graph-legend"></div>
+                </div>
+                <div class="graph-stage">
+                  <svg id="graph-canvas" role="group" aria-label="实体关系图"></svg>
+                </div>
+              </section>
 
-                <section class="block graph-panel">
-                  <div class="block-head"><h2>局部图谱</h2><span class="muted" id="graph-meta"></span></div>
-                  <div class="graph-stage">
-                    <svg id="graph-canvas" viewBox="0 0 960 360" role="img" aria-label="实体关系图"></svg>
-                  </div>
-                </section>
-              </div>
+              <aside class="block entity-detail" id="entity-detail">
+                <div class="empty-block">选择实体</div>
+              </aside>
             </div>
           </section>
 
@@ -316,7 +332,6 @@
               <section class="setting-row">
                 <div class="setting-label">
                   <h2>身份与权限</h2>
-                  <p class="muted" id="setting-identity-summary"></p>
                 </div>
                 <div class="setting-panel"><dl class="kv" id="settings-identity"></dl></div>
               </section>
@@ -324,7 +339,6 @@
               <section class="setting-row">
                 <div class="setting-label">
                   <h2>模型运行时</h2>
-                  <p class="muted" id="setting-runtime-summary"></p>
                 </div>
                 <div class="setting-panel">
                   <dl class="kv" id="settings-runtime"></dl>
@@ -338,7 +352,6 @@
               <section class="setting-row">
                 <div class="setting-label">
                   <h2>模型单价</h2>
-                  <p class="muted" id="setting-price-summary"></p>
                 </div>
                 <div class="setting-panel flush">
                   <table class="table prices-table">
@@ -351,7 +364,6 @@
               <section class="setting-row">
                 <div class="setting-label">
                   <h2>MCP 接入</h2>
-                  <p class="muted" id="setting-mcp-summary"></p>
                 </div>
                 <div class="setting-panel">
                   <pre class="code" id="settings-mcp"></pre>
@@ -416,21 +428,48 @@
           <input type="file" id="file-input" accept=".pdf,.docx,.md,.txt" hidden />
         </label>
         <div class="field"><label for="file-title">标题</label><input id="file-title" /></div>
-        <div class="field"><label for="file-acl">权限组</label><input id="file-acl" /></div>
+        <div class="field">
+          <label for="file-acl-input">权限组</label>
+          <div class="acl-combobox" id="file-acl" data-acl-picker>
+            <div class="acl-picker">
+              <div class="acl-tags" data-acl-tags></div>
+              <input id="file-acl-input" class="acl-input" data-acl-input type="text" placeholder="搜索权限组" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="file-acl-menu" />
+            </div>
+            <div class="acl-menu" id="file-acl-menu" data-acl-menu role="listbox" hidden></div>
+          </div>
+        </div>
         <button class="btn primary" type="submit">接入</button>
       </form>
 
       <form id="ingest-text-form" class="form" hidden>
         <div class="field"><label for="text-input">正文</label><textarea id="text-input" rows="7"></textarea></div>
         <div class="field"><label for="text-title">标题</label><input id="text-title" /></div>
-        <div class="field"><label for="text-acl">权限组</label><input id="text-acl" /></div>
+        <div class="field">
+          <label for="text-acl-input">权限组</label>
+          <div class="acl-combobox" id="text-acl" data-acl-picker>
+            <div class="acl-picker">
+              <div class="acl-tags" data-acl-tags></div>
+              <input id="text-acl-input" class="acl-input" data-acl-input type="text" placeholder="搜索权限组" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="text-acl-menu" />
+            </div>
+            <div class="acl-menu" id="text-acl-menu" data-acl-menu role="listbox" hidden></div>
+          </div>
+        </div>
         <button class="btn primary" type="submit">接入</button>
       </form>
 
       <form id="ingest-url-form" class="form" hidden>
         <div class="field"><label for="url-input">网址</label><input id="url-input" type="url" placeholder="https://" /></div>
         <div class="field"><label for="url-title">标题</label><input id="url-title" /></div>
-        <div class="field"><label for="url-acl">权限组</label><input id="url-acl" /></div>
+        <div class="field">
+          <label for="url-acl-input">权限组</label>
+          <div class="acl-combobox" id="url-acl" data-acl-picker>
+            <div class="acl-picker">
+              <div class="acl-tags" data-acl-tags></div>
+              <input id="url-acl-input" class="acl-input" data-acl-input type="text" placeholder="搜索权限组" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="url-acl-menu" />
+            </div>
+            <div class="acl-menu" id="url-acl-menu" data-acl-menu role="listbox" hidden></div>
+          </div>
+        </div>
         <button class="btn primary" type="submit">接入</button>
       </form>
     </div>

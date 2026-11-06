@@ -31,6 +31,12 @@ class ParsedDocument:
 
 
 HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
+CJK_SPACE = re.compile(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])")
+
+
+def normalize_cjk_spaces(text: str) -> str:
+    """去掉中文之间的空格，修复 PDF 换行造成的词内断字。"""
+    return CJK_SPACE.sub("", text or "")
 
 
 def _quality(text: str) -> float:
@@ -176,7 +182,7 @@ def parse_pdf(data: bytes, title: str) -> ParsedDocument:
         if not paragraphs:
             paragraphs = [line.strip() for line in text.splitlines() if line.strip()]
         for paragraph in paragraphs:
-            line = paragraph.replace("\n", " ").strip()
+            line = normalize_cjk_spaces(paragraph.replace("\n", " ").strip())
             is_heading = len(line) <= 32 and not re.search(r"[。！？.,;；:：]$", line)
             blocks.append(
                 ParsedBlock(

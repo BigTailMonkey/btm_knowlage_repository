@@ -23,6 +23,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from .timeutil import today_local
+
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:20]}"
@@ -338,7 +340,7 @@ class ModelPrice(Base):
     input_per_1m: Mapped[float] = mapped_column(Float, default=0.0)
     output_per_1m: Mapped[float] = mapped_column(Float, default=0.0)
     currency: Mapped[str] = mapped_column(String(8), default="CNY")
-    effective_from: Mapped[date] = mapped_column(Date, default=date.today)
+    effective_from: Mapped[date] = mapped_column(Date, default=today_local)
     effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
 
 

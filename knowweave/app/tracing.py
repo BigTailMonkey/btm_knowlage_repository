@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 from .config import settings
 from .harness import HarnessResult
@@ -118,7 +118,3 @@ class TraceRecorder:
 
 def token_price(provider: str, model: str) -> tuple[float, float, str]:
     return settings.prices.get(model, (0.0, 0.0, "CNY"))
-
-
-def today() -> date:
-    return date.today()

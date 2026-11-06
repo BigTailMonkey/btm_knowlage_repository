@@ -10,6 +10,10 @@ data_dir = "data"
 url = ""
 seed = true
 
+[time]
+# 业务时区：日志、日历日期、界面展示统一按此时区；数据库仍存 UTC
+timezone = "Asia/Shanghai"
+
 [model]
 provider = "volcengine-ark"
 model = "deepseek-v4.1-flash"

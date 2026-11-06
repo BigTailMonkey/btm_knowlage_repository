@@ -32,6 +32,7 @@ from .models import (
 )
 from .retrieval import retrieve
 from .security import Principal, get_principal, require_admin
+from .timeutil import today_local, to_local
 from .tracing import TraceRecorder, token_price
 
 router = APIRouter(tags=["ops"])
@@ -332,7 +333,7 @@ def costs_summary(
         feature["amount"] += row.amount
         feature["calls"] += 1
         feature["tokens"] += row.tokens_in + row.tokens_out
-        by_day[row.occurred_at.date().isoformat()] += row.amount
+        by_day[to_local(row.occurred_at).date().isoformat()] += row.amount
         model = by_model[f"{row.provider}/{row.model}"]
         model["amount"] += row.amount
         model["calls"] += 1
@@ -396,7 +397,7 @@ def add_price(
         input_per_1m=payload.input_per_1m,
         output_per_1m=payload.output_per_1m,
         currency=payload.currency,
-        effective_from=payload.effective_from or date.today(),
+        effective_from=payload.effective_from or today_local(),
     )
     db.add(price)
     db.commit()
