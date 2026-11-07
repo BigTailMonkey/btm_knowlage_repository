@@ -7,10 +7,10 @@ import type { ChunkRow, DocumentRow, EntityRow } from './rows.js'
 import { retrieve, RetrievalResult, Hit, normalizeAsOf } from './retrieval.js'
 import { Principal } from './security.js'
 import { TraceRecorder } from './tracing.js'
-import { validateGrounding, type GroundingCheck } from './grounding.js'
+import { validateGrounding, verifySemanticGrounding, type GroundingCheck } from './grounding.js'
 
 const CITATION = /\[(\d+)\]/g
-const REFUSAL_MARKERS = ['REFUSE', '资料不足', '不足以回答', '无法回答', '没有足够']
+const REFUSAL_PREFIX = /^(?:REFUSE\b|(?:抱歉[，,。]?\s*)?(?:(?:现有|当前|所提供的?|已有)?(?:资料|信息|证据|片段|内容)(?:不足|不够|未包含|没有)|我(?:无法|不能)|无法(?:可靠|准确)?回答|没有足够(?:资料|证据|信息)|不足以回答))/i
 const FOLLOW_UP = /(它|他|她|这|那|该|此|其|上面|刚才|之前|上述|前面|还有|继续|再|那么)/
 
 export const ANSWER_SYSTEM = `你是 KnoWeave（知织）知识库的问答引擎。规则：
@@ -43,7 +43,7 @@ interface ConversationRow {
   title: string
 }
 
-function formatEvidence(hits: Hit[], facts: Array<Record<string, unknown>>, memories: MemoryRow[]): string {
+function formatEvidence(hits: Hit[], facts: Array<Record<string, unknown>>, memories: MemoryRow[], summaries: Array<{ text: string }> = []): string {
   const blocks: string[] = []
   hits.forEach((hit, index) => {
     const heading = hit.chunk.heading_path?.join(' / ') || '正文'
@@ -67,6 +67,7 @@ function formatEvidence(hits: Hit[], facts: Array<Record<string, unknown>>, memo
     blocks.push('\n用户记忆（仅用于理解偏好，不作为事实引用）：')
     for (const memory of memories.slice(0, 5)) blocks.push(`- ${memory.text}`)
   }
+  if (summaries.length) blocks.push(`主题摘要（只作导航，回答仍须引用上方原文编号）：\n${summaries.map((row) => row.text.slice(0, 2000)).join('\n\n')}`)
   return blocks.join('\n\n')
 }
 
@@ -122,20 +123,26 @@ function splitSentences(text: string): string[] {
 
 function extractiveAnswer(question: string, hits: Hit[], mode: string): string {
   const queryTokens = new Set(tokenize(question))
+  const quoted = [...question.matchAll(/`([^`\n]{1,100})`/g)].map(match=>match[1]!.toLowerCase())
   const selected: string[] = []
-  for (const [index, hit] of hits.slice(0, 4).entries()) {
+  const candidates = hits.map((hit,index)=>{
     const scored = splitSentences(hit.chunk.text).map((sentence) => {
       let overlap = 0
       for (const token of new Set(tokenize(sentence))) if (queryTokens.has(token)) overlap += 1
+      for (const literal of quoted) if (sentence.toLowerCase().includes(literal)) overlap += 20
       return [overlap, sentence] as const
     })
     scored.sort((a, b) => b[0] - a[0])
+    return {hit,index,scored}
+  }).sort((a,b)=>(b.scored[0]?.[0] ?? 0)-(a.scored[0]?.[0] ?? 0))
+  for (const { hit,index,scored } of candidates.slice(0,4)) {
     for (const [overlap, sentence] of scored.slice(0, 2)) {
       if (sentence.length < 8) continue
       if (overlap === 0 && selected.length) continue
+      const excerpt = sentence.replace(/\[(\d+)\]/g, '［$1］')
       selected.push(mode === 'compare'
-        ? `| ${hit.document.title.replace(/\|/g, '／')} | ${sentence.replace(/\|/g, '／')} [${index + 1}] |`
-        : `- ${sentence} [${index + 1}]`)
+        ? `| ${hit.document.title.replace(/\|/g, '／')} | ${excerpt.replace(/\|/g, '／')} [${index + 1}] |`
+        : `- ${excerpt} [${index + 1}]`)
     }
     if (selected.length >= 5) break
   }
@@ -232,6 +239,7 @@ export async function ask(
     asOf?: string | null
     conversationId?: string | null
     docIds?: string[] | null
+    evaluation?: boolean
   },
 ): Promise<Record<string, unknown>> {
   const started = Date.now()
@@ -241,7 +249,7 @@ export async function ask(
   if (!['quick', 'deep', 'graph', 'timeline', 'compare'].includes(mode)) throw Object.assign(new Error('不支持的问答模式'), { statusCode: 400 })
   const topK = Math.min(30, Math.max(1, Math.floor(Number(input.topK) || 6)))
   const asOf = normalizeAsOf(input.asOf ?? null)
-  const recorder = new TraceRecorder(principal.tenantId, principal.userId, 'ask', question)
+  const recorder = new TraceRecorder(principal.tenantId, principal.userId, input.evaluation ? 'eval' : 'ask', question)
   recorder.addSpan({ stage: 'intent', params: { mode, as_of: asOf }, output: { question } })
 
   const conversation = input.conversationId
@@ -254,7 +262,7 @@ export async function ask(
   const expandedQuestion = retrievalQuestion(question, history)
   recorder.addSpan({ stage: 'context.history', output: { messages: history.length, retrieval_question: expandedQuestion } })
 
-  const memoryText = /^(?:请)?(?:帮我)?(?:记住|记一下|记下)(?:这个|以下内容)?[：:，,\s]*([\s\S]+)$/.exec(question)?.[1]?.trim()
+  const memoryText = input.evaluation ? undefined : /^(?:(?:请)?(?:帮我)?(?:记住|记一下|记下)(?:这个|以下内容)?[：:，,\s]*|(?:纠正一下|更正一下|我的偏好)[：:]\s*)([\s\S]+)$/.exec(question)?.[1]?.trim()
   const queries = memoryText ? [] : subqueries(expandedQuestion, mode)
   const results: RetrievalResult[] = []
   const merged = new Map<string, Hit>()
@@ -289,7 +297,7 @@ export async function ask(
   }
 
   const hits = [...merged.values()].sort((a, b) => b.rerank - a.rerank).slice(0, topK)
-  const memories = await memoryContext(principal, question)
+  const memories = input.evaluation ? [] : await memoryContext(principal, question)
   const topScore = hits[0]?.rerank ?? 0
   let refused = !hits.length || topScore < threshold
   let answer: string
@@ -306,7 +314,7 @@ export async function ask(
   } else if (refused) {
     answer = refusal(hits)
   } else {
-    const evidence = formatEvidence(hits, facts, memories)
+    const evidence = formatEvidence(hits, facts, memories, results.flatMap((result) => result.summaries ?? []))
     const historyBlock = history.length ? `${historyContext(history)}\n\n` : ''
     const prompt = `${historyBlock}证据：
 ${evidence}
@@ -336,12 +344,17 @@ ${evidence}
     if (generated.ok) recorder.recordUsage(generated, 'ask', 'answer.generate', span.id)
 
     const text = generated.ok ? generated.text.trim() : ''
-    const isRefusal = REFUSAL_MARKERS.some((marker) => text.includes(marker))
+    const isRefusal = REFUSAL_PREFIX.test(text)
     if (isRefusal) {
       answer = refusal(hits)
       refused = true
     } else {
       grounding = validateGrounding(text, hits.map((hit) => ({ text: hit.chunk.text })))
+      if (grounding.valid && settings.groundingVerifier) {
+        const supported = await verifySemanticGrounding(text, hits.map((hit) => ({ text: hit.chunk.text })))
+        recorder.addSpan({ stage: 'answer.verify', output: { supported }, inputValue: text })
+        if (!supported) grounding = { ...grounding, valid: false, reason: '独立语义校验未确认全部事实句' }
+      }
       answer = text
       if (!grounding.valid || (mode === 'compare' && !/^\s*\|.+\|\s*\n\s*\|[-\s|:]+\|/m.test(answer))) {
         answerStrategy = 'extractive_fallback'
@@ -360,9 +373,11 @@ ${evidence}
   }
 
   const score = memoryText ? 1 : confidence(answer, hits, refused)
-  if (refused) await upsertGap(principal, question)
+  if (refused && !input.evaluation) await upsertGap(principal, question)
 
   let activeConversation = conversation
+  const assistantId = newId('msg')
+  if (!input.evaluation) {
   if (!activeConversation) {
     const id = newId('conv')
     await query(
@@ -377,18 +392,29 @@ ${evidence}
      VALUES ($1, $2, 'user', $3, $4, 0, $5, 0)`,
     [newId('msg'), activeConversation.id, question, mode, recorder.traceId],
   )
-  const assistantId = newId('msg')
   await query(
     `INSERT INTO messages (id, conversation_id, role, content, mode, latency_ms, trace_id, confidence)
      VALUES ($1, $2, 'assistant', $3, $4, $5, $6, $7)`,
     [assistantId, activeConversation.id, answer, mode, recorder.latencyMs, recorder.traceId, score],
   )
   for (const citation of citations) {
+    await query('UPDATE fact_evidence SET last_used_at=now() WHERE chunk_id=$1', [citation.chunk_id])
     await query(
       `INSERT INTO citations (id, message_id, chunk_id, doc_id, quote, page, rank)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [newId('cit'), assistantId, citation.chunk_id, citation.doc_id, citation.quote, citation.page, citation.index],
     )
+  }
+  // Only frequently used documents pay the cost of full graph enrichment.
+  for (const docId of new Set(citations.map(citation => citation.doc_id))) {
+    const { shouldEnrich } = await import('./source-policy.js')
+    const state = await queryOne<{ enrichment_status: string }>('SELECT enrichment_status FROM documents WHERE id=$1', [docId])
+    if (state?.enrichment_status === 'deferred' && await shouldEnrich(docId)) {
+      const { extractFactsForDocument } = await import('./learning.js')
+      void extractFactsForDocument(principal,docId).catch(() => undefined)
+    }
+  }
+
   }
 
   recorder.meta = {
@@ -405,6 +431,11 @@ ${evidence}
     answer_strategy: answerStrategy,
   }
   await recorder.finish(answer, refused ? 'refused' : 'ok')
+  if (!input.evaluation && (refused || answerStrategy === 'extractive_fallback')) {
+    const existingCase = await queryOne<{ id: string }>('SELECT id FROM eval_cases WHERE tenant_id=$1 AND question=$2 LIMIT 1', [principal.tenantId, question])
+    if (!existingCase) await query(`INSERT INTO eval_cases(id,tenant_id,question,expected_docs,expected_keywords,should_refuse,source)
+      VALUES($1,$2,$3,$4::jsonb,'[]'::jsonb,$5,$6)`, [newId('ec'), principal.tenantId, question, JSON.stringify([...new Set(hits.map(hit=>hit.document.title))]), refused, `failure-candidate:${recorder.traceId}`])
+  }
   if (recorder.hasUsage) {
     await query(
       `UPDATE budgets SET used_amount = used_amount + $1, updated_at = now()
@@ -427,8 +458,8 @@ ${evidence}
           .map((entity) => [entity.id, { id: entity.id, name: entity.canonical_name, type: entity.type }]),
       ).values(),
     ].slice(0, 6),
-    conversation_id: activeConversation.id,
-    message_id: assistantId,
+    conversation_id: activeConversation?.id ?? null,
+    message_id: input.evaluation ? null : assistantId,
     trace_id: recorder.traceId,
     latency_ms: Date.now() - started,
     mode,

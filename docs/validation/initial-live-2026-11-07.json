@@ -1,0 +1,1193 @@
+{
+  "corpus": "20 repository source documents; 50 source-reference questions",
+  "live": true,
+  "run_id": "er_36eca07ba1bfbc9bc735",
+  "metrics": {
+    "cases": 50,
+    "mode": "answer",
+    "recall_at_10": 1,
+    "doc_recall": 1,
+    "context_precision": 0.26799999999999974,
+    "citation_accuracy": 1,
+    "rule_groundedness": 1,
+    "refusal_accuracy": 0.56,
+    "keyword_recall": 0.56,
+    "pass_rate": 0.54,
+    "p95_latency_ms": 8267
+  },
+  "results": [
+    {
+      "question": "《src/core/ingestion.ts》中 submitIngest 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/core/ingestion.ts》；《src/core/ingestion.ts》；《src/core/ingestion.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 9466,
+      "trace_id": "tr_380c037a76304405b17e",
+      "top_score": 0.5043,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/ingestion.ts》中 processIngestQueue 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/core/ingestion.ts》；《src/core/ingestion.ts》；《src/core/ingestion.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 2795,
+      "trace_id": "tr_54f1a3ade18105e6d109",
+      "top_score": 0.4959,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/ingestion.ts》中 retryIngestJob 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/core/ingestion.ts》；《src/core/ingestion.ts》；《src/core/ingestion.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 3443,
+      "trace_id": "tr_8959edc6711c42cdccb8",
+      "top_score": 0.4996,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/chunking.ts》中 chunkBlocks 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/core/chunking.ts》；《src/core/chunking.ts》；《src/core/chunking.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 4341,
+      "trace_id": "tr_8654f28710f0f50a4329",
+      "top_score": 0.4745,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/chunking.ts》中 estimateTokens 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/core/chunking.ts》；《src/core/chunking.ts》；《src/core/chunking.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 4847,
+      "trace_id": "tr_3ab96af7f1cc7c64629a",
+      "top_score": 0.4832,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/chunking.ts》中 MAX_TOKENS 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_keywords": [
+        "MAX_TOKENS"
+      ],
+      "answer": "根据现有资料：\n- export const MAX_TOKENS = 512 [1]\n- 2. 每个事实性句子末尾用 [编号] 标注引用，编号必须是证据编号； [4]\n- 4. 回答使用中文，先给结论，再给 2-4 句关键依据； [4]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3577,
+      "trace_id": "tr_e08b880e294e0e433007",
+      "top_score": 0.4846,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/adapters/parsing/index.ts》中 parseBytes 的具体实现是什么？",
+      "expected_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_keywords": [
+        "parseBytes"
+      ],
+      "answer": "根据现有资料：\n- export async function parseBytes(filename: string, data: Buffer, title? [1]\n- : Array<{ index: number; [4]\n- Number.isInteger(row.index) || row.index < 0 || row.index >= documents.length || scores.has(row.index) [4]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 4858,
+      "trace_id": "tr_5e8c71febb84c6a6ace3",
+      "top_score": 0.4746,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/adapters/parsing/index.ts》中 parseMarkdown 的具体实现是什么？",
+      "expected_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/adapters/parsing/index.ts》；《src/adapters/parsing/index.ts》；《src/adapters/parsing/index.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 4233,
+      "trace_id": "tr_95dda431d1b7daafbaa5",
+      "top_score": 0.4965,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/adapters/parsing/index.ts》中 normalizeCjkSpaces 的具体实现是什么？",
+      "expected_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_keywords": [
+        "normalizeCjkSpaces"
+      ],
+      "answer": "根据现有资料：\n- export function normalizeCjkSpaces(text: string): string { [1]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 2486,
+      "trace_id": "tr_93fb0273c3869dd63321",
+      "top_score": 0.5112,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/retrieval.ts》中 retrieve 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/core/retrieval.ts》；《src/app/routes/ask.ts》；《src/core/answering.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 2957,
+      "trace_id": "tr_572a710f9520b4669df9",
+      "top_score": 0.4745,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/retrieval.ts》中 factIsEffective 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/core/retrieval.ts》；《src/core/retrieval.ts》；《src/app/routes/ask.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 4838,
+      "trace_id": "tr_2640a1ed981d591fe7e2",
+      "top_score": 0.5185,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/retrieval.ts》中 normalizeAsOf 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_keywords": [
+        "normalizeAsOf"
+      ],
+      "answer": "根据现有资料：\n- export function normalizeAsOf(value? [1]\n- import { retrieve } from '../../core/retrieval.js' [3]\n- import { ask } from '../../core/answering.js' [3]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 4695,
+      "trace_id": "tr_7b186cd83e24b7ef9182",
+      "top_score": 0.4935,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/answering.ts》中 ask 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_keywords": [
+        "ask"
+      ],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/app/routes/ask.ts》；《src/core/answering.ts》；《src/core/answering.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 3003,
+      "trace_id": "tr_7fe3929e792f491f693e",
+      "top_score": 0.4982,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/answering.ts》中 ANSWER_SYSTEM 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/core/answering.ts》；《src/app/routes/ask.ts》；《src/core/answering.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 5291,
+      "trace_id": "tr_c837cf8123dd6b2443fe",
+      "top_score": 0.5163,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/answering.ts》中 reflectQueries 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/core/answering.ts》；《src/core/answering.ts》；《src/app/routes/ask.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 8267,
+      "trace_id": "tr_fbae363412f6e78249e7",
+      "top_score": 0.4932,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/learning.ts》中 getOrCreateEntity 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/core/learning.ts》；《src/core/learning.ts》；《src/core/learning.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 2399,
+      "trace_id": "tr_df6d7e25b0196fc0fd82",
+      "top_score": 0.5194,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/learning.ts》中 extractFactsForDocument 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_keywords": [
+        "extractFactsForDocument"
+      ],
+      "answer": "根据现有资料：\n- export async function extractFactsForDocument(principal: Principal, docId: string): Promise<Record<string, unknown>> { [1]\n- 2. 每个事实性句子末尾用 [编号] 标注引用，编号必须是证据编号； [4]\n- 4. 回答使用中文，先给结论，再给 2-4 句关键依据； [4]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 5292,
+      "trace_id": "tr_e9f2619f16ee329083f2",
+      "top_score": 0.5039,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/learning.ts》中 runReflection 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_keywords": [
+        "runReflection"
+      ],
+      "answer": "根据现有资料：\n- export async function runReflection(tenantId: string): Promise<Record<string, unknown>> { [1]\n- 2. 每个事实性句子末尾用 [编号] 标注引用，编号必须是证据编号； [3]\n- 4. 回答使用中文，先给结论，再给 2-4 句关键依据； [3]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 7775,
+      "trace_id": "tr_52531c663e54a7a9d60e",
+      "top_score": 0.4804,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/db/index.ts》中 initSchema 的具体实现是什么？",
+      "expected_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "根据现有资料：\n- join(settings.rootDir, 'src', 'db', 'schema.sql'), [1]\n- join(settings.rootDir, 'dist', 'src', 'db', 'schema.sql'), [1]\n- const db = await driverPromise [2]\n- await db.close() [2]\n- import { query, queryOne, transaction } from '../../db/index.js' [4]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 5461,
+      "trace_id": "tr_2d4aa667e067997c3a49",
+      "top_score": 0.5201,
+      "pass": false,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/db/index.ts》中 seedIfEmpty 的具体实现是什么？",
+      "expected_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_keywords": [
+        "seedIfEmpty"
+      ],
+      "answer": "根据现有资料：\n- export async function seedIfEmpty(): Promise<void> { [1]\n- join(settings.rootDir, 'src', 'db', 'schema.sql'), [2]\n- join(settings.rootDir, 'dist', 'src', 'db', 'schema.sql'), [2]\n- const db = await driverPromise [3]\n- await db.close() [3]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 7573,
+      "trace_id": "tr_34f957842cc557316207",
+      "top_score": 0.4794,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/db/index.ts》中 closePool 的具体实现是什么？",
+      "expected_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_keywords": [
+        "closePool"
+      ],
+      "answer": "根据现有资料：\n- export async function closePool(): Promise<void> { [1]\n- const db = await driverPromise [1]\n- join(settings.rootDir, 'src', 'db', 'schema.sql'), [2]\n- join(settings.rootDir, 'dist', 'src', 'db', 'schema.sql'), [2]\n- : Array<{ index: number; [4]\n- Number.isInteger(row.index) || row.index < 0 || row.index >= documents.length || scores.has(row.index) [4]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 2295,
+      "trace_id": "tr_a682523f258ccee82508",
+      "top_score": 0.5354,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/security.ts》中 canRead 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/core/security.ts》；《src/core/security.ts》；《src/core/security.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 5399,
+      "trace_id": "tr_dc5a5bc9d8a14ebcf145",
+      "top_score": 0.5118,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/security.ts》中 requireEditor 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_keywords": [
+        "requireEditor"
+      ],
+      "answer": "根据现有资料：\n- export function requireEditor(principal: Principal): void { [1]\n- throw Object.assign(new Error('当前主体没有写入权限'), { statusCode: 403 }) [1]\n- 2. 每个事实性句子末尾用 [编号] 标注引用，编号必须是证据编号； [4]\n- 4. 回答使用中文，先给结论，再给 2-4 句关键依据； [4]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3229,
+      "trace_id": "tr_753bd5895283a78fb75c",
+      "top_score": 0.4927,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/security.ts》中 requireAdmin 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_keywords": [
+        "requireAdmin"
+      ],
+      "answer": "根据现有资料：\n- export function requireAdmin(principal: Principal): void { [1]\n- throw Object.assign(new Error('当前主体没有写入权限'), { statusCode: 403 }) [2]\n- 2. 每个事实性句子末尾用 [编号] 标注引用，编号必须是证据编号； [4]\n- 4. 回答使用中文，先给结论，再给 2-4 句关键依据； [4]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 2199,
+      "trace_id": "tr_b239e7e0cf9277920ca0",
+      "top_score": 0.5046,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/tracing.ts》中 TraceRecorder 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_keywords": [
+        "TraceRecorder"
+      ],
+      "answer": "根据现有资料：\n- export class TraceRecorder { [1]\n- import { TraceRecorder } from '../../core/tracing.js' [2]\n- import { ask } from '../../core/answering.js' [2]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 5558,
+      "trace_id": "tr_076cc5921a4175c81be4",
+      "top_score": 0.5034,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/tracing.ts》中 tokenPrice 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_keywords": [
+        "tokenPrice"
+      ],
+      "answer": "根据现有资料：\n- export function tokenPrice(provider: string, model: string): [number, number, string] { [1]\n- import { TraceRecorder } from '../../core/tracing.js' [3]\n- import { ask } from '../../core/answering.js' [3]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3381,
+      "trace_id": "tr_a9dcfdbfe9bcba317acf",
+      "top_score": 0.5273,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/tracing.ts》中 recordUsage 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_keywords": [
+        "recordUsage"
+      ],
+      "answer": "根据现有资料：\n- recordUsage(result: HarnessResult, feature: string, stage: string, spanId: string | null = null): void { [1]\n- import { TraceRecorder } from '../../core/tracing.js' [4]\n- import { ask } from '../../core/answering.js' [4]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 5086,
+      "trace_id": "tr_2e61cbae31080ca38a2f",
+      "top_score": 0.4803,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/ids.ts》中 newId 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_keywords": [
+        "newId"
+      ],
+      "answer": "根据现有资料：\n- export function newId(prefix: string): string { [1]\n- import { newId } from '../../core/ids.js' [2]\n- import { ask } from '../../core/answering.js' [2]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 2534,
+      "trace_id": "tr_c8d20b16ec75a8a2672a",
+      "top_score": 0.5022,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/ids.ts》中 todayLocal 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_keywords": [
+        "todayLocal"
+      ],
+      "answer": "根据现有资料：\n- export function todayLocal(timeZone: string): string { [1]\n- export function todayLocal(timeZone: string): string { [2]\n- import { newId } from '../../core/ids.js' [4]\n- import { ask } from '../../core/answering.js' [4]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 5936,
+      "trace_id": "tr_d8dbf60dbeba27f2c0d1",
+      "top_score": 0.5364,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/ids.ts》中 iso 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_keywords": [
+        "iso"
+      ],
+      "answer": "根据现有资料：\n- export function iso(value: Date | string | null | undefined): string | null { [1]\n- import { newId } from '../../core/ids.js' [4]\n- import { ask } from '../../core/answering.js' [4]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.3,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3334,
+      "trace_id": "tr_47cdc5f0a384d32678c6",
+      "top_score": 0.4813,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/grounding.ts》中 validateGrounding 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/grounding.ts"
+      ],
+      "matched_docs": [
+        "src/core/grounding.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/core/grounding.ts》；《src/core/grounding.ts》；《src/core/answering.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.2,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 3605,
+      "trace_id": "tr_8e034f3a5e2c57af0808",
+      "top_score": 0.4527,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/grounding.ts》中 claimSentences 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/grounding.ts"
+      ],
+      "matched_docs": [
+        "src/core/grounding.ts"
+      ],
+      "matched_keywords": [
+        "claimSentences"
+      ],
+      "answer": "根据现有资料：\n- export function claimSentences(answer: string): string[] { [1]\n- const sentences = claimSentences(answer) [2]\n- 2. 每个事实性句子末尾用 [编号] 标注引用，编号必须是证据编号； [3]\n- 4. 回答使用中文，先给结论，再给 2-4 句关键依据； [3]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.2,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 5343,
+      "trace_id": "tr_1583a0058ea931c9851c",
+      "top_score": 0.4682,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/consolidation.ts》中 consolidateKnowledge 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/consolidation.ts"
+      ],
+      "matched_docs": [
+        "src/core/consolidation.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/core/consolidation.ts》；《src/core/consolidation.ts》；《src/core/answering.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.2,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 6030,
+      "trace_id": "tr_129906236c3aab601fce",
+      "top_score": 0.4653,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/consolidation.ts》中 SupportedFact 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/consolidation.ts"
+      ],
+      "matched_docs": [
+        "src/core/consolidation.ts"
+      ],
+      "matched_keywords": [
+        "SupportedFact"
+      ],
+      "answer": "根据现有资料：\n- interface SupportedFact { id: string; [1]\n- const facts = await query<SupportedFact>(`SELECT f.id,f.subject_id,f.object_id,s.canonical_name AS subject,f.predicate, [1]\n- const facts = await query<SupportedFact>(`SELECT f.id,f.subject_id,f.object_id,s.canonical_name AS subject,f.predicate, [2]\n- 2. 每个事实性句子末尾用 [编号] 标注引用，编号必须是证据编号； [3]\n- 4. 回答使用中文，先给结论，再给 2-4 句关键依据； [3]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.2,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 4588,
+      "trace_id": "tr_33f2d33c26ccbf4bfe4e",
+      "top_score": 0.4683,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/entity-resolution.ts》中 resolveSemanticEntity 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/entity-resolution.ts"
+      ],
+      "matched_docs": [
+        "src/core/entity-resolution.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/core/entity-resolution.ts》；《src/core/entity-resolution.ts》；《src/core/answering.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.2,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 3416,
+      "trace_id": "tr_4c56f221c21ed1222590",
+      "top_score": 0.4817,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/entity-resolution.ts》中 candidates 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/entity-resolution.ts"
+      ],
+      "matched_docs": [
+        "src/core/entity-resolution.ts"
+      ],
+      "matched_keywords": [
+        "candidates"
+      ],
+      "answer": "根据现有资料：\n- /** Semantic candidates are proposals only; [1]\n- const candidates = await query<EntityRow>(`SELECT * FROM entities WHERE tenant_id=$1 AND type=$2 AND status='active' [1]\n- /** Semantic candidates are proposals only; [2]\n- const candidates = await query<EntityRow>(`SELECT * FROM entities WHERE tenant_id=$1 AND type=$2 AND status='active' [2]\n- const candidates = [ [3]\n- join(settings.rootDir, 'src', 'db', 'schema.sql'), [3]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.2,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 8800,
+      "trace_id": "tr_61970a9e404b14d86a61",
+      "top_score": 0.4783,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/evaluation.ts》中 runEvaluation 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/evaluation.ts"
+      ],
+      "matched_docs": [
+        "src/core/evaluation.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/core/evaluation.ts》；《src/core/evaluation.ts》；《src/core/answering.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.2,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 7489,
+      "trace_id": "tr_cad20d2d17fe15a48f31",
+      "top_score": 0.4817,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/core/evaluation.ts》中 EvaluationCase 的具体实现是什么？",
+      "expected_docs": [
+        "src/core/evaluation.ts"
+      ],
+      "matched_docs": [
+        "src/core/evaluation.ts"
+      ],
+      "matched_keywords": [
+        "EvaluationCase"
+      ],
+      "answer": "根据现有资料：\n- export interface EvaluationCase { id: string; [1]\n- export async function runEvaluation(principal: Principal, cases: EvaluationCase[], mode: 'answer' | 'retrieval' = 'answer') { [1]\n- export async function runEvaluation(principal: Principal, cases: EvaluationCase[], mode: 'answer' | 'retrieval' = 'answer') { [2]\n- 2. 每个事实性句子末尾用 [编号] 标注引用，编号必须是证据编号； [3]\n- 4. 回答使用中文，先给结论，再给 2-4 句关键依据； [3]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.2,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3105,
+      "trace_id": "tr_c1d45c980d3d84cf9a3a",
+      "top_score": 0.4994,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/app/routes/documents.ts》中 documentRoutes 的具体实现是什么？",
+      "expected_docs": [
+        "src/app/routes/documents.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/documents.ts"
+      ],
+      "matched_keywords": [
+        "documentRoutes"
+      ],
+      "answer": "根据现有资料：\n- export async function documentRoutes(app: FastifyInstance): Promise<void> { [1]\n- app.post('/upload', { preHandler: authenticate }, async (request) => { [1]\n- const document = await queryOne<DocumentRow>('SELECT * FROM documents WHERE id = $1', [docId]) [2]\n- export async function mcpRoutes(app: FastifyInstance): Promise<void> { [3]\n- app.post('/mcp', { preHandler: authenticate }, async (request) => { [3]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.2,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 4696,
+      "trace_id": "tr_1367759e90eb31ec4975",
+      "top_score": 0.4943,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/app/routes/documents.ts》中 visibleDocument 的具体实现是什么？",
+      "expected_docs": [
+        "src/app/routes/documents.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/documents.ts"
+      ],
+      "matched_keywords": [
+        "visibleDocument"
+      ],
+      "answer": "根据现有资料：\n- async function visibleDocument(principal: ReturnType<typeof currentPrincipal>, docId: string): Promise<DocumentRow> { [1]\n- const document = await queryOne<DocumentRow>('SELECT * FROM documents WHERE id = $1', [docId]) [1]\n- export async function documentRoutes(app: FastifyInstance): Promise<void> { [2]\n- app.post('/upload', { preHandler: authenticate }, async (request) => { [2]\n- description: '在用户可见的知识库中做混合检索，返回带 ACL 过滤的 chunk 引用。 [3]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.2,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 5290,
+      "trace_id": "tr_9c470b8d75759604fa25",
+      "top_score": 0.5274,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/app/routes/ask.ts》中 askRoutes 的具体实现是什么？",
+      "expected_docs": [
+        "src/app/routes/ask.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/ask.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/app/routes/ask.ts》；《src/app/routes/ask.ts》；《src/app/routes/mcp.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.2,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 3862,
+      "trace_id": "tr_ae2996887624267a0bcb",
+      "top_score": 0.5149,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/app/routes/ask.ts》中 transaction 的具体实现是什么？",
+      "expected_docs": [
+        "src/app/routes/ask.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/ask.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/app/routes/ask.ts》；《src/app/routes/ask.ts》；《src/app/routes/mcp.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.2,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 1935,
+      "trace_id": "tr_dd9189d625fe95fa3dc8",
+      "top_score": 0.5066,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/app/routes/mcp.ts》中 mcpRoutes 的具体实现是什么？",
+      "expected_docs": [
+        "src/app/routes/mcp.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/mcp.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/app/routes/mcp.ts》；《src/app/routes/mcp.ts》；《src/app/routes/documents.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.2,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 5045,
+      "trace_id": "tr_0c19f2380cccc3fc2e1f",
+      "top_score": 0.5345,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/app/routes/mcp.ts》中 TOOLS 的具体实现是什么？",
+      "expected_docs": [
+        "src/app/routes/mcp.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/mcp.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/app/routes/mcp.ts》；《src/app/routes/mcp.ts》；《src/app/routes/documents.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.2,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 3336,
+      "trace_id": "tr_71186876f9c75ae48f2e",
+      "top_score": 0.5032,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/app/server.ts》中 createServer 的具体实现是什么？",
+      "expected_docs": [
+        "src/app/server.ts"
+      ],
+      "matched_docs": [
+        "src/app/server.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "现有资料不足以可靠地回答这个问题。最接近的线索是：《src/app/server.ts》；《src/app/server.ts》；《src/app/routes/ask.ts》。这些片段没有形成一致的证据链，因此不做推测性回答。",
+      "refused": true,
+      "doc_recall": 1,
+      "context_precision": 0.2,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 3364,
+      "trace_id": "tr_787120b4d55c404d97ba",
+      "top_score": 0.5059,
+      "pass": false,
+      "strategy": "generated",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/app/server.ts》中 authenticate 的具体实现是什么？",
+      "expected_docs": [
+        "src/app/server.ts"
+      ],
+      "matched_docs": [
+        "src/app/server.ts"
+      ],
+      "matched_keywords": [
+        "authenticate"
+      ],
+      "answer": "根据现有资料：\n- export async function authenticate(request: FastifyRequest, _reply: FastifyReply): Promise<void> { [1]\n- import { authenticate, currentPrincipal } from '../server.js' [2]\n- const app = Fastify({ [3]\n- app.post('/mcp', { preHandler: authenticate }, async (request) => { [4]\n- export async function mcpRoutes(app: FastifyInstance): Promise<void> { [4]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.2,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 4913,
+      "trace_id": "tr_84965592039a168798b4",
+      "top_score": 0.4913,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/adapters/embeddings/index.ts》中 tokenize 的具体实现是什么？",
+      "expected_docs": [
+        "src/adapters/embeddings/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/embeddings/index.ts"
+      ],
+      "matched_keywords": [
+        "tokenize"
+      ],
+      "answer": "根据现有资料：\n- export function tokenize(text: string): string[] { [1]\n- : Array<{ index: number; [3]\n- Number.isInteger(row.index) || row.index < 0 || row.index >= documents.length || scores.has(row.index) [3]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.2,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 6555,
+      "trace_id": "tr_b583b45b491458100426",
+      "top_score": 0.4694,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/adapters/embeddings/index.ts》中 sparseVector 的具体实现是什么？",
+      "expected_docs": [
+        "src/adapters/embeddings/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/embeddings/index.ts"
+      ],
+      "matched_keywords": [
+        "sparseVector"
+      ],
+      "answer": "根据现有资料：\n- export function sparseVector(tokens: string[], limit = 96): Record<string, number> { [1]\n- : Array<{ index: number; [3]\n- Number.isInteger(row.index) || row.index < 0 || row.index >= documents.length || scores.has(row.index) [3]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.2,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 5019,
+      "trace_id": "tr_e37d96036c85c756c4e4",
+      "top_score": 0.5143,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/adapters/reranking/index.ts》中 semanticRerank 的具体实现是什么？",
+      "expected_docs": [
+        "src/adapters/reranking/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/reranking/index.ts"
+      ],
+      "matched_keywords": [
+        "semanticRerank"
+      ],
+      "answer": "根据现有资料：\n- export async function semanticRerank(query: string, documents: string[]): Promise<number[] | null> { [1]\n- : Array<{ index: number; [2]\n- Number.isInteger(row.index) || row.index < 0 || row.index >= documents.length || scores.has(row.index) [2]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.4,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 6640,
+      "trace_id": "tr_db2027938402dbbdbe1e",
+      "top_score": 0.5118,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    },
+    {
+      "question": "《src/adapters/reranking/index.ts》中 relevance_score 的具体实现是什么？",
+      "expected_docs": [
+        "src/adapters/reranking/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/reranking/index.ts"
+      ],
+      "matched_keywords": [
+        "relevance_score"
+      ],
+      "answer": "根据现有资料：\n- : Array<{ index: number; [1]\n- relevance_score: number }> } [1]\n- Number.isFinite(row.relevance_score) || row.relevance_score < 0 || row.relevance_score > 1) { [2]",
+      "refused": false,
+      "doc_recall": 1,
+      "context_precision": 0.4,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 5408,
+      "trace_id": "tr_12ba2e6d65e9ceb25820",
+      "top_score": 0.5269,
+      "pass": true,
+      "strategy": "extractive_fallback",
+      "model_succeeded": true
+    }
+  ],
+  "model_verification": {
+    "generation_calls": 50,
+    "generation_successes": 50,
+    "verification_calls": 0,
+    "verification_supported": 0,
+    "strategies": {
+      "generated": 22,
+      "extractive_fallback": 28
+    },
+    "models": [
+      "deepseek-v4.1-flash"
+    ],
+    "providers": [
+      "deepseek-official"
+    ],
+    "errors": []
+  }
+}

@@ -196,11 +196,16 @@ async function sidecarParse(filename: string, data: Buffer, title: string | null
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ filename, data: data.toString('base64'), title }),
+      body: JSON.stringify({ filename, data: data.toString('base64'), title, engine: settings.parseEngine }),
       signal: AbortSignal.timeout(120_000),
     })
     if (!response.ok) throw new Error(`解析边车返回 ${response.status}: ${(await response.text()).slice(0, 300)}`)
-    return (await response.json()) as ParsedDocument
+    const document = (await response.json()) as ParsedDocument
+    if (document.meta.format === 'markdown') {
+      const parsed = parseMarkdown(document.blocks.map((item) => item.text).join('\n\n'), document.title)
+      return { ...parsed, parser: document.parser, meta: document.meta }
+    }
+    return document
   }
   try {
     return await parseOnce()
@@ -217,7 +222,7 @@ export async function parseBytes(filename: string, data: Buffer, title?: string 
   if (['.md', '.markdown'].includes(suffix)) return parseMarkdown(data.toString('utf8'), baseTitle)
   if (['.html', '.htm'].includes(suffix)) return parseHtml(data.toString('utf8'), baseTitle)
   if (['.txt', '.log', '.csv', '.json', '.yaml', '.yml'].includes(suffix)) return parseMarkdown(data.toString('utf8'), baseTitle)
-  if (suffix === '.pdf' || suffix === '.docx') return sidecarParse(filename, data, title ?? null)
+  if (['.pdf', '.docx', '.png', '.jpg', '.jpeg', '.tif', '.tiff', '.webp', '.bmp', '.wav', '.mp3', '.m4a', '.mp4', '.webm', '.ogg', '.flac'].includes(suffix)) return sidecarParse(filename, data, title ?? null)
   if (suffix === '.doc') throw new Error('暂不支持 .doc，请转换为 .docx 或 PDF')
   return parseText(data.toString('utf8'), baseTitle)
 }

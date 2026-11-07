@@ -3,10 +3,12 @@ import { FastifyInstance } from 'fastify'
 import { authenticate, currentPrincipal } from '../server.js'
 import { query, queryOne } from '../../db/index.js'
 import { chunkDict, documentDict, entityDict, factDict } from '../../core/serializers.js'
-import { ingestParsed, listIngestJobs, submitIngest, tombstoneDocument } from '../../core/ingestion.js'
+import { ingestParsed, savedIngestJobs, retryIngestJob, submitIngest, tombstoneDocument } from '../../core/ingestion.js'
 import { parseBytes, parseTextContent } from '../../adapters/parsing/index.js'
 import { requireEditor, canRead } from '../../core/security.js'
 import { extractFactsForDocument } from '../../core/learning.js'
+import { reindexDocument } from '../../core/reindexing.js'
+import { evidenceWeight } from '../../core/source-policy.js'
 import type { ChunkRow, DocumentRow, EntityRow, FactRow, VersionRow } from '../../core/rows.js'
 
 function parseAcl(raw: unknown): string[] | null {
@@ -45,6 +47,7 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
       data,
       acl: parseAcl(fields.acl?.value),
       documentId: typeof fields.doc_id?.value === 'string' ? fields.doc_id.value : null,
+      sourceUri: typeof fields.source_uri?.value === 'string' && fields.source_uri.value.startsWith('directory:') ? fields.source_uri.value : null,
     })
   })
 
@@ -74,7 +77,15 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
   app.get('/jobs', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
     const active = (request.query as { active?: string }).active === 'true'
-    return { items: listIngestJobs(principal, active) }
+    return { items: await savedIngestJobs(principal, active) }
+  })
+
+  app.post('/jobs/:job_id/retry', { preHandler: authenticate }, async (request) => {
+    const principal = currentPrincipal(request)
+    requireEditor(principal)
+    const stage = (request.body as { stage?: string } | undefined)?.stage ?? 'index'
+    if (!['parse', 'index'].includes(stage)) throw Object.assign(new Error('stage 必须为 parse 或 index'), { statusCode: 400 })
+    return retryIngestJob(principal, (request.params as { job_id: string }).job_id, stage as 'parse' | 'index', (request.body as { corrected_text?: string } | undefined)?.corrected_text)
   })
 
   app.get('/acl-options', { preHandler: authenticate }, async (request) => {
@@ -175,8 +186,29 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
     requireEditor(principal)
     const { doc_id: docId } = request.params as { doc_id: string }
     const document = await visibleDocument(principal, docId)
+    const scope = (request.body as { scope?: string } | undefined)?.scope ?? 'facts'
+    if (!['facts','index','all'].includes(scope)) throw Object.assign(new Error('scope 必须为 facts、index 或 all'), { statusCode: 400 })
+    if (scope !== 'facts') {
+      const result = await reindexDocument(principal.tenantId, docId)
+      if (scope === 'all') await extractFactsForDocument(principal,docId)
+      return result
+    }
     void extractFactsForDocument(principal, document.id).catch(() => undefined)
     return { document_id: docId, status: 'queued', message: '已排入事实抽取队列' }
+  })
+
+  app.patch('/:doc_id/policy', { preHandler: authenticate }, async request => {
+    const principal = currentPrincipal(request)
+    requireEditor(principal)
+    const document = await visibleDocument(principal,(request.params as { doc_id: string }).doc_id)
+    const payload = request.body as { source_trust?: number; is_core?: boolean }
+    if (!payload || payload.source_trust !== undefined && (!Number.isFinite(payload.source_trust) || payload.source_trust < 0 || payload.source_trust > 1)
+      || payload.is_core !== undefined && typeof payload.is_core !== 'boolean') throw Object.assign(new Error('source_trust 必须为0–1，is_core必须为布尔值'), { statusCode: 400 })
+    const trust=payload.source_trust ?? document.source_trust ?? 0.5
+    await query('UPDATE documents SET source_trust=$1,is_core=$2 WHERE id=$3', [trust,payload.is_core ?? document.is_core ?? false,document.id])
+    await query('UPDATE fact_evidence SET weight=$1 WHERE doc_id=$2', [evidenceWeight({...document,source_trust:trust}),document.id])
+    if (payload.is_core || trust >= 0.8) await extractFactsForDocument(principal,document.id)
+    return { document_id: document.id, source_trust: trust, is_core: payload.is_core ?? document.is_core ?? false }
   })
 
   app.delete('/:doc_id', { preHandler: authenticate }, async (request) => {

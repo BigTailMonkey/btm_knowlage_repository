@@ -54,6 +54,7 @@ const tenant = raw.tenant ?? {}
 const server = raw.server ?? {}
 const dsh = raw.dsh ?? {}
 const sidecar = raw.sidecar ?? {}
+const parsing = raw.parsing ?? {}
 
 const dataDir = resolvePath(storage.data_dir, join(ROOT_DIR, 'data'))
 const priceRows = (raw.prices ?? {}) as Record<string, Record<string, unknown>>
@@ -95,7 +96,15 @@ export const settings = {
   embeddingTimeoutSeconds: num(embedding.timeout_seconds, 30),
 
   rerankThreshold: num(retrieval.rerank_threshold, 0.36),
+  rerankUrl: text(retrieval.rerank_url, ''),
+  rerankModel: text(retrieval.rerank_model, ''),
+  rerankApiKey: text(retrieval.rerank_api_key, ''),
+  semanticEntities: bool(retrieval.semantic_entities, true),
+  groundingVerifier: bool(retrieval.grounding_verifier, true),
+  parseEngine: text(parsing.engine, 'auto'),
+  parseMinQuality: num(parsing.min_quality, 0.25),
   reflectionEnabled: bool(reflection.enabled, true),
+  reflectionRunAt: typeof reflection.run_at === 'string' ? reflection.run_at : '03:00',
   reflectionIntervalSeconds: num(reflection.interval_seconds, 21600),
 
   sidecarUrl: text(sidecar.url, 'http://127.0.0.1:8732'),

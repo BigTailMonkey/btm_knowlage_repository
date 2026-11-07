@@ -181,3 +181,18 @@ test('MCP rejects malformed search filters and invalid historical dates', async 
     assert.equal(response.json().error.code, -32602)
   }
 })
+
+test('an exact quoted source title scopes retrieval after visibility and explicit filters',async()=>{
+  for (const id of ['指定文档','相似文档']) {
+    await document(id)
+    const v=await version(id,1,'两个文档都包含同样的检索与引用内容。')
+    await chunk(id,v,id+'-chunk','两个文档都包含同样的检索与引用内容。')
+  }
+  const scoped=await retrieve(workspace.principal,'请查《指定文档》的引用内容。')
+  assert.ok(scoped.hits.length)
+  assert.ok(scoped.hits.every(hit=>hit.document.id==='指定文档'))
+  const compared=await retrieve(workspace.principal,'对比《指定文档》与《相似文档》的引用内容。')
+  assert.equal(new Set(compared.hits.map(hit=>hit.document.id)).size,2)
+  const filtered=await retrieve(workspace.principal,'请查《指定文档》的引用内容。',{docIds:['相似文档']})
+  assert.ok(filtered.hits.every(hit=>hit.document.id==='相似文档'))
+})

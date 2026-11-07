@@ -1,4 +1,5 @@
 import { mkdirSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 
 import { DeepSeekHarness } from '@deepseek-ai/dsh-sdk-client'
 
@@ -45,7 +46,7 @@ function failure(error: unknown, model: string, provider: string, started: numbe
  * SDK 托管完整 runtime（会话持久化、工具、Plan/Goal、权限审批、插件），
  * 一次启动后复用，不再按请求拉起 headless 一次性进程。
  */
-class DshHarness {
+export class DshHarness {
   readonly provider = settings.modelProvider
   readonly model = settings.model
   private harness: DeepSeekHarness | null = null
@@ -127,7 +128,8 @@ class DshHarness {
   }
 
   async complete(prompt: string, system?: string, _maxTokens?: number): Promise<HarnessResult> {
-    return this.ask(`default-${settings.defaultTenantId}`, prompt, system)
+    // Extraction and verification are stateless calls; do not inherit earlier answers.
+    return this.ask(`completion-${randomUUID()}`, prompt, system)
   }
 
   async *stream(prompt: string, system?: string): AsyncGenerator<string> {

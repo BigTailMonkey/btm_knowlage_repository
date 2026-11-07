@@ -524,9 +524,22 @@ function renderIngestJobs() {
           <span class="job-stage" title="${esc(stage)}">${esc(stage)}</span>
           <span class="job-percent">${failed ? "失败" : `${percent}%`}</span>
         </div>
+        ${failed ? `<div class="job-actions"><button class="text-btn" data-retry-job="${esc(job.job_id)}">重试解析</button><button class="text-btn" data-correct-job="${esc(job.job_id)}">人工修正文</button></div>` : ""}
         <div class="job-progress"><i style="width:${percent}%"></i></div>
       </div>`;
   }).join("");
+  box.querySelectorAll("[data-retry-job], [data-correct-job]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const corrected = button.dataset.correctJob ? prompt("输入人工修正后的文档正文，提交后重新索引：") : null;
+      if (button.dataset.correctJob && !corrected?.trim()) return;
+      button.disabled = true;
+      try {
+        const id = button.dataset.retryJob || button.dataset.correctJob;
+        const job = await api(`/documents/jobs/${encodeURIComponent(id)}/retry`, { method: "POST", body: corrected ? { corrected_text: corrected, stage: "index" } : { stage: "parse" } });
+        trackIngestJob(job);
+      } catch (error) { toast(error.message); button.disabled = false; }
+    });
+  });
 }
 
 async function loadDocs() {
@@ -654,6 +667,7 @@ async function openDoc(docId, citation = null) {
             <span class="pill">${esc(SOURCE_LABEL[doc.source_type] || doc.source_type)}</span>
             <span class="pill">${num(data.chunks.length)} 个检索单元</span>
             <span class="pill">质量 ${esc(doc.quality)}</span>
+            <span class="pill">可信度 ${esc(doc.source_trust ?? 0.5)}${doc.is_core ? ' · 核心' : ''}</span>
           </div>
           ${doc.summary ? `<p class="detail-summary">${esc(plain(doc.summary))}</p>` : ""}
         </div>
@@ -661,6 +675,8 @@ async function openDoc(docId, citation = null) {
       <div class="detail-actions">
         <button class="btn primary" data-doc-action="update" data-doc-id="${esc(doc.id)}">更新内容</button>
         <button class="btn" data-doc-action="reprocess" data-doc-id="${esc(doc.id)}">重新抽取事实</button>
+        <button class="btn" data-doc-action="reindex" data-doc-id="${esc(doc.id)}">重建检索索引</button>
+        <button class="btn" data-doc-action="policy" data-doc-id="${esc(doc.id)}" data-trust="${esc(doc.source_trust ?? 0.5)}" data-core="${doc.is_core ? 'true' : 'false'}">来源与核心标记</button>
         <button class="btn danger" data-doc-action="delete" data-doc-id="${esc(doc.id)}">移入回收站</button>
       </div>
 
@@ -749,6 +765,23 @@ async function handleDocAction(action, docId, button) {
     } finally {
       setBusy(button, false);
     }
+  }
+  if (action === "reindex" || action === "policy") {
+    let payload;
+    if (action === "policy") {
+      const value = prompt("来源可信度（0–1）；追加 core 标记为核心文档，例如：0.8 core", `${button.dataset.trust}${button.dataset.core === 'true' ? ' core' : ''}`);
+      if (value === null) return;
+      const source_trust = Number(value.trim().split(/\s+/)[0]);
+      if (!Number.isFinite(source_trust) || source_trust < 0 || source_trust > 1) { toast("可信度需为0–1"); return; }
+      payload = { source_trust, is_core: /\bcore\b/i.test(value) };
+    }
+    setBusy(button, true, "处理中");
+    try {
+      await api(`/documents/${docId}/${action === 'policy' ? 'policy' : 'reprocess'}`, { method: action === 'policy' ? 'PATCH' : 'POST', body: payload || { scope: 'index' } });
+      toast(action === 'policy' ? "文档来源策略已保存" : "所有存储版本的检索索引已重建");
+      await openDoc(docId);
+    } catch (error) { toast(error.message); }
+    finally { setBusy(button, false); }
   }
 }
 
@@ -2430,15 +2463,24 @@ async function loadReview() {
           ${item.payload?.text ? `<div class="quote-block" style="margin-top:12px">${esc(plainLines(item.payload.text))}</div>` : ""}
         </div>
         <div class="review-actions">
+          ${item.kind === 'parse_failure' ? `<button class="btn primary" data-review-job="${esc(item.payload?.job_id)}">修正文并重试</button>` : `
           <button class="btn primary" data-review="${esc(item.id)}" data-action="accept_new">采纳本次</button>
           <button class="btn" data-review="${esc(item.id)}" data-action="reject_new">保留既有</button>
           <button class="btn" data-review="${esc(item.id)}" data-action="merge">合并证据</button>
-          <button class="btn" data-review="${esc(item.id)}" data-action="dispute">维持争议</button>
+          <button class="btn" data-review="${esc(item.id)}" data-action="dispute">维持争议</button>`}
         </div>
       </article>`).join("");
     $$("[data-review]").forEach((button) => {
       button.addEventListener("click", () => resolveReview(button.dataset.review, button.dataset.action, button));
     });
+    $$("[data-review-job]").forEach(button => button.addEventListener('click',async()=>{
+      const corrected_text=prompt('输入人工核对后的文档正文：');
+      if (!corrected_text?.trim()) return;
+      setBusy(button,true,'提交中');
+      try { trackIngestJob(await api(`/documents/jobs/${encodeURIComponent(button.dataset.reviewJob)}/retry`,{method:'POST',body:{corrected_text,stage:'index'}}));toast('修正文已提交，入库成功后自动关闭待审项'); }
+      catch(error){toast(error.message);}
+      finally{setBusy(button,false);}
+    }));
   } catch (error) {
     target.innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
   }
@@ -2702,7 +2744,7 @@ async function loadEvals() {
     $("#ops-body").innerHTML = `<section class="block">
       <div class="block-head" style="margin-bottom:10px">
         <h2>评测集</h2>
-        <button class="btn primary" id="run-eval">运行评测</button>
+        <button class="btn" id="import-eval">导入用例</button><button class="btn primary" id="run-eval">运行评测</button>
       </div>
       <div id="eval-result"></div>
       <div class="table-wrap" style="margin-top:14px">
@@ -2713,12 +2755,25 @@ async function loadEvals() {
               <td>${esc(item.question)}</td>
               <td class="muted">${esc((item.expected_docs || []).join(" / ") || "无")}</td>
               <td class="muted">${esc((item.expected_keywords || []).join(" / ") || "无")}</td>
-              <td>${item.should_refuse ? `<span class="pill warn">应拒答</span>` : `<span class="pill ok">应回答</span>`}</td>
+              <td>${String(item.source || "").startsWith("failure-candidate:") ? `<button class="text-btn" data-approve-case="${esc(item.id)}">校对并批准</button>` : ""}${item.should_refuse ? `<span class="pill warn">应拒答</span>` : `<span class="pill ok">应回答</span>`}</td>
             </tr>`).join("") || `<tr><td colspan="4"><div class="empty-block">暂无评测题</div></td></tr>`}</tbody>
         </table>
       </div>
     </section>`;
     $("#run-eval").addEventListener("click", runEvals);
+    $("#import-eval").addEventListener("click", async () => {
+      const text = prompt("粘贴评测用例JSON数组（question、expected_docs、expected_keywords、should_refuse）：");
+      if (!text) return;
+      try { const payload = JSON.parse(text); await api("/evals/cases", {method:"POST",body:{cases:Array.isArray(payload)?payload:payload.cases}}); await loadEvals(); }
+      catch(error) { toast(error.message); }
+    });
+    $$("[data-approve-case]", $("#ops-body")).forEach(button => button.addEventListener("click", async () => {
+      const item = data.items.find(row => row.id === button.dataset.approveCase);
+      const text = prompt("请核对预期结果后再批准。自动收集的失败题尚未进入黄金集：", JSON.stringify({expected_docs:item.expected_docs,expected_keywords:item.expected_keywords,should_refuse:item.should_refuse}));
+      if(!text)return;
+      try { await api(`/evals/cases/${encodeURIComponent(item.id)}`,{method:"PATCH",body:JSON.parse(text)});await api(`/evals/cases/${encodeURIComponent(item.id)}/approve`,{method:"POST"});await loadEvals(); }
+      catch(error) { toast(error.message); }
+    }));
     stampNow();
   } catch (error) {
     $("#ops-body").innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
@@ -2733,10 +2788,16 @@ async function runEvals() {
     const metrics = data.metrics;
     $("#eval-result").innerHTML = `
       <div class="metrics" style="margin-top:2px">
-        <div class="metric"><span class="metric-label">文档召回</span><div class="metric-value">${pct(metrics.doc_recall)}</div></div>
+        <div class="metric"><span class="metric-label">Recall@10</span><div class="metric-value">${pct(metrics.doc_recall)}</div></div>
         <div class="metric"><span class="metric-label">关键词召回</span><div class="metric-value">${pct(metrics.keyword_recall)}</div></div>
         <div class="metric"><span class="metric-label">拒答准确率</span><div class="metric-value">${pct(metrics.refusal_accuracy)}</div></div>
         <div class="metric"><span class="metric-label">整体通过</span><div class="metric-value">${pct(metrics.pass_rate)}</div></div>
+      </div>
+      <div class="metrics">
+        <div class="metric"><span class="metric-label">上下文精度</span><div class="metric-value">${metrics.context_precision == null ? "—" : pct(metrics.context_precision)}</div></div>
+        <div class="metric"><span class="metric-label">引用原文匹配</span><div class="metric-value">${metrics.citation_accuracy == null ? "—" : pct(metrics.citation_accuracy)}</div></div>
+        <div class="metric"><span class="metric-label">规则覆盖</span><div class="metric-value">${metrics.rule_groundedness == null ? "—" : pct(metrics.rule_groundedness)}</div></div>
+        <div class="metric"><span class="metric-label">P95耗时</span><div class="metric-value">${latencyLabel(metrics.p95_latency_ms)}</div></div>
       </div>
       <div class="table-wrap" style="margin-top:14px">
         <table class="table">
@@ -2744,7 +2805,7 @@ async function runEvals() {
           <tbody>${data.results.map((result) => `
             <tr>
               <td>${esc(result.question)}</td>
-              <td class="num">${Number(result.top_score).toFixed(3)}</td>
+              <td class="num">${Number(result.top_score ?? 0).toFixed(3)}</td>
               <td>${result.refused ? "是" : "否"}</td>
               <td>${result.pass ? `<span class="pill ok">通过</span>` : `<span class="pill warn">未通过</span>`}</td>
             </tr>`).join("")}</tbody>
@@ -2787,7 +2848,7 @@ async function loadSettings() {
         <td class="date">${esc(price.effective_from)}</td>
       </tr>`).join("") || `<tr><td colspan="4"><div class="empty-block">暂无单价</div></td></tr>`;
   } catch (_) { /* ignore */ }
-  $("#settings-mcp").textContent = `curl -s -X POST http://localhost:8000/api/v1/mcp \\
+  $("#settings-mcp").textContent = `curl -s -X POST ${location.origin}/api/v1/mcp \\
   -H "Authorization: Bearer ${state.token}" \\
   -H "Content-Type: application/json" \\
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",

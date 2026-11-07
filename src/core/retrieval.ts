@@ -1,4 +1,5 @@
 import { settings } from '../config.js'
+import { semanticRerank } from '../adapters/reranking/index.js'
 import { query, queryOne } from '../db/index.js'
 import { cosine, embedder, keywordOverlap, sparseDot, tokenize } from '../adapters/embeddings/index.js'
 import type { ChunkRow, DocumentRow, EntityRow } from './rows.js'
@@ -84,6 +85,7 @@ export class Hit {
 }
 
 export interface RetrievalResult {
+  summaries?: Array<{ text: string; evidence_ids: string[] }>
   hits: Hit[]
   facts: Array<Record<string, unknown>>
   entities: EntityRow[]
@@ -245,7 +247,7 @@ export async function retrieve(
   }
   if (options.sourceType) candidates = candidates.filter((pair) => pair[1].source_type === options.sourceType)
 
-  const visible = candidates.filter((pair) => canRead(principal, pair[0].acl_principals))
+  let visible = candidates.filter((pair) => canRead(principal, pair[0].acl_principals))
   const rejected = candidates.length - visible.length
   options.recorder?.addSpan({
     stage: 'acl.filter',
@@ -253,6 +255,13 @@ export async function retrieve(
     output: { in: candidates.length, visible: visible.length, rejected },
     latencyMs: 1,
   })
+  // An exact cited document title is an explicit source scope, not a weak keyword.
+  const titles = new Set([...text.matchAll(/《([^》]+)》/g)].map(match=>match[1]!.trim().normalize('NFKC').toLowerCase()))
+  const scoped = visible.filter(([,document])=>titles.has(document.title.trim().normalize('NFKC').toLowerCase()))
+  if (scoped.length) {
+    options.recorder?.addSpan({stage:'source.scope',output:{before:visible.length,after:scoped.length,document_ids:[...new Set(scoped.map(([,document])=>document.id))]}})
+    visible=scoped
+  }
   if (!visible.length) {
     return {
       hits: [],
@@ -352,7 +361,7 @@ export async function retrieve(
   const maxSparse = Math.max(1, ...sparseScores.map(([, value]) => value))
 
   t0 = Date.now()
-  const reranked: Hit[] = []
+  let reranked: Hit[] = []
   for (const [chunkId, rrfScore] of [...fused.entries()].sort((a, b) => b[1] - a[1]).slice(0, Math.max(30, topK))) {
     const pair = byId.get(chunkId)
     if (!pair) continue
@@ -376,15 +385,22 @@ export async function retrieve(
       new Hit(chunk, document, dense, sparseNorm, rrfScore, Number(score.toFixed(4)), coverage, graphSet.has(chunkId) ? 'graph' : 'chunk'),
     )
   }
+  const semantic = await semanticRerank(text, reranked.map((hit) => hit.chunk.text))
+  if (semantic) reranked = reranked.map((hit, index) => new Hit(hit.chunk, hit.document, hit.dense, hit.sparse, hit.rrf,
+    Math.max(0, Math.min(1, semantic[index]! + Math.max(-0.05, Math.min(0.05, (hit.chunk.weight - 1) * 0.05)))), hit.coverage, hit.source))
   reranked.sort((a, b) => b.rerank - a.rerank)
   options.recorder?.addSpan({
     stage: 'rank.rerank',
-    params: { candidates: reranked.length, threshold: settings.rerankThreshold },
+    params: { candidates: reranked.length, threshold: settings.rerankThreshold, algorithm: semantic ? settings.rerankModel || 'semantic-service' : 'heuristic' },
     output: { top: reranked.slice(0, 5).map((hit) => ({ chunk_id: hit.chunk.id, score: hit.rerank })) },
     latencyMs: Date.now() - t0,
   })
 
   const final = reranked.slice(0, topK)
+  const selected = new Set(final.map((hit) => hit.chunk.id))
+  const summaries = mode === 'graph' && !asOf ? (await query<{ text: string; evidence_ids: string[]; acl_principals: string[] }>(
+    "SELECT text,evidence_ids,acl_principals FROM knowledge_summaries WHERE tenant_id=$1 AND kind='community' ORDER BY updated_at DESC LIMIT 30", [principal.tenantId]))
+    .filter((row) => canRead(principal, row.acl_principals) && row.evidence_ids.length > 0 && row.evidence_ids.every((id) => selected.has(id))).slice(0, 3) : []
   for (const hit of final) {
     if (hit.chunk.parent_id) {
       const parent = await queryOne<ChunkRow>('SELECT * FROM chunks WHERE id = $1', [hit.chunk.parent_id])
@@ -393,6 +409,7 @@ export async function retrieve(
   }
   return {
     hits: final,
+    summaries,
     facts,
     entities,
     stats: {

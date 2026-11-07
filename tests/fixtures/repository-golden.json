@@ -1,0 +1,652 @@
+[
+  {
+    "id": "repo-01",
+    "source": "src/core/ingestion.ts",
+    "symbol": "submitIngest",
+    "question": "请从《src/core/ingestion.ts》的已提供片段中，摘录包含 `submitIngest` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/ingestion.ts"
+    ],
+    "expected_keywords": [
+      "submitIngest"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-02",
+    "source": "src/core/ingestion.ts",
+    "symbol": "processIngestQueue",
+    "question": "请从《src/core/ingestion.ts》的已提供片段中，摘录包含 `processIngestQueue` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/ingestion.ts"
+    ],
+    "expected_keywords": [
+      "processIngestQueue"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-03",
+    "source": "src/core/ingestion.ts",
+    "symbol": "retryIngestJob",
+    "question": "请从《src/core/ingestion.ts》的已提供片段中，摘录包含 `retryIngestJob` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/ingestion.ts"
+    ],
+    "expected_keywords": [
+      "retryIngestJob"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-04",
+    "source": "src/core/chunking.ts",
+    "symbol": "chunkBlocks",
+    "question": "请从《src/core/chunking.ts》的已提供片段中，摘录包含 `chunkBlocks` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/chunking.ts"
+    ],
+    "expected_keywords": [
+      "chunkBlocks"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-05",
+    "source": "src/core/chunking.ts",
+    "symbol": "estimateTokens",
+    "question": "请从《src/core/chunking.ts》的已提供片段中，摘录包含 `estimateTokens` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/chunking.ts"
+    ],
+    "expected_keywords": [
+      "estimateTokens"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-06",
+    "source": "src/core/chunking.ts",
+    "symbol": "MAX_TOKENS",
+    "question": "请从《src/core/chunking.ts》的已提供片段中，摘录包含 `MAX_TOKENS` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/chunking.ts"
+    ],
+    "expected_keywords": [
+      "MAX_TOKENS"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-07",
+    "source": "src/adapters/parsing/index.ts",
+    "symbol": "parseBytes",
+    "question": "请从《src/adapters/parsing/index.ts》的已提供片段中，摘录包含 `parseBytes` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/adapters/parsing/index.ts"
+    ],
+    "expected_keywords": [
+      "parseBytes"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-08",
+    "source": "src/adapters/parsing/index.ts",
+    "symbol": "parseMarkdown",
+    "question": "请从《src/adapters/parsing/index.ts》的已提供片段中，摘录包含 `parseMarkdown` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/adapters/parsing/index.ts"
+    ],
+    "expected_keywords": [
+      "parseMarkdown"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-09",
+    "source": "src/adapters/parsing/index.ts",
+    "symbol": "normalizeCjkSpaces",
+    "question": "请从《src/adapters/parsing/index.ts》的已提供片段中，摘录包含 `normalizeCjkSpaces` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/adapters/parsing/index.ts"
+    ],
+    "expected_keywords": [
+      "normalizeCjkSpaces"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-10",
+    "source": "src/core/retrieval.ts",
+    "symbol": "retrieve",
+    "question": "请从《src/core/retrieval.ts》的已提供片段中，摘录包含 `retrieve` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/retrieval.ts"
+    ],
+    "expected_keywords": [
+      "retrieve"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-11",
+    "source": "src/core/retrieval.ts",
+    "symbol": "factIsEffective",
+    "question": "请从《src/core/retrieval.ts》的已提供片段中，摘录包含 `factIsEffective` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/retrieval.ts"
+    ],
+    "expected_keywords": [
+      "factIsEffective"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-12",
+    "source": "src/core/retrieval.ts",
+    "symbol": "normalizeAsOf",
+    "question": "请从《src/core/retrieval.ts》的已提供片段中，摘录包含 `normalizeAsOf` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/retrieval.ts"
+    ],
+    "expected_keywords": [
+      "normalizeAsOf"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-13",
+    "source": "src/core/answering.ts",
+    "symbol": "ask",
+    "question": "请从《src/core/answering.ts》的已提供片段中，摘录包含 `ask` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/answering.ts"
+    ],
+    "expected_keywords": [
+      "ask"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-14",
+    "source": "src/core/answering.ts",
+    "symbol": "ANSWER_SYSTEM",
+    "question": "请从《src/core/answering.ts》的已提供片段中，摘录包含 `ANSWER_SYSTEM` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/answering.ts"
+    ],
+    "expected_keywords": [
+      "ANSWER_SYSTEM"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-15",
+    "source": "src/core/answering.ts",
+    "symbol": "reflectQueries",
+    "question": "请从《src/core/answering.ts》的已提供片段中，摘录包含 `reflectQueries` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/answering.ts"
+    ],
+    "expected_keywords": [
+      "reflectQueries"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-16",
+    "source": "src/core/learning.ts",
+    "symbol": "getOrCreateEntity",
+    "question": "请从《src/core/learning.ts》的已提供片段中，摘录包含 `getOrCreateEntity` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/learning.ts"
+    ],
+    "expected_keywords": [
+      "getOrCreateEntity"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-17",
+    "source": "src/core/learning.ts",
+    "symbol": "extractFactsForDocument",
+    "question": "请从《src/core/learning.ts》的已提供片段中，摘录包含 `extractFactsForDocument` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/learning.ts"
+    ],
+    "expected_keywords": [
+      "extractFactsForDocument"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-18",
+    "source": "src/core/learning.ts",
+    "symbol": "runReflection",
+    "question": "请从《src/core/learning.ts》的已提供片段中，摘录包含 `runReflection` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/learning.ts"
+    ],
+    "expected_keywords": [
+      "runReflection"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-19",
+    "source": "src/db/index.ts",
+    "symbol": "initSchema",
+    "question": "请从《src/db/index.ts》的已提供片段中，摘录包含 `initSchema` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/db/index.ts"
+    ],
+    "expected_keywords": [
+      "initSchema"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-20",
+    "source": "src/db/index.ts",
+    "symbol": "seedIfEmpty",
+    "question": "请从《src/db/index.ts》的已提供片段中，摘录包含 `seedIfEmpty` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/db/index.ts"
+    ],
+    "expected_keywords": [
+      "seedIfEmpty"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-21",
+    "source": "src/db/index.ts",
+    "symbol": "closePool",
+    "question": "请从《src/db/index.ts》的已提供片段中，摘录包含 `closePool` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/db/index.ts"
+    ],
+    "expected_keywords": [
+      "closePool"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-22",
+    "source": "src/core/security.ts",
+    "symbol": "canRead",
+    "question": "请从《src/core/security.ts》的已提供片段中，摘录包含 `canRead` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/security.ts"
+    ],
+    "expected_keywords": [
+      "canRead"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-23",
+    "source": "src/core/security.ts",
+    "symbol": "requireEditor",
+    "question": "请从《src/core/security.ts》的已提供片段中，摘录包含 `requireEditor` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/security.ts"
+    ],
+    "expected_keywords": [
+      "requireEditor"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-24",
+    "source": "src/core/security.ts",
+    "symbol": "requireAdmin",
+    "question": "请从《src/core/security.ts》的已提供片段中，摘录包含 `requireAdmin` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/security.ts"
+    ],
+    "expected_keywords": [
+      "requireAdmin"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-25",
+    "source": "src/core/tracing.ts",
+    "symbol": "TraceRecorder",
+    "question": "请从《src/core/tracing.ts》的已提供片段中，摘录包含 `TraceRecorder` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/tracing.ts"
+    ],
+    "expected_keywords": [
+      "TraceRecorder"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-26",
+    "source": "src/core/tracing.ts",
+    "symbol": "tokenPrice",
+    "question": "请从《src/core/tracing.ts》的已提供片段中，摘录包含 `tokenPrice` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/tracing.ts"
+    ],
+    "expected_keywords": [
+      "tokenPrice"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-27",
+    "source": "src/core/tracing.ts",
+    "symbol": "recordUsage",
+    "question": "请从《src/core/tracing.ts》的已提供片段中，摘录包含 `recordUsage` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/tracing.ts"
+    ],
+    "expected_keywords": [
+      "recordUsage"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-28",
+    "source": "src/core/ids.ts",
+    "symbol": "newId",
+    "question": "请从《src/core/ids.ts》的已提供片段中，摘录包含 `newId` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/ids.ts"
+    ],
+    "expected_keywords": [
+      "newId"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-29",
+    "source": "src/core/ids.ts",
+    "symbol": "todayLocal",
+    "question": "请从《src/core/ids.ts》的已提供片段中，摘录包含 `todayLocal` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/ids.ts"
+    ],
+    "expected_keywords": [
+      "todayLocal"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-30",
+    "source": "src/core/ids.ts",
+    "symbol": "iso",
+    "question": "请从《src/core/ids.ts》的已提供片段中，摘录包含 `iso` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/ids.ts"
+    ],
+    "expected_keywords": [
+      "iso"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-31",
+    "source": "src/core/grounding.ts",
+    "symbol": "validateGrounding",
+    "question": "请从《src/core/grounding.ts》的已提供片段中，摘录包含 `validateGrounding` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/grounding.ts"
+    ],
+    "expected_keywords": [
+      "validateGrounding"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-32",
+    "source": "src/core/grounding.ts",
+    "symbol": "claimSentences",
+    "question": "请从《src/core/grounding.ts》的已提供片段中，摘录包含 `claimSentences` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/grounding.ts"
+    ],
+    "expected_keywords": [
+      "claimSentences"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-33",
+    "source": "src/core/consolidation.ts",
+    "symbol": "consolidateKnowledge",
+    "question": "请从《src/core/consolidation.ts》的已提供片段中，摘录包含 `consolidateKnowledge` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/consolidation.ts"
+    ],
+    "expected_keywords": [
+      "consolidateKnowledge"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-34",
+    "source": "src/core/consolidation.ts",
+    "symbol": "SupportedFact",
+    "question": "请从《src/core/consolidation.ts》的已提供片段中，摘录包含 `SupportedFact` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/consolidation.ts"
+    ],
+    "expected_keywords": [
+      "SupportedFact"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-35",
+    "source": "src/core/entity-resolution.ts",
+    "symbol": "resolveSemanticEntity",
+    "question": "请从《src/core/entity-resolution.ts》的已提供片段中，摘录包含 `resolveSemanticEntity` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/entity-resolution.ts"
+    ],
+    "expected_keywords": [
+      "resolveSemanticEntity"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-36",
+    "source": "src/core/entity-resolution.ts",
+    "symbol": "candidates",
+    "question": "请从《src/core/entity-resolution.ts》的已提供片段中，摘录包含 `candidates` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/entity-resolution.ts"
+    ],
+    "expected_keywords": [
+      "candidates"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-37",
+    "source": "src/core/evaluation.ts",
+    "symbol": "runEvaluation",
+    "question": "请从《src/core/evaluation.ts》的已提供片段中，摘录包含 `runEvaluation` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/evaluation.ts"
+    ],
+    "expected_keywords": [
+      "runEvaluation"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-38",
+    "source": "src/core/evaluation.ts",
+    "symbol": "EvaluationCase",
+    "question": "请从《src/core/evaluation.ts》的已提供片段中，摘录包含 `EvaluationCase` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/core/evaluation.ts"
+    ],
+    "expected_keywords": [
+      "EvaluationCase"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-39",
+    "source": "src/app/routes/documents.ts",
+    "symbol": "documentRoutes",
+    "question": "请从《src/app/routes/documents.ts》的已提供片段中，摘录包含 `documentRoutes` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/app/routes/documents.ts"
+    ],
+    "expected_keywords": [
+      "documentRoutes"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-40",
+    "source": "src/app/routes/documents.ts",
+    "symbol": "visibleDocument",
+    "question": "请从《src/app/routes/documents.ts》的已提供片段中，摘录包含 `visibleDocument` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/app/routes/documents.ts"
+    ],
+    "expected_keywords": [
+      "visibleDocument"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-41",
+    "source": "src/app/routes/ask.ts",
+    "symbol": "askRoutes",
+    "question": "请从《src/app/routes/ask.ts》的已提供片段中，摘录包含 `askRoutes` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/app/routes/ask.ts"
+    ],
+    "expected_keywords": [
+      "askRoutes"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-42",
+    "source": "src/app/routes/ask.ts",
+    "symbol": "transaction",
+    "question": "请从《src/app/routes/ask.ts》的已提供片段中，摘录包含 `transaction` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/app/routes/ask.ts"
+    ],
+    "expected_keywords": [
+      "transaction"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-43",
+    "source": "src/app/routes/mcp.ts",
+    "symbol": "mcpRoutes",
+    "question": "请从《src/app/routes/mcp.ts》的已提供片段中，摘录包含 `mcpRoutes` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/app/routes/mcp.ts"
+    ],
+    "expected_keywords": [
+      "mcpRoutes"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-44",
+    "source": "src/app/routes/mcp.ts",
+    "symbol": "TOOLS",
+    "question": "请从《src/app/routes/mcp.ts》的已提供片段中，摘录包含 `TOOLS` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/app/routes/mcp.ts"
+    ],
+    "expected_keywords": [
+      "TOOLS"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-45",
+    "source": "src/app/server.ts",
+    "symbol": "createServer",
+    "question": "请从《src/app/server.ts》的已提供片段中，摘录包含 `createServer` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/app/server.ts"
+    ],
+    "expected_keywords": [
+      "createServer"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-46",
+    "source": "src/app/server.ts",
+    "symbol": "authenticate",
+    "question": "请从《src/app/server.ts》的已提供片段中，摘录包含 `authenticate` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/app/server.ts"
+    ],
+    "expected_keywords": [
+      "authenticate"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-47",
+    "source": "src/adapters/embeddings/index.ts",
+    "symbol": "tokenize",
+    "question": "请从《src/adapters/embeddings/index.ts》的已提供片段中，摘录包含 `tokenize` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/adapters/embeddings/index.ts"
+    ],
+    "expected_keywords": [
+      "tokenize"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-48",
+    "source": "src/adapters/embeddings/index.ts",
+    "symbol": "sparseVector",
+    "question": "请从《src/adapters/embeddings/index.ts》的已提供片段中，摘录包含 `sparseVector` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/adapters/embeddings/index.ts"
+    ],
+    "expected_keywords": [
+      "sparseVector"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-49",
+    "source": "src/adapters/reranking/index.ts",
+    "symbol": "semanticRerank",
+    "question": "请从《src/adapters/reranking/index.ts》的已提供片段中，摘录包含 `semanticRerank` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/adapters/reranking/index.ts"
+    ],
+    "expected_keywords": [
+      "semanticRerank"
+    ],
+    "should_refuse": false
+  },
+  {
+    "id": "repo-50",
+    "source": "src/adapters/reranking/index.ts",
+    "symbol": "relevance_score",
+    "question": "请从《src/adapters/reranking/index.ts》的已提供片段中，摘录包含 `relevance_score` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+    "expected_docs": [
+      "src/adapters/reranking/index.ts"
+    ],
+    "expected_keywords": [
+      "relevance_score"
+    ],
+    "should_refuse": false
+  }
+]

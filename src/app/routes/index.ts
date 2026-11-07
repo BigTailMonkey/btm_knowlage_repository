@@ -46,7 +46,7 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     model: settings.model,
     embedding_model: settings.embeddingModel,
     embedding_dim: settings.embeddingDim,
-    source_types: ['text', 'md', 'markdown', 'pdf', 'docx', 'html', 'web', 'csv', 'json', 'yaml'],
+    source_types: ['text', 'md', 'markdown', 'pdf', 'docx', 'html', 'web', 'csv', 'json', 'yaml', 'png', 'jpg', 'wav', 'mp3', 'mp4'],
   }))
 
   app.get('/dsh-web', { preHandler: authenticate }, async () => {

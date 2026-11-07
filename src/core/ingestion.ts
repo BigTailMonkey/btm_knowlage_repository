@@ -198,6 +198,7 @@ async function ingestParsedVersion(
   }
   let versionNumber = 1
   await transaction(async (client) => {
+    await client.query('DELETE FROM knowledge_summaries WHERE tenant_id=$1', [principal.tenantId])
     const latest = existing ? (await client.query<DocumentRow>(
       `SELECT * FROM documents WHERE id = $1 AND tenant_id = $2 AND status = 'active' FOR UPDATE`,
       [documentId, principal.tenantId],
@@ -255,7 +256,7 @@ async function ingestParsedVersion(
     }
     if (options.jobId) {
       await client.query(
-        `UPDATE jobs SET status = 'done', input_hash = $1, payload = $2::jsonb, updated_at = now() WHERE id = $3`,
+        `UPDATE jobs SET input_hash = $1, payload = payload || $2::jsonb, updated_at = now() WHERE id = $3`,
         [contentHash, JSON.stringify({ doc_id: documentId, version: versionNumber, parser: parsed.parser }), jobId],
       )
     } else {
@@ -280,6 +281,11 @@ async function ingestParsedVersion(
   }
 }
 async function scheduleEnrichment(docId: string, principal: Principal): Promise<void> {
+  const { shouldEnrich } = await import('./source-policy.js')
+  if (!(await shouldEnrich(docId))) {
+    await query("UPDATE documents SET enrichment_status='deferred' WHERE id=$1", [docId])
+    return
+  }
   const { extractFactsForDocument } = await import('./learning.js')
   try {
     await extractFactsForDocument(principal, docId)
@@ -288,7 +294,7 @@ async function scheduleEnrichment(docId: string, principal: Principal): Promise<
   }
 }
 
-export function submitIngest(
+export async function submitIngest(
   principal: Principal,
   source: 'file' | 'text' | 'url',
   options: {
@@ -298,9 +304,10 @@ export function submitIngest(
     data?: Buffer | null
     text?: string | null
     url?: string | null
+    sourceUri?: string | null
     acl?: string[] | null
   },
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   prune()
   const jobId = newId('job')
   const displayTitle =
@@ -328,14 +335,13 @@ export function submitIngest(
   }
   INGEST_JOBS.set(jobId, record)
 
-  void (async () => {
-    await query(
-      `INSERT INTO jobs (id, tenant_id, type, status, attempts, payload)
-       VALUES ($1, $2, 'ingest', 'pending', 1, $3::jsonb)`,
-      [jobId, principal.tenantId, JSON.stringify({ source, title: displayTitle })],
-    )
-    await runIngestJob(jobId, principal, source, options)
-  })()
+  const request = { ...options, rawHash: options.data ? sha256(options.data) : null, data: options.data?.toString('base64') ?? null }
+  await query(
+    `INSERT INTO jobs (id, tenant_id, type, status, attempts, payload)
+     VALUES ($1, $2, 'ingest', 'pending', 0, $3::jsonb)`,
+    [jobId, principal.tenantId, JSON.stringify({ source, user_id: principal.userId, request, view: record })],
+  )
+  void processIngestQueue().catch(() => undefined)
 
   return publicJob(record)
 }
@@ -351,6 +357,7 @@ async function runIngestJob(
     data?: Buffer | null
     text?: string | null
     url?: string | null
+    sourceUri?: string | null
     acl?: string[] | null
   },
 ): Promise<void> {
@@ -360,14 +367,21 @@ async function runIngestJob(
 
   try {
     let parsed: ParsedDocument
+    const saved = await queryOne<{ payload: Record<string, unknown> }>('SELECT payload FROM jobs WHERE id=$1', [jobId])
+    const checkpoint = saved?.payload.checkpoint as { parsed: ParsedDocument; sourceType: string; uri: string | null } | undefined
     let sourceType: string
     let uri: string | null = null
-    if (source === 'file') {
+    if (checkpoint) {
+      parsed = checkpoint.parsed
+      sourceType = checkpoint.sourceType
+      uri = checkpoint.uri
+      report('恢复解析结果', 40)
+    } else if (source === 'file') {
       if (!options.filename || !options.data) throw new Error('缺少文件内容')
       report('解析', 10)
       parsed = await parseBytes(options.filename, options.data, options.title ?? null)
       sourceType = options.filename.includes('.') ? options.filename.split('.').pop()!.toLowerCase() : 'file'
-      uri = `upload:${options.filename}`
+      uri = options.sourceUri || `upload:${options.filename}`
     } else if (source === 'text') {
       if (!options.text) throw new Error('缺少文本内容')
       report('切分', 40)
@@ -383,6 +397,11 @@ async function runIngestJob(
       report('切分', 40)
     }
 
+    await query(`UPDATE jobs SET payload = payload || $1::jsonb, updated_at=now() WHERE id=$2`,
+      [JSON.stringify({ checkpoint: { parsed, sourceType, uri } }), jobId])
+    if (parsed.quality < settings.parseMinQuality || !parsed.blocks.some((block) => block.text.trim())) {
+      throw Object.assign(new Error('解析质量不足，需人工修正或更换解析引擎'), { statusCode: 422 })
+    }
     const result = await ingestParsed(principal, parsed, {
       sourceType,
       uri,
@@ -400,19 +419,25 @@ async function runIngestJob(
       version: result.version as number,
       duplicate: result.duplicate as boolean,
       message: result.message as string,
+      error: null,
     })
     await query(
-      `UPDATE jobs SET status = 'done', payload = $1::jsonb, updated_at = now() WHERE id = $2`,
-      [JSON.stringify(result), jobId],
+      `UPDATE jobs SET status = 'done', error = NULL, payload = payload || $1::jsonb, updated_at = now() WHERE id = $2`,
+      [JSON.stringify({ ...result, result, view: INGEST_JOBS.get(jobId) }), jobId],
     )
-    void scheduleEnrichment(result.document_id as string, principal)
+    await query(`UPDATE review_queue SET status='resolved', resolution=$1::jsonb, resolved_at=now()
+      WHERE tenant_id=$2 AND status='open' AND payload->>'job_id'=$3`, [JSON.stringify({ action: 'retry_succeeded', document_id: result.document_id }), principal.tenantId, jobId])
+    await scheduleEnrichment(result.document_id as string, principal)
   } catch (error) {
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 300) || '入库失败'
     update({ status: 'failed', stage: '失败', error: message })
     await query(
-      `UPDATE jobs SET status = 'failed', error = $1, updated_at = now() WHERE id = $2`,
-      [message, jobId],
+      `UPDATE jobs SET status = 'failed', error = $1, payload = payload || $3::jsonb, updated_at = now() WHERE id = $2`,
+      [message, jobId, JSON.stringify({ view: INGEST_JOBS.get(jobId) })],
     )
+    const review = await queryOne<{ id: string }>("SELECT id FROM review_queue WHERE tenant_id=$1 AND status='open' AND payload->>'job_id'=$2", [principal.tenantId, jobId])
+    if (!review) await query(`INSERT INTO review_queue(id,tenant_id,kind,title,payload) VALUES($1,$2,'parse_failure',$3,$4::jsonb)`,
+      [newId('rev'), principal.tenantId, options.title || options.filename || options.url || '文档解析失败', JSON.stringify({ job_id: jobId, reason: message })])
   }
 }
 
@@ -437,6 +462,7 @@ export async function tombstoneDocument(principal: Principal, docId: string): Pr
   if (!document || document.tenant_id !== principal.tenantId) throw new Error('文档不存在')
   const affected = new Set<string>()
   await transaction(async (client) => {
+    await client.query('DELETE FROM knowledge_summaries WHERE tenant_id=$1', [principal.tenantId])
     await client.query(`UPDATE documents SET status = 'tombstoned', updated_at = now() WHERE id = $1`, [docId])
     const facts = await client.query<{ id: string }>(
       `SELECT id FROM facts WHERE tenant_id = $1 AND
@@ -464,3 +490,114 @@ export async function tombstoneDocument(principal: Principal, docId: string): Pr
 }
 
 export const ingestionConfig = { dataDir: settings.dataDir }
+
+let queueTask: Promise<void> | null = null
+let queueTimer: NodeJS.Timeout | null = null
+let queueStopping = false
+let queueAgain = false
+
+interface SavedJob { id: string; tenant_id: string; status: string; attempts: number; error: string | null; payload: Record<string, any>; created_at: string }
+
+function restoreJob(row: SavedJob): JobRecord {
+  const result = row.payload.result ?? {}
+  const previous = row.payload.view ?? {}
+  const record: JobRecord = {
+    id: row.id, tenantId: row.tenant_id, userId: row.payload.user_id ?? '',
+    title: previous.title ?? row.payload.request?.title ?? '文档入库', source: row.payload.source ?? 'file',
+    stage: row.status === 'done' ? '完成' : row.status === 'failed' ? '失败' : '排队中',
+    percent: row.status === 'done' ? 100 : 0, docId: result.document_id ?? null,
+    chunks: result.chunks ?? 0, version: result.version ?? 0, duplicate: Boolean(result.duplicate),
+    message: result.message ?? '', error: row.error, createdAt: new Date(row.created_at).toISOString(), timestamp: new Date(row.created_at).getTime(),
+    ...previous, status: row.status,
+  }
+  INGEST_JOBS.set(row.id, record)
+  return record
+}
+
+export async function savedIngestJobs(principal: Principal, activeOnly = false): Promise<Array<Record<string, unknown>>> {
+  const rows = await query<SavedJob>(
+    `SELECT * FROM jobs WHERE tenant_id=$1 AND type='ingest' AND payload->>'user_id'=$2
+     ORDER BY created_at DESC LIMIT 100`, [principal.tenantId, principal.userId])
+  return rows.filter((row) => !activeOnly || ACTIVE.has(row.status)).map((row) => {
+    const live = INGEST_JOBS.get(row.id)
+    return publicJob(live?.status === row.status ? live : restoreJob(row))
+  })
+}
+
+export async function retryIngestJob(principal: Principal, id: string, stage: 'parse' | 'index' = 'index', correctedText?: string): Promise<Record<string, unknown>> {
+  if (correctedText?.trim()) {
+    const row = await queryOne<SavedJob>("SELECT * FROM jobs WHERE id=$1 AND tenant_id=$2 AND payload->>'user_id'=$3 AND status IN('failed','done')", [id, principal.tenantId, principal.userId])
+    if (!row) throw Object.assign(new Error('任务不存在或正在运行'), { statusCode: 409 })
+    const source = row.payload.source
+    const request = row.payload.request
+    if (!request) throw Object.assign(new Error('旧任务缺少原始输入，无法人工修正'), { statusCode: 409 })
+    const parsed = parseTextContent(correctedText, request.title || request.filename || '人工修正文档')
+    parsed.meta.corrected_by = principal.userId
+    const checkpoint = { parsed, sourceType: source === 'url' ? 'web' : source === 'file' ? request.filename?.split('.').pop() || 'file' : 'text', uri: source === 'file' ? request.sourceUri || `upload:${request.filename}` : source === 'url' ? request.url : null }
+    await query('UPDATE jobs SET payload=payload || $1::jsonb WHERE id=$2', [JSON.stringify({ checkpoint }), id])
+    stage = 'index'
+  }
+  const rows = await query<SavedJob>(
+    `UPDATE jobs SET status='pending', error=NULL, attempts=0,
+       payload=CASE WHEN $4='parse' THEN payload - 'checkpoint' ELSE payload END, updated_at=now()
+     WHERE id=$1 AND tenant_id=$2 AND type='ingest' AND payload->>'user_id'=$3
+       AND status IN ('failed','done') AND payload ? 'request' RETURNING *`,
+    [id, principal.tenantId, principal.userId, stage])
+  if (!rows[0]) throw Object.assign(new Error('任务不存在、正在运行或缺少可重试的原始输入'), { statusCode: 409 })
+  const record = restoreJob(rows[0])
+  void processIngestQueue().catch(() => undefined)
+  return publicJob(record)
+}
+
+/** Database-backed queue. Claims and heartbeats allow recovery after a crashed worker. */
+export function processIngestQueue(): Promise<void> {
+  if (queueTask) { queueAgain = true; return queueTask }
+  queueTask = (async () => {
+    do {
+    queueAgain = false
+    await query(`UPDATE jobs SET status='pending' WHERE type='ingest' AND status='running'
+      AND updated_at < now() - interval '2 minutes' AND payload ? 'request'`)
+    // Retry transient failures, retaining the parse checkpoint, at most 3 times.
+    await query(`UPDATE jobs SET status='pending' WHERE type='ingest' AND status='failed' AND attempts < 3
+      AND updated_at < now() - interval '10 seconds' AND payload ? 'request'`)
+    while (!queueStopping) {
+      const rows = await query<SavedJob>(`UPDATE jobs SET status='running', attempts=attempts+1, updated_at=now()
+        WHERE id=(SELECT id FROM jobs WHERE type='ingest' AND status='pending' AND payload ? 'request'
+        ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) AND status='pending' RETURNING *`)
+      const row = rows[0]
+      if (!row) break
+      restoreJob(row)
+      const user = await queryOne<{ id: string; name: string; role: string; groups: string[]; token: string }>(
+        "SELECT id,name,role,groups,token FROM users WHERE id=$1 AND tenant_id=$2 AND status='active'", [row.payload.user_id, row.tenant_id])
+      if (!user) {
+        await query("UPDATE jobs SET status='failed', attempts=3, error='任务主体不存在或已停用', updated_at=now() WHERE id=$1", [row.id])
+        continue
+      }
+      const heartbeat = setInterval(() => { void query("UPDATE jobs SET updated_at=now() WHERE id=$1 AND status='running'", [row.id]).catch(() => undefined) }, 30_000)
+      heartbeat.unref()
+      try {
+        const request = row.payload.request
+        await runIngestJob(row.id, { userId: user.id, tenantId: row.tenant_id, name: user.name, role: user.role, groups: user.groups, token: user.token }, row.payload.source,
+          { ...request, data: request.data ? Buffer.from(request.data, 'base64') : null })
+      } finally { clearInterval(heartbeat) }
+    }
+    } while (queueAgain && !queueStopping)
+  })().finally(() => { queueTask = null })
+  return queueTask
+}
+
+export function startIngestWorker(): void {
+  queueStopping = false
+  if (queueTimer) return
+  void processIngestQueue().catch(() => undefined)
+  queueTimer = setInterval(() => { void processIngestQueue().catch(() => undefined) }, 2000)
+  queueTimer.unref()
+}
+
+export async function stopIngestWorker(): Promise<void> {
+  queueStopping = true
+  if (queueTimer) clearInterval(queueTimer)
+  queueTimer = null
+  await queueTask
+  queueStopping = false
+}

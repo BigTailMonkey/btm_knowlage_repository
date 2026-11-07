@@ -110,7 +110,7 @@ interface Embedder {
   embedQuery(text: string): Promise<Embedding>
 }
 
-function build(kind: 'ark' | 'openai'): Embedder {
+export function createEmbedder(kind: 'ark' | 'openai' | 'hybrid'): Embedder {
   let dim = settings.embeddingDim
   const url = `${settings.embeddingBaseUrl.replace(/\/$/, '')}${settings.embeddingPath}`
 
@@ -142,6 +142,7 @@ function build(kind: 'ark' | 'openai'): Embedder {
   async function embedMany(texts: string[]): Promise<Embedding[]> {
     if (!texts.length) return []
     const vectors: number[][] = []
+    const learnedSparse: Record<string,number>[] = []
     if (kind === 'ark') {
       for (const text of texts) vectors.push(await request(text))
     } else {
@@ -153,19 +154,29 @@ function build(kind: 'ark' | 'openai'): Embedder {
           input: batch,
           encoding_format: 'float',
         })
-        const data = body.data as Array<{ embedding?: number[] }> | undefined
+        const data = body.data as Array<{ index?: number; embedding?: number[]; sparse_embedding?: Record<string,number> }> | undefined
         if (!Array.isArray(data) || data.length !== batch.length) {
           throw new EmbeddingError(`请求 ${batch.length} 条，返回 ${data?.length ?? 0} 条`)
         }
-        vectors.push(...data.map((item) => (item.embedding ?? []).map(Number)))
+        // Service order is not guaranteed; index must cover the whole batch once.
+        const ordered=data.slice().sort((a,b)=>(a.index ?? 0)-(b.index ?? 0))
+        if (ordered.some((item,index)=>item.index !== undefined && item.index !== index)) throw new EmbeddingError('向量服务返回重复或缺失索引')
+        vectors.push(...ordered.map((item) => (item.embedding ?? []).map(Number)))
+        if (kind === 'hybrid') {
+          for (const item of ordered) {
+            if (!item.sparse_embedding || Object.values(item.sparse_embedding).some(x=>!Number.isFinite(x)||x<0)) throw new EmbeddingError('混合向量服务缺少合法 learned sparse')
+            learnedSparse.push(item.sparse_embedding)
+          }
+        }
       }
     }
     const width = vectors[0]!.length
+    if (!width || vectors.some(vector=>vector.length!==width || vector.some(x=>!Number.isFinite(x)))) throw new EmbeddingError('向量服务返回空值、非有限数值或不一致维度')
     if (dim && width !== dim) throw new EmbeddingError(`向量维度不一致：embedding.dim=${dim}，模型返回 ${width}`)
     dim = width
     return texts.map((text, index) => ({
       dense: vectors[index]!,
-      sparse: sparseVector(tokenize(text)),
+      sparse: kind === 'hybrid' ? learnedSparse[index]! : sparseVector(tokenize(text)),
       model: settings.embeddingModel,
       dim: vectors[index]!.length,
     }))
@@ -185,4 +196,4 @@ function build(kind: 'ark' | 'openai'): Embedder {
 }
 
 export const embedder =
-  settings.embeddingProvider.trim().toLowerCase() === 'openai' ? build('openai') : build('ark')
+  createEmbedder(settings.embeddingProvider.trim().toLowerCase() === 'hybrid' ? 'hybrid' : settings.embeddingProvider.trim().toLowerCase() === 'openai' ? 'openai' : 'ark')

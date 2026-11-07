@@ -1,3 +1,4 @@
+# 旧 Python 服务配置；Node 主服务请使用仓库根目录 config.example.toml。
 # KnoWeave 配置模板。
 # 复制为 config.toml 后按需修改；config.toml 已被 git 忽略，可安全填写密钥。
 

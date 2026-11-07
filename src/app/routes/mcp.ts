@@ -60,7 +60,7 @@ const TOOLS = [
   {
     name: 'kb_add_note',
     description: '写入一条个人记忆，默认不污染知识层。',
-    inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+    inputSchema: { type: 'object', properties: { text: { type: 'string' }, tags: {type:'array',items:{type:'string'}} }, required: ['text'] },
   },
   {
     name: 'kb_report_gap',
@@ -196,11 +196,12 @@ export async function mcpRoutes(app: FastifyInstance): Promise<void> {
         return result(id, toolResult({ entity_id: entity.id, entity: entity.canonical_name, as_of: asOf, timeline }))
       }
       if (name === 'kb_add_note') {
+        if (typeof args.text !== 'string' || !args.text.trim() || args.tags !== undefined && (!Array.isArray(args.tags) || !args.tags.every(tag=>typeof tag==='string'))) return error(id,-32602,'text或tags格式无效')
         const memoryId = newId('mem')
         await query(
-          `INSERT INTO memory_items (id, tenant_id, user_id, scope, kind, text, confidence)
-           VALUES ($1, $2, $3, 'personal', 'mcp_note', $4, 0.5)`,
-          [memoryId, principal.tenantId, principal.userId, String(args.text ?? '')],
+          `INSERT INTO memory_items (id, tenant_id, user_id, scope, kind, text, confidence, tags)
+           VALUES ($1, $2, $3, 'personal', 'mcp_note', $4, 0.5, $5::jsonb)`,
+          [memoryId, principal.tenantId, principal.userId, args.text.trim(), JSON.stringify(args.tags ?? [])],
         )
         return result(id, toolResult({ memory_id: memoryId }))
       }

@@ -195,13 +195,13 @@ test('deleting a source retracts legacy evidence-free facts but preserves shared
 
 test('the upload job uses a stable source URI for successive same-named files', async () => {
   const upload = async (text: string) => {
-    const job = submitIngest(workspace.principal, 'file', { filename: 'job-version.txt', data: Buffer.from(text) })
+    const job = await submitIngest(workspace.principal, 'file', { filename: 'job-version.txt', data: Buffer.from(text) })
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const current = listIngestJobs(workspace.principal, false).find((item) => item.job_id === job.job_id)!
       if (current.status === 'failed') assert.fail(String(current.error))
       if (current.status === 'done') {
         const document = await queryOne<{ enrichment_status: string }>('SELECT enrichment_status FROM documents WHERE id=$1', [current.doc_id])
-        if (document && ['done', 'empty', 'failed'].includes(document.enrichment_status)) return current
+        if (document && ['done', 'empty', 'failed', 'deferred'].includes(document.enrichment_status)) return current
       }
       await new Promise((resolve) => setTimeout(resolve, 10))
     }

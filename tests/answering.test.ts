@@ -37,6 +37,7 @@ test('grounding rejects missing/invalid references, invented numbers, units and 
   assert.equal(validateGrounding('知织支持本地文档检索，大小上限为30GB。[1]', evidence).valid, false)
   assert.equal(validateGrounding('知织不支持本地文档检索。[1]', evidence).valid, false)
   assert.equal(validateGrounding('2025年知织支持本地文档检索。[1]', evidence).valid, false)
+  assert.equal(validateGrounding('const timeout = 30_000; [1]', [{ text: 'const timeout = 30_000;' }]).valid, true)
 })
 
 test('valid generated claims keep actual references and expose sentence coverage', async () => {
@@ -120,4 +121,24 @@ test('deep mode retries distinct queries at most three retrieval rounds and reco
 test('invalid query modes and dates fail before invoking a model', async () => {
   await assert.rejects(ask(workspace.principal, { question: '测试', mode: 'invented' }), /模式/)
   await assert.rejects(ask(workspace.principal, { question: '测试', asOf: '2024-02-30' }), /日期/)
+})
+
+test('quoted refusal text in source material is not itself a model refusal',async()=>{
+  await clearKnowledge()
+  const source='系统缺少证据时显示“资料不足以回答”，并提示补充来源。'
+  const doc=await ingestParsed(workspace.principal,parseText(source,'拒答行为说明'),{sourceType:'text'})
+  harness.ask=async()=>generated(source+'[1]')
+  const answer=await ask(workspace.principal,{question:'系统缺少证据时显示什么？',docIds:[String(doc.document_id)]})
+  assert.equal(answer.refused,false)
+  assert.match(String(answer.answer),/资料不足以回答/)
+  assert.equal((answer.citations as unknown[]).length,1)
+})
+
+test('extractive fallback prioritizes an explicitly quoted identifier across all retrieved hits',async()=>{
+  await clearKnowledge()
+  const doc=await ingestParsed(workspace.principal,parseText('src db schema index join settings rootDir。\n\nexport async function initSchema(): Promise<void> {','src/db/index.ts'),{sourceType:'text'})
+  harness.ask=async()=>generated('没有有效引用的模型输出')
+  const answer=await ask(workspace.principal,{question:'请摘录 `initSchema` 的已提供源码片段。',docIds:[String(doc.document_id)]})
+  assert.equal(answer.refused,false)
+  assert.match(String(answer.answer),/initSchema/)
 })

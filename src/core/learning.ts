@@ -5,6 +5,9 @@ import { newId, todayLocal } from './ids.js'
 import type { ChunkRow, DocumentRow, EntityRow, FactRow, VersionRow } from './rows.js'
 import { Principal, canRead } from './security.js'
 import { settings } from '../config.js'
+import { evidenceWeight } from './source-policy.js'
+import { resolveSemanticEntity } from './entity-resolution.js'
+import { consolidateKnowledge } from './consolidation.js'
 
 const EXTRACT_SYSTEM = `你是 KnoWeave 的事实抽取器。只抽取原文明确陈述、可被引用验证的断言。
 输出一个 JSON 数组，不要输出任何解释或 Markdown。每项字段：
@@ -86,6 +89,11 @@ export async function getOrCreateEntity(
   if (alias) {
     const aliased = await queryOne<EntityRow>('SELECT * FROM entities WHERE id = $1', [alias.entity_id])
     if (aliased) return aliased
+  }
+  const semantic = await resolveSemanticEntity(tenantId, name, entityType, acl?.length ? acl : ['tenant:public'])
+  if (semantic) {
+    await query(`INSERT INTO entity_aliases (id,entity_id,alias,normalized_alias,source) VALUES ($1,$2,$3,$4,'semantic-confirmed')`, [newId('ali'), semantic.id, name.trim(), normalized])
+    return semantic
   }
   const id = newId('ent')
   await query(
@@ -294,7 +302,7 @@ async function appendEvidence(factId: string, document: DocumentRow, candidate: 
   await query(
     `INSERT INTO fact_evidence (id, fact_id, chunk_id, doc_id, quote, span, weight)
      VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
-    [newId('ev'), factId, chunk.id, document.id, candidate.quote, JSON.stringify({ start, end: start + candidate.quote.length }), Math.max(0.05, Math.min(1, document.quality_score || 0.5))],
+    [newId('ev'), factId, chunk.id, document.id, candidate.quote, JSON.stringify({ start, end: start + candidate.quote.length }), evidenceWeight(document)],
   )
   return true
 }
@@ -343,6 +351,7 @@ async function queueFactReview(
 }
 
 async function mergeOrArbitrate(principal: Principal, document: DocumentRow, candidate: Candidate): Promise<string> {
+  await query('DELETE FROM knowledge_summaries WHERE tenant_id=$1', [principal.tenantId])
   if (!candidate.chunkId) return 'rejected'
   const chunk = await queryOne<ChunkRow>(
     `SELECT c.* FROM chunks c JOIN document_versions v ON c.version_id = v.id
@@ -373,7 +382,7 @@ async function mergeOrArbitrate(principal: Principal, document: DocumentRow, can
     const priorSources = await factSources(sameObject.id)
     const priorWeight = priorSources.reduce((sum, source) => sum + source.weight, 0)
     const independent = !priorSources.some((source) => source.doc_id === document.id)
-    const addedWeight = Math.max(0.05, Math.min(1, document.quality_score || 0.5))
+    const addedWeight = evidenceWeight(document)
     const confidence = independent && priorWeight
       ? (sameObject.confidence * priorWeight + candidate.confidence * addedWeight) / (priorWeight + addedWeight)
       : sameObject.confidence
@@ -407,7 +416,10 @@ async function mergeOrArbitrate(principal: Principal, document: DocumentRow, can
   const sources = await factSources(fact.id)
   const conflicting = existingFacts.filter((old) => old.id !== fact.id && !sameTarget(old) && periodsOverlap(old, fact))
   const supported = sources.length >= 2 && fact.confidence >= MIN_FACT_CONFIDENCE && candidate.confidence >= MIN_FACT_CONFIDENCE
-  const canSupersede = supported && fact.valid_from !== null && conflicting.length > 0 && conflicting.every((old) =>
+  const sourceVote = sources.reduce((sum, source) => sum + Number(source.weight), 0)
+  const conflictingVotes = await Promise.all(conflicting.map(async old => (await factSources(old.id)).reduce((sum, source) => sum + Number(source.weight), 0)))
+  const winsSourceVote = conflictingVotes.every(vote => sourceVote > vote)
+  const canSupersede = supported && winsSourceVote && fact.valid_from !== null && conflicting.length > 0 && conflicting.every((old) =>
     old.valid_from !== null && dateOnly(fact.valid_from)! > dateOnly(old.valid_from)!,
   )
   if (wasActive || (supported && (!conflicting.length || canSupersede))) {
@@ -467,6 +479,7 @@ async function extractDocument(principal: Principal, document: DocumentRow): Pro
       counts[outcome] = (counts[outcome] ?? 0) + 1
     }
     await query(`UPDATE documents SET enrichment_status = $1 WHERE id = $2 AND current_version = $3 AND status = 'active'`, [candidates.length ? 'done' : 'empty', docId, document.current_version])
+    await consolidateKnowledge(principal.tenantId)
     return {
       document_id: docId,
       candidates: candidates.length,
@@ -485,12 +498,13 @@ export async function resolveReview(
   action: string,
   note = '',
 ): Promise<Record<string, unknown>> {
-  const review = await queryOne<{ id: string; tenant_id: string; status: string; payload: Record<string, unknown> }>(
-    'SELECT id, tenant_id, status, payload FROM review_queue WHERE id = $1',
+  const review = await queryOne<{ id: string; tenant_id: string; status: string; kind: string; payload: Record<string, unknown> }>(
+    'SELECT id, tenant_id, status, kind, payload FROM review_queue WHERE id = $1',
     [reviewId],
   )
   if (!review || review.tenant_id !== principal.tenantId) throw new Error('审阅项不存在')
   if (review.status !== 'open') throw new Error('审阅项已处理')
+  if (review.kind === 'parse_failure') throw Object.assign(new Error('解析失败项请通过任务重试或人工修正文处理'), { statusCode: 409 })
   const payload = review.payload ?? {}
   const newFact = payload.new_fact_id
     ? await queryOne<FactRow>('SELECT * FROM facts WHERE id = $1', [String(payload.new_fact_id)])
@@ -553,6 +567,7 @@ export async function resolveReview(
     `UPDATE review_queue SET status = 'resolved', resolution = $1::jsonb, resolved_at = now() WHERE id = $2`,
     [JSON.stringify({ action, note, by: principal.userId }), reviewId],
   )
+  await consolidateKnowledge(principal.tenantId)
   return { review_id: reviewId, action, status: 'resolved' }
 }
 
@@ -639,6 +654,7 @@ export async function runReflection(tenantId: string): Promise<Record<string, un
   for (const memory of expired) await query('DELETE FROM memory_items WHERE id = $1', [memory.id])
 
   const summary = {
+    ...await consolidateKnowledge(tenantId),
     entities_scanned: entities.length,
     merged_entities: mergedEntities,
     facts_scanned: activeFacts.length,

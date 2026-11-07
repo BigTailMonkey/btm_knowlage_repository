@@ -1,12 +1,14 @@
 import { mkdirSync } from 'node:fs'
 
 import { settings } from './config.js'
-import { closePool, initSchema, seedIfEmpty } from './db/index.js'
+import { closePool, initSchema, seedIfEmpty, query } from './db/index.js'
 import { harness } from './adapters/harness/index.js'
 import { startDshWeb, stopDshWeb } from './adapters/dsh-web/index.js'
 import { startSidecar, stopSidecar } from './adapters/sidecar/index.js'
 import { runReflection } from './core/learning.js'
 import { createServer } from './app/server.js'
+import { startIngestWorker, stopIngestWorker } from './core/ingestion.js'
+import { runDailyReflection } from './core/scheduling.js'
 
 async function main(): Promise<void> {
   mkdirSync(settings.dataDir, { recursive: true })
@@ -22,17 +24,21 @@ async function main(): Promise<void> {
     app.log.warn(`解析边车未就绪：${error instanceof Error ? error.message : String(error)}`)
   }
   startDshWeb()
+  startIngestWorker()
 
   let timer: NodeJS.Timeout | null = null
   if (settings.reflectionEnabled) {
-    timer = setInterval(() => {
-      runReflection(settings.defaultTenantId).catch((error) => app.log.error(error as Error))
-    }, settings.reflectionIntervalSeconds * 1000)
+    const reflect = () => settings.reflectionRunAt
+      ? runDailyReflection()
+      : query<{ id: string }>('SELECT id FROM tenants').then(async (tenants) => { for (const tenant of tenants) await runReflection(tenant.id) })
+    void reflect().catch((error) => app.log.error(error as Error))
+    timer = setInterval(() => { void reflect().catch((error) => app.log.error(error as Error)) }, settings.reflectionRunAt ? 60_000 : settings.reflectionIntervalSeconds * 1000)
     timer.unref()
   }
 
   const shutdown = async () => {
     if (timer) clearInterval(timer)
+    await stopIngestWorker()
     await stopDshWeb()
     await stopSidecar()
     await app.close()

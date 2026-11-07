@@ -1,4 +1,5 @@
 import { tokenize } from '../adapters/embeddings/index.js'
+import { harness } from '../adapters/harness/index.js'
 
 const CITATION = /\[(\d+)\]/g
 
@@ -59,11 +60,12 @@ export function validateGrounding(answer: string, evidence: EvidenceText[]): Gro
     const combined = sources.join('\n')
     const numbers = claim.match(/[+-]?\d+(?:[.,]\d+)*(?:\s*(?:%|％|[A-Za-z]+|毫秒|秒|万元|亿元|元|年|月|天))?/g) ?? []
     const numericSupport = numbers.every((number) => combined.replace(/\s/g, '').includes(number.replace(/\s/g, '')))
-    const lexicalSupport = normalized(combined).includes(normalized(claim)) || overlap(claim, combined) >= 0.6
+    const exactSupport = normalized(combined).includes(normalized(claim))
+    const lexicalSupport = exactSupport || overlap(claim, combined) >= 0.6
     const bestSource = sources.flatMap((source) => source.split(/(?<=[。！？!?；;])\s*|\n+/)).sort((a, b) => overlap(claim, b) - overlap(claim, a))[0] ?? combined
     const negative = /\b(?:not|never|cannot|unsupported)\b|不(?:支持|允许|可|能|会|是|应|得|超过|低于|需要)|未(?:支持|启用|实现|提供)|无法|禁止|没有|无需/i
     const polaritySupport = negative.test(claim) === negative.test(bestSource)
-    if (!claim || !numericSupport || !lexicalSupport || !polaritySupport) {
+    if (!claim || !(exactSupport || numericSupport && lexicalSupport && polaritySupport)) {
       reason ??= '回答中的数字或文字无法与所引证据核对'
       continue
     }
@@ -77,4 +79,16 @@ export function validateGrounding(answer: string, evidence: EvidenceText[]): Gro
   }
   const coverage = sentences.length ? supported / sentences.length : 0
   return { valid: sentences.length > 0 && supported === sentences.length, coverage, sentences: sentences.length, supported, quotes, reason: reason ?? (sentences.length ? null : '没有可核对的事实句') }
+}
+
+/** A separate entailment decision supplements deterministic citation/number checks. */
+export async function verifySemanticGrounding(answer: string, evidence: EvidenceText[]): Promise<boolean> {
+  try {
+    const result = await harness.complete(JSON.stringify({ answer, evidence: evidence.map((row,index)=>({id:index+1,text:row.text})) }),
+      '逐句检查答案是否被所引编号的原文语义支持。仅有相同关键词不代表支持；检查主客体、因果、条件和否定。不使用常识补全。只输出JSON {"supported":boolean,"unsupported_sentences":[]}；任何事实句无支持则false。', 800)
+    const json = /\{[\s\S]*\}/.exec(result.text)?.[0]
+    if (!result.ok || !json) return false
+    const decision = JSON.parse(json)
+    return decision.supported === true && Array.isArray(decision.unsupported_sentences) && decision.unsupported_sentences.length === 0
+  } catch { return false }
 }

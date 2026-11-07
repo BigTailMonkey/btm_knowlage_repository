@@ -13,7 +13,7 @@ export async function testWorkspace() {
   Object.assign(settings, {
     dataDir: directory, databaseUrl: '', harnessEnabled: false, modelApiKey: '',
     embeddingApiKey: '', sidecarEnabled: false, reflectionEnabled: false,
-    dshWebEnabled: false, seedDemo: true,
+    dshWebEnabled: false, seedDemo: true, semanticEntities: false, groundingVerifier: false, rerankUrl: '',
   })
   const embedding = (text: string): Embedding => ({
     dense: [1, 0], sparse: sparseVector(tokenize(text)), model: 'test-embedding', dim: 2,
@@ -38,7 +38,7 @@ export async function testWorkspace() {
 }
 
 export async function clearKnowledge(): Promise<void> {
-  for (const table of ['feedback', 'citations', 'messages', 'conversations', 'replay_runs', 'usage_ledger', 'trace_spans', 'traces', 'review_queue', 'fact_evidence', 'facts', 'entity_aliases', 'entities', 'chunks', 'blocks', 'document_versions', 'documents', 'jobs', 'memory_items', 'gaps']) {
+  for (const table of ['eval_runs', 'eval_cases', 'reflection_runs', 'knowledge_summaries', 'feedback', 'citations', 'messages', 'conversations', 'replay_runs', 'usage_ledger', 'trace_spans', 'traces', 'review_queue', 'fact_evidence', 'facts', 'entity_aliases', 'entities', 'chunks', 'blocks', 'document_versions', 'documents', 'jobs', 'memory_items', 'gaps']) {
     await query(`DELETE FROM ${table}`)
   }
 }

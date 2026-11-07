@@ -14,7 +14,12 @@
     "migrate": "tsx scripts/migrate.ts",
     "sidecar": "knowweave/.venv/bin/python -m uvicorn sidecar.main:app --host 127.0.0.1 --port 8732",
     "typecheck": "tsc -p tsconfig.test.json",
-    "test": "node --import tsx --test --test-concurrency=1 tests/*.test.ts"
+    "test": "node --import tsx --test --test-concurrency=1 tests/*.test.ts",
+    "eval:offline": "node --import tsx scripts/evaluate.ts",
+    "eval:live": "node --import tsx scripts/evaluate.ts --live",
+    "test:browser": "node --import tsx scripts/browser-smoke.ts",
+    "test:sidecar": "knowweave/.venv/bin/python -m unittest sidecar.test_parsing sidecar.test_models",
+    "sync:directory": "node --import tsx scripts/sync-directory.ts"
   },
   "dependencies": {
     "@deepseek-ai/dsh": "0.2.2-alpha.3",

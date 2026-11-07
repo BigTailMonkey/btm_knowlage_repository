@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify'
 
+import { runEvaluation, type EvaluationCase } from '../../core/evaluation.js'
 import { settings } from '../../config.js'
 import { authenticate, currentPrincipal } from '../server.js'
 import { query, queryOne } from '../../db/index.js'
@@ -321,8 +322,9 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
       expected_docs: string[]
       expected_keywords: string[]
       should_refuse: boolean
+      source: string
     }>(
-      `SELECT id, question, expected_docs, expected_keywords, should_refuse FROM eval_cases WHERE tenant_id = $1`,
+      `SELECT id, question, expected_docs, expected_keywords, should_refuse, source FROM eval_cases WHERE tenant_id = $1`,
       [principal.tenantId],
     )
     return {
@@ -333,8 +335,51 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
         expected_docs: item.expected_docs,
         expected_keywords: item.expected_keywords,
         should_refuse: item.should_refuse,
+        source: item.source,
       })),
     }
+  })
+
+  app.post('/evals/cases', { preHandler: authenticate }, async (request) => {
+    const principal = currentPrincipal(request)
+    requireAdmin(principal)
+    const items = (request.body as { cases?: unknown })?.cases
+    if (!Array.isArray(items) || items.length > 200) throw Object.assign(new Error('cases必须是最多200条的数组'), { statusCode: 400 })
+    for (const item of items) {
+      if (!item || typeof item.question !== 'string' || !item.question.trim() || typeof item.should_refuse !== 'boolean'
+        || !Array.isArray(item.expected_docs) || !item.expected_docs.every((v: unknown) => typeof v === 'string')
+        || !Array.isArray(item.expected_keywords) || !item.expected_keywords.every((v: unknown) => typeof v === 'string')) {
+        throw Object.assign(new Error('评测用例字段无效'), { statusCode: 400 })
+      }
+    }
+    for (const item of items as EvaluationCase[]) await query(
+      `INSERT INTO eval_cases(id,tenant_id,question,expected_docs,expected_keywords,should_refuse,source)
+       VALUES($1,$2,$3,$4::jsonb,$5::jsonb,$6,'imported')`,
+      [newId('ec'), principal.tenantId, item.question.trim(), JSON.stringify(item.expected_docs), JSON.stringify(item.expected_keywords), item.should_refuse])
+    return { imported: items.length }
+  })
+
+  app.post('/evals/cases/:case_id/approve', { preHandler: authenticate }, async (request) => {
+    const principal = currentPrincipal(request)
+    requireAdmin(principal)
+    const rows = await query(`UPDATE eval_cases SET source='golden-reviewed' WHERE id=$1 AND tenant_id=$2 RETURNING id`,
+      [(request.params as { case_id: string }).case_id,principal.tenantId])
+    if (!rows.length) throw Object.assign(new Error('用例不存在'),{statusCode:404})
+    return { status:'approved' }
+  })
+
+  app.patch('/evals/cases/:case_id', { preHandler: authenticate }, async (request) => {
+    const principal = currentPrincipal(request)
+    requireAdmin(principal)
+    const item = request.body as EvaluationCase
+    if (!item || !Array.isArray(item.expected_docs) || !item.expected_docs.every(value=>typeof value==='string')
+      || !Array.isArray(item.expected_keywords) || !item.expected_keywords.every(value=>typeof value==='string') || typeof item.should_refuse!=='boolean') {
+      throw Object.assign(new Error('预期文档、关键词和拒答标记格式无效'), {statusCode:400})
+    }
+    const rows=await query(`UPDATE eval_cases SET expected_docs=$1::jsonb,expected_keywords=$2::jsonb,should_refuse=$3
+      WHERE id=$4 AND tenant_id=$5 RETURNING id`, [JSON.stringify(item.expected_docs),JSON.stringify(item.expected_keywords),item.should_refuse,(request.params as {case_id:string}).case_id,principal.tenantId])
+    if(!rows.length)throw Object.assign(new Error('用例不存在'),{statusCode:404})
+    return {status:'updated'}
   })
 
   app.post('/evals/run', { preHandler: authenticate }, async (request) => {
@@ -347,50 +392,12 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
       expected_keywords: string[]
       should_refuse: boolean
     }>(
-      `SELECT id, question, expected_docs, expected_keywords, should_refuse FROM eval_cases WHERE tenant_id = $1`,
+      `SELECT id, question, expected_docs, expected_keywords, should_refuse FROM eval_cases WHERE tenant_id = $1 AND source NOT LIKE 'failure-candidate:%'`,
       [principal.tenantId],
     )
-    let docHits = 0
-    let keywordHits = 0
-    let refusals = 0
-    const results = []
-    for (const item of cases) {
-      const result = await retrieve(principal, item.question, { topK: 8 })
-      const titles = result.hits.map((hit) => hit.document.title)
-      const matchedDocs = (item.expected_docs ?? []).filter((expected) => titles.some((title) => title.includes(expected)))
-      const matchedKeywords = (item.expected_keywords ?? []).filter((keyword) =>
-        result.hits.some((hit) => hit.chunk.text.includes(keyword)),
-      )
-      const successDoc = matchedDocs.length === (item.expected_docs ?? []).length || (!item.expected_docs?.length && !item.should_refuse)
-      const successKeyword = matchedKeywords.length === (item.expected_keywords ?? []).length || !item.expected_keywords?.length
-      const refused = Number(result.stats.top_score ?? 0) < settings.rerankThreshold
-      const successRefusal = refused === item.should_refuse
-      if (successDoc) docHits += 1
-      if (successKeyword) keywordHits += 1
-      if (successRefusal) refusals += 1
-      results.push({
-        question: item.question,
-        expected_docs: item.expected_docs,
-        matched_docs: matchedDocs,
-        matched_keywords: matchedKeywords,
-        top_score: result.stats.top_score ?? 0,
-        refused,
-        pass: successDoc && successKeyword && successRefusal,
-      })
-    }
-    const total = Math.max(1, cases.length)
-    const metrics = {
-      cases: cases.length,
-      doc_recall: Number((docHits / total).toFixed(3)),
-      keyword_recall: Number((keywordHits / total).toFixed(3)),
-      refusal_accuracy: Number((refusals / total).toFixed(3)),
-      pass_rate: Number((results.filter((item) => item.pass).length / total).toFixed(3)),
-    }
-    const runId = newId('er')
-    await query(
-      `INSERT INTO eval_runs (id, tenant_id, metrics, model_version) VALUES ($1, $2, $3::jsonb, $4)`,
-      [runId, principal.tenantId, JSON.stringify(metrics), settings.model],
-    )
-    return { run_id: runId, metrics, results }
+    if (!cases.length) throw Object.assign(new Error('尚无评测用例，请先导入黄金集'), { statusCode: 422 })
+    const mode = (request.body as { mode?: string } | undefined)?.mode ?? 'answer'
+    if (!['answer','retrieval'].includes(mode)) throw Object.assign(new Error('评测mode必须为answer或retrieval'), { statusCode: 400 })
+    return runEvaluation(principal, cases, mode as 'answer' | 'retrieval')
   })
 }

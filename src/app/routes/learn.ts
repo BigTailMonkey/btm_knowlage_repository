@@ -3,7 +3,9 @@ import { FastifyInstance } from 'fastify'
 import { authenticate, currentPrincipal } from '../server.js'
 import { query, queryOne } from '../../db/index.js'
 import { entityDict, factDict } from '../../core/serializers.js'
-import { getOrCreateEntity, resolveReview, runReflection } from '../../core/learning.js'
+import { extractFactsForDocument, resolveReview, runReflection } from '../../core/learning.js'
+import { ingestParsed } from '../../core/ingestion.js'
+import { parseTextContent } from '../../adapters/parsing/index.js'
 import { canRead, requireAdmin } from '../../core/security.js'
 import { newId } from '../../core/ids.js'
 import type { DocumentRow, EntityRow, FactRow } from '../../core/rows.js'
@@ -180,27 +182,24 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
     const principal = currentPrincipal(request)
     const { review_id: reviewId } = request.params as { review_id: string }
     const payload = request.body as { action: string; note?: string }
-    const review = await queryOne<{ id: string; tenant_id: string; kind: string; payload: Record<string, unknown> }>(
-      'SELECT id, tenant_id, kind, payload FROM review_queue WHERE id = $1',
+    const review = await queryOne<{ id: string; tenant_id: string; kind: string; status: string; payload: Record<string, unknown> }>(
+      'SELECT id, tenant_id, kind, status, payload FROM review_queue WHERE id = $1',
       [reviewId],
     )
     if (!review || review.tenant_id !== principal.tenantId) {
       throw Object.assign(new Error('审阅项不存在'), { statusCode: 404 })
     }
     if (review.kind === 'memory_promotion') {
+      if (review.status !== 'open') throw Object.assign(new Error('审阅项已处理'), { statusCode: 409 })
       const memory = await queryOne<{ id: string; text: string }>(
         'SELECT id, text FROM memory_items WHERE id = $1',
         [String(review.payload.memory_id ?? '')],
       )
       if (['accept_new', 'merge'].includes(payload.action) && memory) {
-        const entity = await getOrCreateEntity(principal.tenantId, '团队记忆', 'concept', ['tenant:public'])
-        const factId = newId('f')
-        await query(
-          `INSERT INTO facts (id, tenant_id, subject_id, predicate, object_literal, recorded_at, confidence, status, acl_principals)
-           VALUES ($1, $2, $3, '记录', $4, now(), 0.7, 'active', $5::jsonb)`,
-          [factId, principal.tenantId, entity.id, memory.text.slice(0, 400), JSON.stringify(['tenant:public'])],
-        )
-        await query('UPDATE memory_items SET promoted_fact_id = $1 WHERE id = $2', [factId, memory.id])
+        const document = await ingestParsed(principal,parseTextContent(memory.text,`审阅记忆 ${memory.id}`),{sourceType:'text',uri:`memory:${memory.id}`,acl:['tenant:public']})
+        await extractFactsForDocument(principal,String(document.document_id))
+        const fact = await queryOne<{ fact_id: string }>('SELECT fact_id FROM fact_evidence WHERE doc_id=$1 ORDER BY id LIMIT 1',[document.document_id])
+        await query('UPDATE memory_items SET promoted_fact_id = $1 WHERE id = $2', [fact?.fact_id ?? null, memory.id])
       }
       await query(
         `UPDATE review_queue SET status = 'resolved', resolution = $1::jsonb, resolved_at = now() WHERE id = $2`,
@@ -223,7 +222,7 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
       expires_at: string | null
       created_at: string
     }>(
-      `SELECT id, kind, scope, text, confidence, promoted_fact_id, expires_at, created_at
+      `SELECT id, kind, scope, text, confidence, promoted_fact_id, expires_at, created_at, tags
        FROM memory_items WHERE tenant_id = $1 AND user_id = $2 ORDER BY created_at DESC`,
       [principal.tenantId, principal.userId],
     )
@@ -232,13 +231,14 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/memory', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
-    const payload = request.body as { text: string; kind?: string; scope?: string; expires_at?: string }
+    const payload = request.body as { text: string; kind?: string; scope?: string; expires_at?: string; tags?: string[] }
     if (!payload?.text) throw Object.assign(new Error('text 不能为空'), { statusCode: 400 })
+    if (payload.tags !== undefined && (!Array.isArray(payload.tags) || !payload.tags.every(tag=>typeof tag==='string'))) throw Object.assign(new Error('tags必须为字符串数组'),{statusCode:400})
     const id = newId('mem')
     await query(
-      `INSERT INTO memory_items (id, tenant_id, user_id, scope, kind, text, confidence, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, 0.55, $7)`,
-      [id, principal.tenantId, principal.userId, payload.scope ?? 'personal', payload.kind ?? 'note', payload.text, payload.expires_at ?? null],
+      `INSERT INTO memory_items (id, tenant_id, user_id, scope, kind, text, confidence, expires_at,tags)
+       VALUES ($1, $2, $3, $4, $5, $6, 0.55, $7,$8::jsonb)`,
+      [id, principal.tenantId, principal.userId, payload.scope ?? 'personal', payload.kind ?? 'note', payload.text, payload.expires_at ?? null,JSON.stringify(payload.tags ?? [])],
     )
     return { id, status: 'created' }
   })

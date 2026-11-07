@@ -8,6 +8,11 @@ from __future__ import annotations
 import base64
 import io
 import re
+import os
+import importlib.util
+import shutil
+import sys
+from pathlib import Path
 from dataclasses import asdict, dataclass, field
 
 from fastapi import FastAPI, HTTPException
@@ -32,7 +37,8 @@ def quality(text: str) -> float:
     printable = sum(1 for ch in text if not ch.isspace())
     coverage = printable / max(1, len(text))
     size = min(1.0, len(text) / 600)
-    return round(0.5 * coverage + 0.5 * size, 3)
+    corrupted = (text.count('\ufffd') + sum(ord(ch) < 32 and not ch.isspace() for ch in text)) / max(1, len(text))
+    return round(max(0, (0.5 * coverage + 0.5 * size) * (1 - min(1, corrupted * 10))), 3)
 
 
 def blocks_document(title: str, blocks: list[Block], parser: str, meta: dict) -> dict:
@@ -124,12 +130,15 @@ def parse_docx(data: bytes, title: str) -> dict:
 
 
 app = FastAPI(title="KnoWeave parsing sidecar", version="0.1.0")
+from sidecar.models import router as model_router
+app.include_router(model_router)
 
 
 class ParseIn(BaseModel):
     filename: str
     data: str
     title: str | None = None
+    engine: str = 'auto'
 
 
 @app.get("/health")
@@ -137,21 +146,73 @@ def health() -> dict:
     return {"status": "ok", "service": "knowweave-parser"}
 
 
-@app.post("/parse")
-def parse(payload: ParseIn) -> dict:
-    suffix = ("." + payload.filename.rsplit(".", 1)[1].lower()) if "." in payload.filename else ""
-    title = payload.title or (payload.filename.rsplit(".", 1)[0] if "." in payload.filename else payload.filename)
+def route_parse(payload: ParseIn, engines: list[str] | None = None) -> dict:
+    from sidecar import advanced
+    filename = Path(payload.filename).name
+    suffix = Path(filename).suffix.lower()
+    title = payload.title or Path(filename).stem
     try:
-        raw = base64.b64decode(payload.data)
-    except Exception as exc:  # noqa: BLE001 - 输入边界
+        raw = base64.b64decode(payload.data, validate=True)
+    except Exception as exc:
         raise HTTPException(status_code=400, detail="data 不是合法 base64") from exc
-    try:
-        if suffix == ".pdf":
-            return parse_pdf(raw, title)
-        if suffix == ".docx":
-            return parse_docx(raw, title)
-        raise HTTPException(status_code=415, detail=f"边车不支持 {suffix or '未知格式'}")
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001 - 解析边界
-        raise HTTPException(status_code=422, detail=f"解析失败：{exc}") from exc
+    if not raw or len(raw) > 30 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="文件为空或超过30MB")
+    image = suffix in {'.png', '.jpg', '.jpeg', '.tiff', '.tif', '.webp', '.bmp'}
+    audio = suffix in {'.wav', '.mp3', '.m4a', '.mp4', '.webm', '.ogg', '.flac'}
+    routes = engines or ([payload.engine] if payload.engine != 'auto' else
+        ['asr'] if audio else ['docling', 'ocr'] if image else
+        ['docling', 'pypdf', 'mineru', 'ocr'] if suffix == '.pdf' else ['docling', 'docx'] if suffix == '.docx' else [])
+    if not routes:
+        raise HTTPException(status_code=415, detail=f"边车不支持 {suffix}")
+    diagnostics = []
+    best = None
+    threshold = float(os.environ.get('KNOWWEAVE_PARSE_MIN_QUALITY', '0.25'))
+    for engine in routes:
+        try:
+            if engine == 'docling':
+                parsed = advanced.docling_parse(raw, filename, title)
+            elif engine == 'mineru':
+                parsed = advanced.mineru_parse(raw, filename, title)
+            elif engine == 'pypdf' and suffix == '.pdf':
+                parsed = parse_pdf(raw, title)
+            elif engine == 'docx' and suffix == '.docx':
+                parsed = parse_docx(raw, title)
+            elif engine == 'ocr':
+                parsed = advanced.pdf_ocr(raw, title) if suffix == '.pdf' else advanced.image_ocr(raw, title)
+            elif engine == 'asr' and audio:
+                parsed = advanced.transcribe(raw, filename, title)
+            else:
+                raise ValueError('解析引擎不适用于该文件')
+            if best is None or parsed['quality'] > best['quality']:
+                best = parsed
+            if parsed['blocks'] and parsed['quality'] >= threshold:
+                parsed['meta']['attempts'] = diagnostics + [{'engine': engine, 'status': 'accepted'}]
+                return parsed
+            diagnostics.append({'engine': engine, 'status': 'low_quality', 'quality': parsed['quality']})
+        except Exception as exc:
+            diagnostics.append({'engine': engine, 'status': 'failed', 'error': str(exc)[:180]})
+    raise HTTPException(status_code=422, detail={'message': '解析质量不足或所需引擎不可用，需重试或人工修正', 'attempts': diagnostics, 'best_quality': best['quality'] if best else 0})
+
+
+@app.post('/parse')
+def parse(payload: ParseIn) -> dict:
+    return route_parse(payload)
+
+
+@app.post('/ocr')
+def ocr(payload: ParseIn) -> dict:
+    return route_parse(payload, ['ocr'])
+
+
+@app.post('/asr')
+def asr(payload: ParseIn) -> dict:
+    return route_parse(payload, ['asr'])
+
+
+@app.get('/capabilities')
+def capabilities() -> dict:
+    available = lambda module: importlib.util.find_spec(module) is not None
+    return {'docling': available('docling'), 'mineru': shutil.which(os.environ.get('KNOWWEAVE_MINERU_BIN', 'mineru')) is not None,
+            'ocr': sys.platform == 'darwin' and shutil.which('swift') is not None or available('rapidocr') or available('pytesseract') and available('PIL') and shutil.which('tesseract') is not None,
+            'asr': available('faster_whisper'), 'pdf': available('pypdf'), 'docx': available('docx'),
+            'embedding': available('FlagEmbedding'), 'reranking': available('sentence_transformers')}

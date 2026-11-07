@@ -51,14 +51,31 @@ url = "http://127.0.0.1:8732"
 enabled = true
 # 由主服务自动拉起与关闭；已在运行则直接复用
 auto_start = true
-# 解释器路径，相对路径以项目根目录为基准；需安装 pypdf / python-docx / fastapi / uvicorn
+# 解释器路径，相对路径以项目根目录为基准；可选解析/OCR/ASR/本地模型安装见 README
 python = "knowweave/.venv/bin/python"
+
+[parsing]
+engine = "auto"
+min_quality = 0.25
 
 [retrieval]
 rerank_threshold = 0.36
+# 留空使用规则重排；配置后调用真实语义服务，失败返回错误，不伪装成功
+rerank_url = ""
+rerank_model = ""
+rerank_api_key = ""
+semantic_entities = true
+grounding_verifier = true
+# 本地 BGE-M3 / Cross-Encoder 示例（需先安装 models 可选依赖、下载模型并预热）：
+# embedding.provider="hybrid", base_url="http://127.0.0.1:8732", path="/embed",
+# model="BAAI/bge-m3", dim=1024, instructions="", timeout_seconds=300
+# rerank_url="http://127.0.0.1:8732/rerank", rerank_model="BAAI/bge-reranker-v2-m3"
+# 更换向量模型后，对已有文档 POST /api/v1/documents/{id}/reprocess {"scope":"index"}
 
 [reflection]
 enabled = true
+# 按工作区时区每日运行，重启后补跑；空字符串改为 interval_seconds 间隔
+run_at = "03:00"
 interval_seconds = 21600
 
 [tenant]

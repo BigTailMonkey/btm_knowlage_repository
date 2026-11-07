@@ -24,6 +24,8 @@ export async function documentDict(document: DocumentRow): Promise<Record<string
     quality: Number((document.quality_score ?? 0).toFixed(3)),
     enrichment_status: document.enrichment_status,
     summary: document.summary,
+    source_trust: document.source_trust ?? 0.5,
+    is_core: document.is_core ?? false,
     chunks: Number(count?.count ?? 0),
     created_at: iso(document.created_at),
     updated_at: iso(document.updated_at),
