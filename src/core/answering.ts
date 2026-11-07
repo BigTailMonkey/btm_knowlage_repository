@@ -405,7 +405,7 @@ ${evidence}
       [newId('cit'), assistantId, citation.chunk_id, citation.doc_id, citation.quote, citation.page, citation.index],
     )
   }
-  // Only frequently used documents pay the cost of full graph enrichment.
+  // Older documents imported under the deferred policy can still be enriched on use.
   for (const docId of new Set(citations.map(citation => citation.doc_id))) {
     const { shouldEnrich } = await import('./source-policy.js')
     const state = await queryOne<{ enrichment_status: string }>('SELECT enrichment_status FROM documents WHERE id=$1', [docId])

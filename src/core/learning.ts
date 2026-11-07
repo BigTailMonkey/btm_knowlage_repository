@@ -447,9 +447,10 @@ async function mergeOrArbitrate(principal: Principal, document: DocumentRow, can
 
 const extractionTasks = new Map<string, Promise<Record<string, unknown>>>()
 
-export async function extractFactsForDocument(principal: Principal, docId: string): Promise<Record<string, unknown>> {
+export async function extractFactsForDocument(principal: Principal, docId: string, expectedVersion?: number): Promise<Record<string, unknown>> {
   const document = await queryOne<DocumentRow>('SELECT * FROM documents WHERE id = $1', [docId])
   if (!document || document.tenant_id !== principal.tenantId || document.status !== 'active') return { error: '文档不存在' }
+  if (expectedVersion !== undefined && document.current_version !== expectedVersion) return { status: 'stale' }
   const key = `${principal.tenantId}:${docId}:${document.current_version}`
   const existing = extractionTasks.get(key)
   if (existing) return existing
@@ -465,7 +466,11 @@ async function extractDocument(principal: Principal, document: DocumentRow): Pro
     [docId, document.current_version],
   )
   if (!version) return { error: '版本不存在' }
-  await query(`UPDATE documents SET enrichment_status = 'running' WHERE id = $1`, [docId])
+  const startedVersion = await query(
+    `UPDATE documents SET enrichment_status = 'running' WHERE id = $1 AND current_version = $2 AND status = 'active' RETURNING id`,
+    [docId, document.current_version],
+  )
+  if (!startedVersion.length) return { status: 'stale' }
   const started = Date.now()
   try {
     const candidates = await extractCandidates(document)

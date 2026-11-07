@@ -3,6 +3,7 @@ import { before, beforeEach, after, test } from 'node:test'
 import { testWorkspace, clearKnowledge } from './helpers.js'
 import { query, queryOne } from '../src/db/index.js'
 import { embedder } from '../src/adapters/embeddings/index.js'
+import { harness } from '../src/adapters/harness/index.js'
 import { submitIngest, processIngestQueue, savedIngestJobs, retryIngestJob, stopIngestWorker } from '../src/core/ingestion.js'
 let workspace: Awaited<ReturnType<typeof testWorkspace>>
 let original: typeof embedder.embedMany
@@ -22,6 +23,43 @@ test('acknowledgement persists original input; expired running work recovers ide
   assert.equal(jobs[0]!.status, 'done')
   assert.equal((await query('SELECT id FROM documents')).length, 1)
   assert.equal((await query('SELECT id FROM document_versions')).length, 1)
+})
+
+test('ordinary imports extract entities and resume unfinished extraction without reindexing', async () => {
+  const upload = { filename: 'architecture.txt', data: Buffer.from('知织使用数据库。') }
+  const complete = harness.complete
+  let extractionCalls = 0
+  harness.complete = (...args) => {
+    extractionCalls++
+    return complete(...args)
+  }
+  try {
+    await submitIngest(workspace.principal, 'file', upload)
+    await processIngestQueue()
+    const doc = await queryOne<{ id: string; enrichment_status: string; source_trust: number; is_core: boolean }>(
+      'SELECT id, enrichment_status, source_trust, is_core FROM documents',
+    )
+    assert.equal(doc?.enrichment_status, 'done')
+    assert.equal(doc?.source_trust, 0.5)
+    assert.equal(doc?.is_core, false)
+    assert.deepEqual((await query<{ canonical_name: string }>('SELECT canonical_name FROM entities'))
+      .map((row) => row.canonical_name).sort(), ['数据库', '知织'])
+    assert.equal((await query('SELECT id FROM fact_evidence WHERE doc_id=$1', [doc!.id])).length, 1)
+
+    await submitIngest(workspace.principal, 'file', upload)
+    await processIngestQueue()
+    assert.equal(extractionCalls, 1)
+
+    await query("UPDATE documents SET enrichment_status='deferred' WHERE id=$1", [doc!.id])
+    await submitIngest(workspace.principal, 'file', upload)
+    await processIngestQueue()
+    assert.equal(extractionCalls, 2)
+    assert.equal((await queryOne<{ enrichment_status: string }>('SELECT enrichment_status FROM documents WHERE id=$1', [doc!.id]))?.enrichment_status, 'done')
+    assert.equal((await query('SELECT id FROM document_versions')).length, 1)
+    assert.equal((await query('SELECT id FROM fact_evidence WHERE doc_id=$1', [doc!.id])).length, 1)
+  } finally {
+    harness.complete = complete
+  }
 })
 
 test('index retries use the persisted parse checkpoint and keep failed uploads unpublished', async () => {

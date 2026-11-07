@@ -28,8 +28,8 @@ test('reindex preserves historical chunk identities and rolls back when embeddin
   assert.equal((await query('SELECT id FROM document_versions')).length,2)
 })
 
-test('full enrichment requires core status, trusted source or three independently cited answers', async () => {
-  const result=await ingestParsed(workspace.principal,parseTextContent('普通文档可检索，未默认运行完整富化。','Policy'),{sourceType:'text'})
+test('legacy deferred documents can still be enriched based on source policy or use', async () => {
+  const result=await ingestParsed(workspace.principal,parseTextContent('旧文档可检索，尚未抽取事实。','Policy'),{sourceType:'text'})
   const docId=String(result.document_id)
   assert.equal(await shouldEnrich(docId),false)
   assert.equal(evidenceWeight({quality_score:1,source_trust:0.2}),0.2)
@@ -39,6 +39,6 @@ test('full enrichment requires core status, trusted source or three independentl
   assert.equal(await shouldEnrich(docId),true)
   await query('UPDATE documents SET source_trust=0.5 WHERE id=$1',[docId])
   const chunk=await queryOne<{id:string}>('SELECT id FROM chunks WHERE doc_id=$1 AND is_parent=false',[docId])
-  for(let i=0;i<3;i++) await query('INSERT INTO citations(id,message_id,chunk_id,doc_id,quote,rank) VALUES($1,$2,$3,$4,$5,1)',[`policy-cite-${i}`,`answer-${i}`,chunk!.id,docId,'普通文档'])
+  for(let i=0;i<3;i++) await query('INSERT INTO citations(id,message_id,chunk_id,doc_id,quote,rank) VALUES($1,$2,$3,$4,$5,1)',[`policy-cite-${i}`,`answer-${i}`,chunk!.id,docId,'旧文档'])
   assert.equal(await shouldEnrich(docId),true)
 })

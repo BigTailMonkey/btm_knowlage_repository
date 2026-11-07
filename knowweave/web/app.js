@@ -626,6 +626,14 @@ function openCitation(citation) {
 
 let docOpenRequest = 0;
 
+const ENRICHMENT_LABEL = {
+  pending: "等待抽取事实与实体",
+  running: "正在抽取事实与实体",
+  deferred: "该文档尚未抽取，可点击「重新抽取事实」",
+  empty: "未找到有原文依据的事实",
+  failed: "抽取失败，可点击「重新抽取事实」重试",
+};
+
 async function openDoc(docId, citation = null) {
   const request = ++docOpenRequest;
   const dialog = $("#doc-dialog");
@@ -637,6 +645,7 @@ async function openDoc(docId, citation = null) {
     const data = await api(`/documents/${encodeURIComponent(docId)}${selectedVersion ? `?version_id=${encodeURIComponent(selectedVersion)}` : ""}`);
     if (request !== docOpenRequest) return;
     const doc = data.document;
+    const enrichmentLabel = ENRICHMENT_LABEL[doc.enrichment_status];
     const ranges = sourceRanges(data, citation);
     const version = data.source?.version ?? doc.version;
     const locating = Boolean(citation?.chunk_id || citation?.quote || citation?.spans?.length);
@@ -701,7 +710,8 @@ async function openDoc(docId, citation = null) {
 
       <div class="section">
         <h3>关联实体</h3>
-        <div class="pill-row">${data.entities.length ? data.entities.map((entity) => `<span class="pill">${esc(entity.name)}</span>`).join("") : `<span class="muted small">暂无</span>`}</div>
+        ${enrichmentLabel ? `<p class="muted small">${esc(enrichmentLabel)}</p>` : ""}
+        <div class="pill-row">${data.entities.length ? data.entities.map((entity) => `<span class="pill">${esc(entity.name)}</span>`).join("") : enrichmentLabel ? "" : `<span class="muted small">暂无</span>`}</div>
       </div>`;
     $$("[data-doc-action]", $("#doc-dialog-body")).forEach((button) => {
       button.addEventListener("click", () => {

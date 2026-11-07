@@ -8,7 +8,7 @@ import { parseBytes, ParsedDocument, parseHtml, parseTextContent } from '../adap
 import { chunkBlocks, MAX_TOKENS } from './chunking.js'
 import { newId } from './ids.js'
 import type { DocumentRow } from './rows.js'
-import { canRead, Principal } from './security.js'
+import { canRead, principalSet, Principal } from './security.js'
 import { TraceRecorder } from './tracing.js'
 
 function sha256(data: Buffer | string): string {
@@ -277,20 +277,7 @@ async function ingestParsedVersion(
   return {
     document_id: documentId, version_id: versionId, duplicate: false, version: versionNumber,
     chunks: embeddingInputs.length, quality: parsed.quality, parser: parsed.parser, job_id: jobId,
-    trace_id: recorder.traceId, latency_ms: Date.now() - started, message: '文档已入库，正在后台抽取事实',
-  }
-}
-async function scheduleEnrichment(docId: string, principal: Principal): Promise<void> {
-  const { shouldEnrich } = await import('./source-policy.js')
-  if (!(await shouldEnrich(docId))) {
-    await query("UPDATE documents SET enrichment_status='deferred' WHERE id=$1", [docId])
-    return
-  }
-  const { extractFactsForDocument } = await import('./learning.js')
-  try {
-    await extractFactsForDocument(principal, docId)
-  } catch {
-    // 后台边界：事实抽取失败不影响文档入库结果。
+    trace_id: recorder.traceId, latency_ms: Date.now() - started, message: '文档已入库',
   }
 }
 
@@ -410,6 +397,22 @@ async function runIngestJob(
       progress: report,
       jobId,
     })
+    const docId = String(result.document_id)
+    const version = Number(result.version)
+    // A recovered ingest may find its version already indexed. Resume an
+    // unfinished extraction, but skip versions that have completed it.
+    const needsExtraction = !result.duplicate || Boolean(await queryOne<{ id: string }>(
+      `SELECT id FROM documents WHERE id=$1 AND tenant_id=$2 AND current_version=$3 AND status='active'
+       AND enrichment_status IN ('pending','running','deferred','failed')
+       AND acl_principals ?| $4::text[]`,
+      [docId, principal.tenantId, version, [...principalSet(principal)]],
+    ))
+    if (needsExtraction) {
+      report('抽取事实与实体', 98)
+      const { extractFactsForDocument } = await import('./learning.js')
+      // Extraction records its own failure state. The document remains searchable.
+      await extractFactsForDocument(principal, docId, version).catch(() => undefined)
+    }
     update({
       status: 'done',
       stage: '完成',
@@ -427,7 +430,6 @@ async function runIngestJob(
     )
     await query(`UPDATE review_queue SET status='resolved', resolution=$1::jsonb, resolved_at=now()
       WHERE tenant_id=$2 AND status='open' AND payload->>'job_id'=$3`, [JSON.stringify({ action: 'retry_succeeded', document_id: result.document_id }), principal.tenantId, jobId])
-    await scheduleEnrichment(result.document_id as string, principal)
   } catch (error) {
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 300) || '入库失败'
     update({ status: 'failed', stage: '失败', error: message })
