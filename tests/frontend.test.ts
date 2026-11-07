@@ -21,7 +21,10 @@ function frontend(respond: (url: string, options: Record<string, unknown>) => un
         dataset: {}, style: {}, scrollHeight: 44, handlers,
         classList: { add() {}, remove() {}, toggle() {} },
         addEventListener(type: string, callback: (...args: any[]) => any) { handlers[type] = callback },
-        setAttribute() {}, focus() {}, scrollIntoView() {},
+        setAttribute(key: string, value: string) { this[key] = value },
+        getAttribute(key: string) { return this[key] ?? null },
+        removeAttribute(key: string) { delete this[key] },
+        focus() {}, scrollIntoView() {},
         reset() { this.value = '' },
         showModal() { this.open = true },
         close() { this.open = false; handlers.close?.() },
@@ -49,25 +52,54 @@ function frontend(respond: (url: string, options: Record<string, unknown>) => un
   return { context, nodes, calls, element, run: (code: string) => vm.runInContext(code, context) }
 }
 
-test('default chat loads knowledge conversations and sends questions through the knowledge API', async () => {
-  const citation = { index: 2, doc_id: 'doc-a', chunk_id: 'chunk-a', version_id: 'version-a', quote: 'Actual source', page: 2, doc_title: 'Document A' }
-  const page = frontend((url) => url.endsWith('/ask')
-    ? { conversation_id: 'conv-a', answer: 'Actual source[2]', citations: [citation], mode: 'quick' }
-    : { items: [] })
-  await page.run('loadChat()')
-  assert.deepEqual(page.calls.map(call => call.url), ['/api/v1/conversations?limit=30'])
-  page.element('#chat-input').value = 'What does the document say?'
-  await page.run('sendChat()')
-  const request = page.calls.find(call => call.url === '/api/v1/ask')!
-  assert.equal(JSON.parse(String(request.options.body)).question, 'What does the document say?')
-  assert.deepEqual(JSON.parse(page.run('JSON.stringify(state.chatMessages[1].citations)')), [citation])
-  assert.ok(!page.calls.some(call => call.url.includes('dsh-web')))
-  const markup = page.run('chatMessageHtml(state.chatMessages[1], 1)')
-  assert.match(markup, /data-cite-item="2"/)
-  assert.match(markup, /查看原文/)
-  const html = readFileSync(new URL('../knowweave/web/index.html', import.meta.url), 'utf8')
-  assert.ok(!html.includes('<iframe'))
-})
+test('default chat mounts the complete native DSH UI and keeps it alive across navigation', async () => {
+  const nativeUrl = 'http://127.0.0.1:3081/?token=test-runtime';
+  const page = frontend(() => ({ enabled: true, ready: true, url: nativeUrl }));
+  await page.run('loadChat()');
+  assert.deepEqual(page.calls.map(call => call.url), ['/api/v1/dsh-web']);
+  assert.equal(page.element('#native-chat-frame').src, nativeUrl);
+  assert.equal(page.element('#native-chat-frame').hidden, false);
+  assert.equal(page.element('#native-chat-status').hidden, true);
+  await page.run('loadChat()');
+  assert.equal(page.calls.length, 1, 'do not reload the active native session');
+  assert.equal(page.run('typeof sendChat'), 'undefined', 'no buffered replacement for native streaming');
+  const html = readFileSync(new URL('../knowweave/web/index.html', import.meta.url), 'utf8');
+  assert.match(html, /<iframe[^>]*id="native-chat-frame"/);
+  assert.ok(!html.includes('id="chat-form"'));
+  assert.match(html, /data-page="chat"[^>]*>[\s\S]*?<span>对话<\/span>[\s\S]*?<\/button>/);
+});
+
+test('native chat shows startup, disabled and error states with retry', async () => {
+  let response: Record<string, unknown> = { enabled: true, ready: false };
+  const page = frontend(() => response);
+  page.run('setupChat()');
+  await page.run('loadChat()');
+  assert.equal(page.element('#native-chat-frame').src, undefined);
+  assert.equal(page.element('#native-chat-retry').hidden, true);
+  response = { enabled: false, ready: false };
+  await page.run('loadChat()');
+  assert.match(page.element('#native-chat-message').textContent, /web_enabled/);
+  assert.equal(page.element('#native-chat-retry').hidden, false);
+  response = { enabled: true, ready: false, lastError: 'startup failed' };
+  await page.run('loadChat()');
+  assert.equal(page.element('#native-chat-message').textContent, 'startup failed');
+  response = { enabled: true, ready: true, url: 'http://127.0.0.1:3081/' };
+  await page.element('#native-chat-retry').handlers.click();
+  await page.run('Promise.resolve()');
+  assert.equal(page.element('#native-chat-frame').hidden, false);
+});
+
+test('identity reset ignores an earlier in-flight native runtime response', async () => {
+  let resolve: (value: unknown) => void = () => {};
+  const response = new Promise(done => { resolve = done });
+  const page = frontend(() => response);
+  const loading = page.run('loadChat()');
+  page.run('resetNativeChat()');
+  resolve({ enabled: true, ready: true, url: 'http://127.0.0.1:3081/?token=old' });
+  await loading;
+  assert.equal(page.element('#native-chat-frame').src, undefined);
+  assert.equal(page.element('#native-chat-frame').hidden, true);
+});
 
 test('source highlighting uses UTF-16 offsets, merges overlap, and escapes document HTML', () => {
   const page = frontend()

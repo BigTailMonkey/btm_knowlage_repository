@@ -1,6 +1,8 @@
 (() => {
   'use strict'
 
+  if (window.self !== window.top) document.documentElement.dataset.knowweaveEmbedded = ''
+
   // Only presentation templates are adapted. IDs, URLs, substituted parameters,
   // editable fields and user-authored messages never pass through this function.
   function brandCopy(value) {
@@ -12,9 +14,12 @@
     })
   }
 
-  function brandDictionary(dict) {
+  function brandDictionary(ns, dict) {
     if (!dict || typeof dict !== 'object') return dict
-    return Object.fromEntries(Object.entries(dict).map(([key, text]) => [key, brandCopy(text)]))
+    return Object.fromEntries(Object.entries(dict).map(([key, text]) => [key,
+      ns === 'conversation' && key === 'hero.headline' ? '让知识触手可及'
+        : ns === 'conversation' && key === 'hero.preview' ? '' : brandCopy(text),
+    ]))
   }
 
   // The bundled locale package owns every system dictionary. Decorate its
@@ -27,8 +32,8 @@
     wrappedRuntimes.add(proto)
     const register = proto.register
     proto.register = function (ns, localeOrDicts, dict) {
-      if (typeof localeOrDicts === 'string') return register.call(this, ns, localeOrDicts, brandDictionary(dict))
-      const dictionaries = Object.fromEntries(Object.entries(localeOrDicts).map(([locale, entries]) => [locale, brandDictionary(entries)]))
+      if (typeof localeOrDicts === 'string') return register.call(this, ns, localeOrDicts, brandDictionary(ns, dict))
+      const dictionaries = Object.fromEntries(Object.entries(localeOrDicts).map(([locale, entries]) => [locale, brandDictionary(ns, entries)]))
       return register.call(this, ns, dictionaries)
     }
     const resolveText = proto.resolveText

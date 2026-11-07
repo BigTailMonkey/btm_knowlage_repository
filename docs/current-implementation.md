@@ -6,7 +6,7 @@
 
 | 能力 | 当前行为 |
 |---|---|
-| 知识库对话 | 原生聊天和研究台统一调用 `/ask`，使用检索、引用、历史消息与个人记忆；默认页面没有独立运行时 iframe。 |
+| 知识库对话 | AI 对话通过 iframe 加载完整 DSH 原生应用，使用其原生流式传输与交互，默认禁用网页搜索/抓取并接入带当前身份认证的只读知识库 MCP 工具；研究台调用 `/ask`，提供检索、引用、历史消息与个人记忆。两者的会话分别保存。首次启动将第三方网关配置到 DSH 自带的 OpenAI 兼容适配器，并保留后续原生模型设置。 |
 | 文档身份与版本 | 同一来源更新生成不可变版本；相同内容跳过；回退历史内容生成新版本。支持显式 `doc_id`、稳定上传身份、目录相对路径身份。不同来源不会仅因内容相同被合并。 |
 | 持久摄入 | 返回任务前保存完整输入和主体 ID，不保存身份 token。数据库原子领取、30秒心跳、2分钟失联租约恢复，失败10秒后自动重试，最多3次；成功版本和结构块事务提交，失败保留旧版本。原始文件 base64 存 jobs，当前没有自动清理策略。 |
 | 单步恢复 | 解析检查点持久化；`index` 从检查点继续，`parse` 重做解析。解析失败进入人工修正待审项，修正文保留来源身份；重试成功自动关闭待审项。 |
@@ -53,7 +53,7 @@ POST  /mcp                       JSON-RPC tools/list、tools/call
 
 `source_uri` 是目录 CLI 的 `directory:` 来源标识，需置于 multipart 文件字段之前。`source.text` 是规范化原文；区间 start/end 是 UTF-16 偏移，末尾不含，coordinate_system 为 `normalized-text-utf16`，不是原文件二进制位置。
 
-MCP：`kb_search(query,filters?,top_k?)`、`kb_ask(question,mode?,as_of?)`、`kb_get_document(doc_id)`（完整当前版本，不截前60块）、`kb_entity_timeline(entity_id?,name?,as_of?)`、`kb_add_note(text,tags?)`、`kb_report_gap(question)`。
+DSH 原生对话可调用 `kb_search`（混合检索，可指定 `mode: graph` 和 `graph_hops`）、`kb_graph`（按方向和谓词查 1 至 3 跳路径）、`kb_query_facts`（对有可见原文支持的有效事实执行筛选、计数和分组）、`kb_get_document`（可按 `version_id` 核对原文）和 `kb_entity_timeline`。结构化统计的 `total` 按符合条件的事实记录计算，引用样例用于核对出处。其他 MCP 客户端还可调用 `kb_ask`、`kb_add_note` 和 `kb_report_gap`。
 
 ```sh
 npm run sync:directory -- /absolute/path/to/documents
@@ -92,7 +92,7 @@ npm run test:sidecar
 
 ## 保留的架构差异与后续范围
 
-当前采用 PGlite / PostgreSQL + JSONB 向量、数据库持久队列和原生 HTML/CSS/JS，没有迁移为 Qdrant、Redis/BullMQ、Next.js。默认仍使用已配置云端向量与规则重排，只有显式启用可选模型链路才使用 learned sparse/Cross-Encoder。SDK 实际通过子进程运行，业务消息入库，完整运行时状态入 PostgreSQL、真实流式分片仍未实现。
+当前采用 PGlite / PostgreSQL + JSONB 向量、数据库持久队列和原生 HTML/CSS/JS，没有迁移为 Qdrant、Redis/BullMQ、Next.js。默认仍使用已配置云端向量与规则重排，只有显式启用可选模型链路才使用 learned sparse/Cross-Encoder。SDK 实际通过子进程运行，研究台业务消息入库。AI 对话由 DSH 原生应用负责流式输出和会话存储；研究台 `/ask` 仍返回完整 JSON，完整运行时状态未接入 PostgreSQL。
 
 飞书/Notion/RSS连接器、图像多模态向量搜索、IM/邮件机器人、完整历史快照影子回放、冷热归档与全部失败请求的完整轨迹还在路线图。权限、计费、预算与供应商账单对账按本轮范围暂缓。不能将本次核心功能修复描述为整个 M0–M3 设计已全部完成。
 

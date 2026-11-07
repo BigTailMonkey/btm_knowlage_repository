@@ -49,8 +49,9 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
     source_types: ['text', 'md', 'markdown', 'pdf', 'docx', 'html', 'web', 'csv', 'json', 'yaml', 'png', 'jpg', 'wav', 'mp3', 'mp4'],
   }))
 
-  app.get('/dsh-web', { preHandler: authenticate }, async () => {
-    if (!dshWebStatus().ready) void ensureDshWeb()
+  app.get('/dsh-web', { preHandler: authenticate }, async (request) => {
+    // Bind synchronously before exposing an existing native session URL.
+    void ensureDshWeb(currentPrincipal(request))
     return dshWebStatus()
   })
 

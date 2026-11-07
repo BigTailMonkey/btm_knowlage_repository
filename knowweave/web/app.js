@@ -6,13 +6,6 @@ const state = {
   me: null,
   page: "chat",
   mode: "quick",
-  chatMode: "quick",
-  chatMessages: [],
-  chatConversationId: null,
-  chatBusy: false,
-  chatDraft: false,
-  chatFilter: "",
-  chatEvidence: null,
   tourIndex: 0,
   tourReturnPage: null,
   source: "",
@@ -210,14 +203,6 @@ function loadingLines() {
   return `<div class="loading-block"><i></i><i></i><i></i></div>`;
 }
 
-function stampNow() {
-  const el = $("#freshness");
-  if (!el) return;
-  const now = new Date();
-  const clock = now.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Shanghai" });
-  el.textContent = `${clock} 更新`; // taste-skill-ignore
-}
-
 /* ============ Shell ============ */
 function showPage(page) {
   if (!PAGE_META[page]) page = "chat";
@@ -342,7 +327,6 @@ async function loadDashboard() {
     renderRecentDocs(docs.items);
     renderRecentTraces(traces.items);
     renderBudgetBreakdown(costs?.by_feature);
-    stampNow();
   } catch (error) {
     toast(error.message);
   }
@@ -553,7 +537,6 @@ async function loadDocs() {
     renderDocs();
     const totalChunks = data.items.reduce((sum, doc) => sum + Number(doc.chunks || 0), 0);
     $("#doc-count").textContent = `${num(data.items.length)} 篇`;
-    stampNow();
   } catch (error) {
     toast(error.message);
   }
@@ -1150,19 +1133,6 @@ function closeIngest() {
 }
 
 /* ============ Chat ============ */
-const CHAT_MODE_LABEL = {
-  quick: "快速",
-  deep: "深度",
-  graph: "图谱",
-  timeline: "时间线",
-  compare: "对比",
-};
-
-const BRAND_MARK = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-  <path d="M3 9c4.5 0 4.5-5 9-5s4.5 5 9 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-  <path d="M3 15c4.5 0 4.5 5 9 5s4.5-5 9-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-</svg>`;
-
 function chatWhen(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
@@ -1176,366 +1146,61 @@ function chatWhen(value) {
   return `${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-function renderChatList() {
-  const list = $("#chat-list");
-  if (!state.conversations.length) {
-    list.innerHTML = `<div class="rail-empty">暂无会话</div>`;
-    return;
-  }
-  const query = state.chatFilter.trim().toLowerCase();
-  const items = query
-    ? state.conversations.filter((conversation) => (conversation.title || "未命名会话").toLowerCase().includes(query))
-    : state.conversations;
-  if (!items.length) {
-    list.innerHTML = `<div class="rail-empty">没有匹配的会话</div>`;
-    return;
-  }
-  list.innerHTML = items.map((conversation) => `
-    <button class="chat-item ${conversation.id === state.chatConversationId ? "active" : ""}" type="button" data-chat="${esc(conversation.id)}">
-      <span class="chat-item-top">
-        <span class="chat-item-title">${esc(conversation.title || "未命名会话")}</span>
-        <span class="chat-item-time">${chatWhen(conversation.created_at)}</span>
-      </span>
-      <span class="chat-item-sub">${num(conversation.messages)} 条消息</span>
-    </button>`).join("");
-  $$("#chat-list [data-chat]").forEach((item) => {
-    item.addEventListener("click", () => openChatConversation(item.dataset.chat));
-  });
-}
+// The complete DSH application owns sessions, streaming, tools and composer state.
+// Keep the iframe mounted when navigating so an active turn is never interrupted.
+let nativeChatTimer = null;
+let nativeChatLoading = false;
+let nativeChatGeneration = 0;
 
-async function fetchChatList() {
-  const data = await api("/conversations?limit=30");
-  state.conversations = data.items;
-  renderChatList();
-  return data.items;
-}
-
-function lastAssistantIndex(messages) {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index].role === "assistant") return index;
-  }
-  return -1;
+function resetNativeChat() {
+  nativeChatGeneration += 1;
+  nativeChatLoading = false;
+  clearTimeout(nativeChatTimer);
+  const frame = $("#native-chat-frame");
+  frame.removeAttribute("src");
+  frame.hidden = true;
+  $("#native-chat-status").hidden = false;
 }
 
 async function loadChat() {
+  const frame = $("#native-chat-frame");
+  if (frame.getAttribute("src") || nativeChatLoading) return;
+  clearTimeout(nativeChatTimer);
+  const generation = nativeChatGeneration;
+  nativeChatLoading = true;
+  const status = $("#native-chat-status");
+  const message = $("#native-chat-message");
+  const retry = $("#native-chat-retry");
+  status.hidden = false;
+  retry.hidden = true;
+  message.textContent = "正在准备对话…";
   try {
-    const items = await fetchChatList();
-    if (!items.length) {
-      state.chatConversationId = null;
-      state.chatMessages = [];
-      state.chatEvidence = null;
-      renderChatThread();
-      return;
+    const runtime = await api("/dsh-web");
+    if (generation !== nativeChatGeneration) return;
+    if (!runtime.enabled) throw new Error("AI 对话未启用，请在配置中开启 dsh.web_enabled。");
+    if (runtime.ready && runtime.url) {
+      frame.src = runtime.url;
+      frame.hidden = false;
+      status.hidden = true;
+    } else if (runtime.lastError) {
+      throw new Error(runtime.lastError);
+    } else {
+      nativeChatTimer = setTimeout(loadChat, 1000);
     }
-    const exists = items.some((item) => item.id === state.chatConversationId);
-    if (!exists && !state.chatDraft && !state.chatMessages.length) await openChatConversation(items[0].id);
   } catch (error) {
-    toast(error.message);
-  }
-}
-
-async function openChatConversation(conversationId) {
-  if (state.chatBusy) return;
-  try {
-    const data = await api(`/conversations/${conversationId}`);
-    state.chatConversationId = conversationId;
-    state.chatDraft = false;
-    state.chatMessages = (data.messages || []).map((message) => ({
-      role: message.role,
-      content: message.content,
-      mode: message.mode,
-      confidence: message.confidence,
-      trace_id: message.trace_id,
-      citations: message.citations || [],
-    }));
-    state.chatEvidence = lastAssistantIndex(state.chatMessages);
-    renderChatThread();
-    renderChatList();
-  } catch (error) {
-    toast(error.message);
-  }
-}
-
-function newChat() {
-  if (state.chatBusy) return;
-  state.chatConversationId = null;
-  state.chatDraft = true;
-  state.chatMessages = [];
-  state.chatEvidence = null;
-  renderChatThread();
-  renderChatList();
-  $("#chat-input").value = "";
-  resizeChatInput();
-  $("#chat-input").focus();
-}
-
-function setChatMode(mode) {
-  state.chatMode = CHAT_MODE_LABEL[mode] ? mode : "quick";
-  $$("#chat-modes .seg").forEach((button) => {
-    const active = button.dataset.mode === state.chatMode;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-pressed", active ? "true" : "false");
-  });
-}
-
-function chatMessageHtml(message, id) {
-  if (message.role === "user") {
-    return `<article class="msg msg-user" data-msg="${id}">
-      <div class="msg-body">${esc(message.content).replace(/\n/g, "<br>")}</div>
-    </article>`;
-  }
-  const refused = message.refused ?? /^现有资料不足/.test(message.content || "");
-  const citations = message.citations || [];
-  const modeLabel = CHAT_MODE_LABEL[message.mode] || message.mode || "";
-  const body = message.pending
-    ? loadingLines()
-    : message.failed
-      ? `<p class="msg-error">${esc(message.content)}</p>`
-      : answerHtml(message.content, refused);
-  const foot = [];
-  if (!message.pending) {
-    if (message.failed) foot.push(`<span class="pill bad">失败</span>`);
-    else if (refused) foot.push(`<span class="pill warn">证据不足</span>`);
-    if (citations.length) foot.push(`<button class="text-btn" type="button" data-evidence="${id}">查看 ${num(citations.length)} 条引用</button>`);
-    if (Number(message.confidence) > 0) foot.push(`<span>置信度 ${Math.round(Number(message.confidence) * 100)}%</span>`);
-    if (message.latency_ms) foot.push(`<span>${message.latency_ms >= 1000 ? `${(message.latency_ms / 1000).toFixed(1)} s` : `${num(message.latency_ms)} ms`}</span>`);
-    if (message.trace_id) foot.push(`<button class="text-btn push" type="button" data-trace="${esc(message.trace_id)}">轨迹</button>`);
-  }
-  return `<article class="msg msg-assistant" data-msg="${id}">
-    <header class="msg-head">
-      <span class="msg-author">${BRAND_MARK}<span>知织</span></span>
-      ${modeLabel ? `<span class="msg-dot">·</span><span class="msg-mode">${esc(modeLabel)}</span>` : ""}
-    </header>
-    <div class="msg-body">${body}</div>
-    ${citations.length ? `<details class="msg-cites">
-      <summary>${num(citations.length)} 条引用</summary>
-      <div class="cite-list">${citations.map((citation, index) => `
-        <button type="button" class="cite-item cite-source" data-cite-item="${citationNumber(citation, index)}">
-          <span class="cite-num">${citationNumber(citation, index)}</span>
-          <span class="cite-copy">
-            <span class="cite-quote">${esc(plain(citation.quote))}</span>
-            <span class="cite-meta">${citation.doc_title ? `${esc(citation.doc_title)} · ` : ""}${citation.page ? `第 ${esc(citation.page)} 页` : "正文"} · 查看原文</span>
-          </span>
-        </button>`).join("")}</div>
-    </details>` : ""}
-    ${foot.length ? `<div class="msg-foot">${foot.join("")}</div>` : ""}
-  </article>`;
-}
-
-function evidenceIndex() {
-  if (Number.isInteger(state.chatEvidence) && state.chatMessages[state.chatEvidence]?.role === "assistant") {
-    return state.chatEvidence;
-  }
-  return lastAssistantIndex(state.chatMessages);
-}
-
-function renderChatEvidence() {
-  const body = $("#chat-evidence-body");
-  const countEl = $("#chat-evidence-count");
-  if (!body || !countEl) return;
-  const index = evidenceIndex();
-  if (index < 0) {
-    countEl.textContent = "";
-    body.innerHTML = `<div class="rail-empty">暂无引用</div>`;
-    return;
-  }
-  const message = state.chatMessages[index];
-  if (message.pending) {
-    countEl.textContent = "";
-    body.innerHTML = loadingLines();
-    return;
-  }
-  const citations = message.citations || [];
-  if (!citations.length) {
-    countEl.textContent = "";
-    const note = message.failed ? "回答失败，没有引用" : message.refused ? "证据不足，没有引用原文" : "这条回答没有引用";
-    body.innerHTML = `<div class="rail-empty">${note}</div>`;
-    return;
-  }
-  countEl.textContent = `${num(citations.length)} 条`;
-  body.innerHTML = citations.map((citation, indexNumber) => `
-    <button class="evr-item" type="button" data-ev-index="${citationNumber(citation, indexNumber)}">
-      <span class="evr-head">
-        <span class="evr-num">${citationNumber(citation, indexNumber)}</span>
-        <span class="evr-doc">${esc(citation.doc_title || "未命名文档")}</span>
-      </span>
-      <span class="evr-quote">${esc(plain(citation.quote))}</span>
-      <span class="evr-meta">${citation.page ? `第 ${esc(citation.page)} 页` : "正文"} · 查看原文</span>
-    </button>`).join("");
-}
-
-function renderChatHeading() {
-  const conversation = state.conversations.find((item) => item.id === state.chatConversationId);
-  const firstQuestion = state.chatMessages.find((message) => message.role === "user");
-  const title = state.chatConversationId ? (conversation?.title || firstQuestion?.content || "对话") : "新对话";
-  $("#chat-main-head").hidden = !state.chatMessages.length;
-  $("#chat-title").textContent = title;
-  $("#chat-title-meta").textContent = state.chatMessages.length ? `${num(state.chatMessages.length)} 条消息` : "";
-}
-
-function renderChatThread() {
-  const thread = $("#chat-thread");
-  renderChatHeading();
-  if (!state.chatMessages.length) {
-    thread.innerHTML = `<div class="chat-empty">
-      <span class="mark">${BRAND_MARK}</span>
-      <h2>向知识库提问</h2>
-      <p>回答标注原文引用，可逐条核对。</p>
-    </div>`;
-  } else {
-    thread.innerHTML = state.chatMessages.map((message, index) => chatMessageHtml(message, index)).join("");
-    thread.scrollTop = thread.scrollHeight;
-  }
-  renderChatEvidence();
-}
-
-function focusChatEvidence(index, number) {
-  state.chatEvidence = index;
-  renderChatEvidence();
-  if (number == null) return;
-  const body = $("#chat-evidence-body");
-  const item = body?.querySelector(`[data-ev-index="${number}"]`);
-  if (!item) return;
-  $$(".evr-item", body).forEach((row) => row.classList.toggle("is-target", row === item));
-  item.scrollIntoView({ behavior: "smooth", block: "nearest" });
-}
-
-function resizeChatInput() {
-  const input = $("#chat-input");
-  if (!input) return;
-  input.style.height = "auto";
-  input.style.height = `${Math.min(input.scrollHeight, 132)}px`;
-}
-
-async function sendChat() {
-  if (state.chatBusy) return;
-  const input = $("#chat-input");
-  const question = input.value.trim();
-  if (!question) return;
-  const mode = state.chatMode || "quick";
-  state.chatBusy = true;
-  $("#chat-send").disabled = true;
-  input.value = "";
-  resizeChatInput();
-  state.chatMessages.push({ role: "user", content: question });
-  const pending = { role: "assistant", content: "", mode, pending: true };
-  state.chatMessages.push(pending);
-  const pendingIndex = state.chatMessages.length - 1;
-  state.chatEvidence = pendingIndex;
-  renderChatThread();
-  try {
-    const payload = { question, mode, top_k: 6 };
-    if (state.chatConversationId) payload.conversation_id = state.chatConversationId;
-    const result = await api("/ask", { method: "POST", body: payload });
-    state.chatConversationId = result.conversation_id;
-    state.chatDraft = false;
-    state.chatMessages[pendingIndex] = {
-      role: "assistant",
-      content: result.answer,
-      mode: result.mode,
-      confidence: result.confidence,
-      latency_ms: result.latency_ms,
-      trace_id: result.trace_id,
-      refused: result.refused,
-      citations: result.citations || [],
-    };
-  } catch (error) {
-    state.chatMessages[pendingIndex] = { role: "assistant", content: error.message, mode, failed: true };
-    toast(error.message);
+    if (generation !== nativeChatGeneration) return;
+    message.textContent = error.message;
+    retry.hidden = false;
   } finally {
-    state.chatBusy = false;
-    $("#chat-send").disabled = false;
-    renderChatThread();
-    $("#chat-input").focus();
+    if (generation === nativeChatGeneration) nativeChatLoading = false;
   }
-  fetchChatList().catch(() => {});
 }
 
 function setupChat() {
-  $("#chat-new").addEventListener("click", newChat);
-  $("#chat-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-    sendChat();
+  $("#native-chat-retry").addEventListener("click", () => {
+    resetNativeChat();
+    return loadChat();
   });
-  $("#chat-input").addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-      event.preventDefault();
-      sendChat();
-    }
-  });
-  $("#chat-input").addEventListener("input", resizeChatInput);
-  $("#chat-filter").addEventListener("input", (event) => {
-    state.chatFilter = event.target.value;
-    renderChatList();
-  });
-  $("#chat-modes").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-mode]");
-    if (button) setChatMode(button.dataset.mode);
-  });
-  $("#chat-evidence-body").addEventListener("click", (event) => {
-    const item = event.target.closest("[data-ev-index]");
-    if (!item) return;
-    const index = evidenceIndex();
-    const article = $(`.msg-assistant[data-msg="${index}"]`);
-    const cite = article?.querySelector(`[data-cite="${Number(item.dataset.evIndex)}"]`);
-    $$(".evr-item", $("#chat-evidence-body")).forEach((row) => row.classList.toggle("is-target", row === item));
-    article?.scrollIntoView({ behavior: "smooth", block: "center" });
-    openCitation(findCitation(state.chatMessages[index]?.citations, item.dataset.evIndex));
-    if (!cite) return;
-    $$(".cite.is-target").forEach((target) => target.classList.remove("is-target"));
-    cite.classList.add("is-target");
-    setTimeout(() => cite.classList.remove("is-target"), 1600);
-  });
-  $("#chat-thread").addEventListener("click", (event) => {
-    const source = event.target.closest("[data-cite-item]");
-    if (source) {
-      const article = source.closest(".msg-assistant");
-      const message = state.chatMessages[Number(article?.dataset.msg)];
-      openCitation(findCitation(message?.citations, source.dataset.citeItem));
-      return;
-    }
-    const evidence = event.target.closest("[data-evidence]");
-    if (evidence) {
-      const article = evidence.closest(".msg-assistant");
-      const details = article?.querySelector(".msg-cites");
-      if ($("#chat-evidence").offsetParent === null && details) {
-        details.open = !details.open;
-        return;
-      }
-      focusChatEvidence(Number(evidence.dataset.evidence), null);
-      $("#chat-evidence-body").scrollTop = 0;
-      return;
-    }
-    const cite = event.target.closest("[data-cite]");
-    if (cite) {
-      const article = cite.closest(".msg-assistant");
-      if (!article) return;
-      const citation = findCitation(state.chatMessages[Number(article.dataset.msg)]?.citations, cite.dataset.cite);
-      if (citation?.doc_id) {
-        focusChatEvidence(Number(article.dataset.msg), Number(cite.dataset.cite));
-        openCitation(citation);
-        return;
-      }
-      if ($("#chat-evidence").offsetParent === null) {
-        const details = article.querySelector(".msg-cites");
-        if (!details) return;
-        details.open = true;
-        const item = details.querySelector(`[data-cite-item="${Number(cite.dataset.cite)}"]`);
-        if (item) {
-          $$(".cite-item", details).forEach((row) => row.classList.remove("is-target"));
-          item.classList.add("is-target");
-          item.scrollIntoView({ behavior: "smooth", block: "nearest" });
-        }
-        return;
-      }
-      focusChatEvidence(Number(article.dataset.msg), Number(cite.dataset.cite));
-      return;
-    }
-    const trace = event.target.closest("[data-trace]");
-    if (trace) openTrace(trace.dataset.trace);
-  });
-  setChatMode(state.chatMode);
-  resizeChatInput();
 }
 
 /* ============ Tour ============ */
@@ -1828,7 +1493,6 @@ function renderAsk(result, question = $("#question").value.trim() || "检索结�
   });
   renderEvidence(result);
   renderRecentState();
-  stampNow();
 }
 
 function gateHtml(stats) {
@@ -1962,13 +1626,22 @@ function renderRecentState() {
   });
 }
 
-function continueConversation(conversationId) {
-  state.chatConversationId = conversationId;
-  state.chatDraft = false;
-  state.chatMessages = [];
-  state.chatEvidence = null;
-  showPage("chat");
-  openChatConversation(conversationId);
+async function continueConversation(conversationId) {
+  showPage("ask");
+  try {
+    const data = await api(`/conversations/${encodeURIComponent(conversationId)}`);
+    state.conversationId = conversationId;
+    const messages = data.messages || [];
+    const answer = [...messages].reverse().find((message) => message.role === "assistant");
+    const question = [...messages].reverse().find((message) => message.role === "user");
+    if (answer) {
+      const result = { ...answer, answer: answer.content, conversation_id: conversationId };
+      state.lastAsk = result;
+      renderAsk(result, question?.content || data.title);
+    }
+  } catch (error) {
+    toast(error.message);
+  }
 }
 
 const NODE_TYPE_LABEL = { concept: "概念", org: "机构", person: "人物", location: "地点", event: "事件", literal: "字面值" };
@@ -2435,7 +2108,6 @@ async function loadReview() {
   target.innerHTML = loadingLines();
   try {
     const data = await api("/review?status=open");
-    stampNow();
     if (!data.items.length) {
       target.innerHTML = `<div class="empty-block">暂无待审项</div>`;
       return;
@@ -2556,7 +2228,6 @@ async function loadTraces() {
         if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); }
       });
     });
-    stampNow();
   } catch (error) {
     $("#ops-body").innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
   }
@@ -2693,7 +2364,6 @@ async function loadCosts() {
     } else {
       $("#cost-chart").innerHTML = `<div class="empty-block">暂无按日成本</div>`;
     }
-    stampNow();
   } catch (error) {
     $("#ops-body").innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
   }
@@ -2731,7 +2401,6 @@ async function loadGaps() {
         }
       });
     });
-    stampNow();
   } catch (error) {
     $("#ops-body").innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
   }
@@ -2774,7 +2443,6 @@ async function loadEvals() {
       try { await api(`/evals/cases/${encodeURIComponent(item.id)}`,{method:"PATCH",body:JSON.parse(text)});await api(`/evals/cases/${encodeURIComponent(item.id)}/approve`,{method:"POST"});await loadEvals(); }
       catch(error) { toast(error.message); }
     }));
-    stampNow();
   } catch (error) {
     $("#ops-body").innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
   }
@@ -2853,7 +2521,6 @@ async function loadSettings() {
   -H "Content-Type: application/json" \\
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
        "params":{"name":"kb_ask","arguments":{"question":"知识库的架构约束是什么？"}}}'`;
-  stampNow();
 }
 
 /* ============ Boot ============ */
@@ -2869,15 +2536,7 @@ async function boot() {
     state.entities = [];
     state.activeEntity = null;
     state.conversationId = null;
-    state.chatConversationId = null;
-    state.chatDraft = false;
-    state.chatMessages = [];
-    state.chatBusy = false;
-    state.chatEvidence = null;
-    state.chatFilter = "";
-    $("#chat-filter").value = "";
-    $("#chat-list").innerHTML = "";
-    renderChatThread();
+    resetNativeChat();
     $("#ask-result").innerHTML = askEmptyHtml();
     $(".ask-layout").classList.add("is-empty");
     $("#evidence-gate").innerHTML = "";

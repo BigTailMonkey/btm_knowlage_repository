@@ -6,7 +6,7 @@
   <title>知织 KnoWeave</title>
   <link rel="stylesheet" href="/assets/styles.css" />
 </head>
-<body>
+<body data-page="chat">
   <div class="frame">
     <aside class="sidebar" id="sidebar">
       <a class="brand" href="#" data-goto="dashboard" aria-label="知织 KnoWeave">
@@ -25,6 +25,7 @@
       <nav class="nav" aria-label="主导航">
         <button class="nav-item active" data-page="chat" aria-current="page" aria-label="对话">
           <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M13.5 8.6a5.2 5.2 0 0 1-5.6 5.1L3 15l.9-3.4A5.2 5.2 0 1 1 13.5 8.6Z"/></svg></span>
+          <span>对话</span>
         </button>
         <button class="nav-item" data-page="dashboard">
           <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg></span>
@@ -73,9 +74,6 @@
         <button class="icon-btn nav-toggle" id="nav-toggle" aria-label="打开导航" aria-expanded="false">
           <svg viewBox="0 0 16 16" fill="none"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg>
         </button>
-        <div class="topbar-right">
-          <span class="stamp" id="freshness"></span>
-        </div>
       </header>
 
       <main class="sheet" id="sheet">
@@ -83,51 +81,11 @@
 
           <!-- 对话 -->
           <section class="page active" id="page-chat">
-            <div class="chat-layout">
-              <aside class="chat-rail" aria-label="会话">
-                <div class="chat-rail-head">
-                  <h2>会话</h2>
-                  <button class="btn sm" id="chat-new" type="button">
-                    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
-                    新对话
-                  </button>
-                </div>
-                <div class="search-field compact chat-search">
-                  <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.2 10.2 3 3"/></svg>
-                  <input id="chat-filter" type="search" placeholder="搜索会话" aria-label="搜索会话" autocomplete="off" />
-                </div>
-                <div class="chat-list" id="chat-list"></div>
-              </aside>
-
-              <section class="chat-main" aria-label="对话内容">
-                <div class="chat-main-head" id="chat-main-head">
-                  <h2 class="chat-title" id="chat-title">新对话</h2>
-                  <span class="chat-title-meta" id="chat-title-meta"></span>
-                </div>
-                <div class="chat-thread" id="chat-thread"></div>
-                <form class="chat-composer" id="chat-form">
-                  <textarea id="chat-input" rows="1" placeholder="输入问题" aria-label="输入问题"></textarea>
-                  <div class="chat-composer-bar">
-                    <div class="segmented" id="chat-modes" role="group" aria-label="回答模式">
-                      <button type="button" class="seg active" data-mode="quick" aria-pressed="true">快速</button>
-                      <button type="button" class="seg" data-mode="deep" aria-pressed="false">深度</button>
-                      <button type="button" class="seg" data-mode="graph" aria-pressed="false">图谱</button>
-                      <button type="button" class="seg" data-mode="timeline" aria-pressed="false">时间线</button>
-                      <button type="button" class="seg" data-mode="compare" aria-pressed="false">对比</button>
-                    </div>
-                    <button class="btn primary" id="chat-send" type="submit">发送</button>
-                  </div>
-                </form>
-              </section>
-
-              <aside class="chat-evidence" id="chat-evidence" aria-label="引用证据">
-                <div class="chat-evidence-head">
-                  <h2>引用证据</h2>
-                  <span class="muted" id="chat-evidence-count"></span>
-                </div>
-                <div class="chat-evidence-body" id="chat-evidence-body"></div>
-              </aside>
+            <div class="native-chat-status" id="native-chat-status" role="status" aria-live="polite">
+              <span id="native-chat-message">正在准备对话…</span>
+              <button class="btn sm" id="native-chat-retry" type="button" hidden>重试</button>
             </div>
+            <iframe class="native-chat-frame" id="native-chat-frame" title="知织 AI 对话" allow="clipboard-read; clipboard-write" referrerpolicy="no-referrer" hidden></iframe>
           </section>
 
           <!-- 概览 -->

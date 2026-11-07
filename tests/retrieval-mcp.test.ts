@@ -65,9 +65,9 @@ async function fact(id: string, subject: string, object: string | null, chunkId:
   )
 }
 
-async function mcp(name: string, args: Record<string, unknown>) {
+async function mcp(name: string, args: Record<string, unknown>, native = false) {
   const response = await app.inject({
-    method: 'POST', url: '/api/v1/mcp', headers: workspace.headers,
+    method: 'POST', url: '/api/v1/mcp', headers: native ? { ...workspace.headers, 'x-knowweave-native': 'true' } : workspace.headers,
     payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } },
   })
   assert.equal(response.statusCode, 200)
@@ -114,6 +114,9 @@ test('graph mode traverses bounded multiple hops and applies document/source fil
   assert.deepEqual(graph.facts.map(row => row.fact_id).sort(), ['ab', 'bc'])
   assert.equal(graph.stats.graph_hops, 2)
   assert.ok(graph.hits.every(hit => hit.document.id === 'graph'))
+  const native = await mcp('kb_search', { query: 'Aurora', mode: 'graph', graph_hops: 2, filters: { source_type: 'text' } }, true)
+  assert.deepEqual(native.facts.map((row: { fact_id: string }) => row.fact_id).sort(), ['ab', 'bc'])
+  assert.deepEqual(native.entities.map((row: { id: string }) => row.id), ['a'])
 })
 
 test('only effective active facts enter current answers; superseded facts are usable historically', async () => {
@@ -195,4 +198,133 @@ test('an exact quoted source title scopes retrieval after visibility and explici
   assert.equal(new Set(compared.hits.map(hit=>hit.document.id)).size,2)
   const filtered=await retrieve(workspace.principal,'请查《指定文档》的引用内容。',{docIds:['相似文档']})
   assert.ok(filtered.hits.every(hit=>hit.document.id==='相似文档'))
+})
+
+test('native DSH MCP negotiates HTTP notifications and exposes only read-only knowledge tools', async () => {
+  const headers = { ...workspace.headers, 'x-knowweave-native': 'true' }
+  const initialized = await app.inject({
+    method: 'POST', url: '/api/v1/mcp', headers,
+    payload: { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'native-test', version: '1' } } },
+  })
+  assert.equal(initialized.statusCode, 200)
+  const notification = await app.inject({
+    method: 'POST', url: '/api/v1/mcp', headers,
+    payload: { jsonrpc: '2.0', method: 'notifications/initialized' },
+  })
+  assert.equal(notification.statusCode, 202)
+  assert.equal(notification.body, '')
+  const listed = await app.inject({
+    method: 'POST', url: '/api/v1/mcp', headers,
+    payload: { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+  })
+  assert.deepEqual(listed.json().result.tools.map((tool: { name: string }) => tool.name), ['kb_search', 'kb_graph', 'kb_query_facts', 'kb_get_document', 'kb_entity_timeline'])
+  const write = await app.inject({
+    method: 'POST', url: '/api/v1/mcp', headers,
+    payload: { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'kb_add_note', arguments: { text: 'must not write' } } },
+  })
+  assert.equal(write.json().error.code, -32601)
+  assert.deepEqual(await query('SELECT id FROM memory_items'), [])
+  const unauthenticated = await app.inject({
+    method: 'POST', url: '/api/v1/mcp', headers: { 'x-knowweave-native': 'true' },
+    payload: { jsonrpc: '2.0', id: 4, method: 'tools/list' },
+  })
+  assert.equal(unauthenticated.statusCode, 401)
+})
+
+test('native knowledge retrieval applies the authenticated identity ACL and denies private original text', async () => {
+  await document('private-native')
+  await version('private-native', 1, 'NativePrivateSecret evidence')
+  await chunk('private-native', 'private-native-v1', 'private-native-chunk', 'NativePrivateSecret evidence', 0)
+  for (const table of ['documents', 'chunks']) {
+    await query(`UPDATE ${table} SET acl_principals = '["user:another-user"]'::jsonb`)
+  }
+  const headers = { ...workspace.headers, 'x-knowweave-native': 'true' }
+  const searched = await app.inject({
+    method: 'POST', url: '/api/v1/mcp', headers,
+    payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'kb_search', arguments: { query: 'NativePrivateSecret' } } },
+  })
+  assert.equal(searched.statusCode, 200)
+  assert.deepEqual(JSON.parse(searched.json().result.content[0].text).hits, [])
+  const original = await app.inject({
+    method: 'POST', url: '/api/v1/mcp', headers,
+    payload: { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'kb_get_document', arguments: { doc_id: 'private-native' } } },
+  })
+  assert.equal(original.json().error.code, -32004)
+  assert.ok(!original.body.includes('NativePrivateSecret'))
+})
+
+test('native graph follows directed, typed historical paths and returns the exact visible versions', async () => {
+  await document('relations', 'text', 2)
+  const old = await version('relations', 1, 'Aurora depends on Borealis. Borealis depends on Cygnus.')
+  await version('relations', 2, 'The dependency changed.', '2025-01-01T00:00:00Z')
+  await chunk('relations', old, 'edge-1', 'Aurora depends on Borealis.')
+  await chunk('relations', old, 'edge-2', 'Borealis depends on Cygnus.', 1)
+  await entity('a', 'Aurora')
+  await entity('b', 'Borealis')
+  await entity('c', 'Cygnus')
+  await query("INSERT INTO entity_aliases (id, entity_id, alias, normalized_alias) VALUES ('alias-a', 'a', 'A-team', 'a-team')")
+  await fact('ab', 'a', 'b', 'edge-1', 'relations', 'superseded', '2023-01-01', '2025-01-01')
+  await fact('bc', 'b', 'c', 'edge-2', 'relations', 'superseded', '2023-01-01', '2025-01-01')
+  await fact('wrong-type', 'a', 'c', 'edge-1', 'relations', 'superseded', '2023-01-01', '2025-01-01')
+  await query("UPDATE facts SET predicate = 'depends_on' WHERE id IN ('ab', 'bc')")
+  const args = { start: 'A-team', target: 'Cygnus', direction: 'outgoing', predicates: ['depends_on'], filters: { as_of: '2024-06-01' } }
+  const graph = await mcp('kb_graph', args, true)
+  assert.deepEqual(graph.path.map((edge: { fact_id: string }) => edge.fact_id), ['ab', 'bc'])
+  assert.deepEqual(graph.path.map((edge: { hop: number }) => edge.hop), [1, 2])
+  assert.deepEqual(graph.path[1].evidence.map((evidence: { version_id: string }) => evidence.version_id), [old])
+  const original = await mcp('kb_get_document', { doc_id: 'relations', version_id: old }, true)
+  assert.equal(original.version.id, old)
+  assert.match(original.text, /Borealis depends on Cygnus/)
+  assert.equal((await mcp('kb_graph', { ...args, hops: 1 }, true)).path, null)
+  assert.equal((await mcp('kb_graph', { ...args, direction: 'incoming' }, true)).path, null)
+  assert.equal((await mcp('kb_graph', { ...args, filters: {} }, true)).path, null)
+  await query("UPDATE chunks SET acl_principals = '[\"user:another-user\"]' WHERE id = 'edge-2'")
+  const restricted = await mcp('kb_graph', args, true)
+  assert.equal(restricted.path, null)
+  assert.deepEqual(restricted.edges.map((edge: { fact_id: string }) => edge.fact_id), ['ab'])
+  const partial = await mcp('kb_get_document', { doc_id: 'relations', version_id: old }, true)
+  assert.equal(partial.partial, true)
+  assert.equal(partial.text, '')
+  assert.deepEqual(partial.chunks.map((row: { id: string }) => row.id), ['edge-1'])
+})
+
+test('native structured counts use all eligible facts once and apply source and ACL scope before aggregation', async () => {
+  for (const id of ['public-facts', 'private-facts', 'other-source']) {
+    await document(id, id === 'other-source' ? 'pdf' : 'text')
+    const v = await version(id, 1, `Original text for ${id}`)
+    await chunk(id, v, `${id}-chunk`, `Original text for ${id}`)
+  }
+  await query("UPDATE documents SET acl_principals = '[\"user:another-user\"]' WHERE id = 'private-facts'")
+  await entity('a', 'Aurora')
+  await entity('b', 'Borealis')
+  await entity('hidden', 'Private entity')
+  await query("UPDATE entities SET acl_principals = '[\"user:another-user\"]' WHERE id = 'hidden'")
+  for (const [id, source, date] of [
+    ['jan-a', 'public-facts', '2023-01-03'], ['jan-b', 'public-facts', '2023-01-28'], ['feb', 'public-facts', '2023-02-01'],
+    ['private', 'private-facts', '2023-01-01'], ['pdf', 'other-source', '2023-01-01'],
+  ] as const) await fact(id, 'a', 'b', `${source}-chunk`, source, 'active', date)
+  await fact('hidden-endpoint', 'a', 'hidden', 'public-facts-chunk', 'public-facts', 'active', '2023-01-01')
+  await fact('disputed', 'a', 'b', 'public-facts-chunk', 'public-facts', 'disputed', '2023-01-01')
+  await fact('expired', 'a', 'b', 'public-facts-chunk', 'public-facts', 'active', '2023-01-01', '2023-03-01')
+  await query("INSERT INTO fact_evidence (id,fact_id,chunk_id,doc_id,quote) VALUES ('extra','jan-a','public-facts-chunk','public-facts','second citation')")
+  const filters = { subject: 'Aurora', predicates: ['relates'], source_type: 'text', as_of: '2024-06-01' }
+  const total = await mcp('kb_query_facts', { operation: 'count', filters }, true)
+  assert.equal(total.total, 3)
+  assert.equal(total.samples[0].evidence[0].doc_id, 'public-facts')
+  const page = await mcp('kb_query_facts', { filters, limit: 1, offset: 1 }, true)
+  assert.equal(page.total, 3)
+  assert.equal(page.has_more, true)
+  assert.deepEqual(page.rows.map((row: { fact_id: string }) => row.fact_id), ['jan-b'])
+  const monthly = await mcp('kb_query_facts', { operation: 'count', group_by: 'valid_from_month', filters, limit: 1 }, true)
+  assert.equal(monthly.total, 3)
+  assert.equal(monthly.total_groups, 2)
+  assert.equal(monthly.has_more, true)
+  assert.deepEqual(monthly.groups.map((row: { value: string; count: number }) => [row.value, row.count]), [['2023-01', 2]])
+  const byObject = await mcp('kb_query_facts', { operation: 'count', group_by: 'object', filters }, true)
+  assert.deepEqual(byObject.groups.map((row: { value: string; entity_id: string; count: number }) => [row.value, row.entity_id, row.count]), [['Borealis', 'b', 3]])
+  const invalid = await app.inject({
+    method: 'POST', url: '/api/v1/mcp', headers: workspace.headers,
+    payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'kb_query_facts', arguments: { operation: 'count', filters: { subject_id: 'a' } } } },
+  })
+  assert.equal(invalid.json().error.code, -32602)
 })

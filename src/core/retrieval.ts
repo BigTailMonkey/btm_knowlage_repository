@@ -192,6 +192,8 @@ export async function factsForEntities(
     const object = fact.object_id
       ? await queryOne<EntityRow>('SELECT * FROM entities WHERE id = $1', [fact.object_id])
       : null
+    if (!subject || subject.tenant_id !== principal.tenantId || !canRead(principal, subject.acl_principals)) continue
+    if (fact.object_id && (!object || object.tenant_id !== principal.tenantId || !canRead(principal, object.acl_principals))) continue
     const evidence = await query<{ chunk_id: string | null }>(
       `SELECT e.chunk_id FROM fact_evidence e
        JOIN documents d ON d.id = e.doc_id
@@ -247,7 +249,7 @@ export async function retrieve(
   }
   if (options.sourceType) candidates = candidates.filter((pair) => pair[1].source_type === options.sourceType)
 
-  let visible = candidates.filter((pair) => canRead(principal, pair[0].acl_principals))
+  let visible = candidates.filter(([chunk, document]) => canRead(principal, document.acl_principals) && canRead(principal, chunk.acl_principals))
   const rejected = candidates.length - visible.length
   options.recorder?.addSpan({
     stage: 'acl.filter',
@@ -404,7 +406,8 @@ export async function retrieve(
   for (const hit of final) {
     if (hit.chunk.parent_id) {
       const parent = await queryOne<ChunkRow>('SELECT * FROM chunks WHERE id = $1', [hit.chunk.parent_id])
-      if (parent) hit.parentText = parent.text
+      if (parent && parent.doc_id === hit.chunk.doc_id && parent.version_id === hit.chunk.version_id
+        && parent.tenant_id === principal.tenantId && canRead(principal, parent.acl_principals)) hit.parentText = parent.text
     }
   }
   return {

@@ -19,9 +19,11 @@ timezone = "Asia/Shanghai"
 profile = "sdk"
 home = ".dsh"
 workspace = "data/dsh-workspace"
-# 可选的独立运行时调试界面；知识库对话始终通过主服务 /api/v1/ask
-web_enabled = false
-web_auto_start = false
+# AI 对话使用完整 DSH 原生界面（流式输出、工具、附件与会话管理）；研究台使用 /api/v1/ask
+web_enabled = true
+web_auto_start = true
+# 默认只使用知识库；显式启用后，仍仅在用户要求联网时使用网页补充
+web_search_enabled = false
 web_port = 3081
 web_home = "data/dsh-web-home"
 
