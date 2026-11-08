@@ -182,6 +182,73 @@ def test_entity_graph_and_fact_timeline(client):
     assert not any(item["name"] == "知织团队" for item in finance_entities)
 
 
+def test_entity_edit_and_delete(client):
+    from app.config import settings
+    from app.db import SessionLocal
+    from app.learning import get_or_create_entity
+    from app.models import Fact, new_id
+
+    tenant = settings.default_tenant_id
+    with SessionLocal() as db:
+        temp = get_or_create_entity(db, tenant, "临时待清理实体", "concept", ["tenant:public"])
+        holder = get_or_create_entity(db, tenant, "关联持有人", "concept", ["tenant:public"])
+        db.add(
+            Fact(
+                id=new_id("f"), tenant_id=tenant, subject_id=temp.id, predicate="测试谓词",
+                object_literal="值A", confidence=0.9, status="active",
+                acl_principals=["tenant:public"],
+            )
+        )
+        db.add(
+            Fact(
+                id=new_id("f"), tenant_id=tenant, subject_id=holder.id, predicate="关联",
+                object_id=temp.id, confidence=0.9, status="active",
+                acl_principals=["tenant:public"],
+            )
+        )
+        db.commit()
+        temp_id = temp.id
+
+    edited = client.patch(
+        f"/api/v1/entities/{temp_id}",
+        json={"name": "订正后的实体", "type": "org", "description": "人工订正"},
+        headers=OWNER,
+    )
+    assert edited.status_code == 200
+    entity = edited.json()["entity"]
+    assert entity["name"] == "订正后的实体"
+    assert entity["type"] == "org"
+    assert entity["description"] == "人工订正"
+
+    # 旧名留作别名，之后再抽取到旧名仍归并到同一个实体
+    with SessionLocal() as db:
+        again = get_or_create_entity(db, tenant, "临时待清理实体", "concept", ["tenant:public"])
+        db.commit()
+        assert again.id == temp_id
+
+    assert (
+        client.patch(
+            f"/api/v1/entities/{temp_id}", json={"name": "KnoWeave"}, headers=OWNER
+        ).status_code
+        == 409
+    )
+    retyped = client.patch(
+        f"/api/v1/entities/{temp_id}", json={"type": "product"}, headers=OWNER
+    )
+    assert retyped.status_code == 200
+    assert retyped.json()["entity"]["type"] == "product"
+    assert client.delete(f"/api/v1/entities/{temp_id}", headers=VIEWER).status_code == 403
+
+    removed = client.delete(f"/api/v1/entities/{temp_id}", headers=OWNER)
+    assert removed.status_code == 200
+    result = removed.json()
+    assert result["facts_removed"] == 1
+    assert result["facts_unlinked"] == 1
+    remaining = client.get("/api/v1/entities", headers=OWNER).json()["items"]
+    assert not any(item["id"] == temp_id for item in remaining)
+    assert client.get(f"/api/v1/entities/{temp_id}", headers=OWNER).status_code == 404
+
+
 def test_memory_and_reflection(client):
     created = client.post(
         "/api/v1/memory",

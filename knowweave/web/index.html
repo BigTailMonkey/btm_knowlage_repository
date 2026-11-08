@@ -461,6 +461,52 @@
     <div class="dialog-body" id="trace-dialog-body"></div>
   </dialog>
 
+  <dialog class="dialog" id="entity-dialog" aria-labelledby="entity-dialog-title">
+    <div class="dialog-head">
+      <h2 id="entity-dialog-title">编辑实体</h2>
+      <button class="icon-btn" data-close aria-label="关闭"><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button>
+    </div>
+    <div class="dialog-body">
+      <form class="form" id="entity-form">
+        <div class="field">
+          <label for="entity-name">名称</label>
+          <input id="entity-name" maxlength="300" autocomplete="off" required />
+        </div>
+        <div class="field">
+          <label for="entity-type">类型</label>
+          <select id="entity-type">
+            <option value="concept">概念</option>
+            <option value="org">机构</option>
+            <option value="person">人物</option>
+            <option value="location">地点</option>
+            <option value="event">事件</option>
+            <option value="literal">字面值</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="entity-description">描述</label>
+          <textarea id="entity-description" rows="3" maxlength="2000" placeholder="可选，用于说明该实体"></textarea>
+        </div>
+        <p class="file-hint" id="entity-form-hint" role="status" hidden></p>
+        <button class="btn primary" type="submit" id="entity-save">保存</button>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog class="dialog" id="entity-delete-dialog" aria-labelledby="entity-delete-title">
+    <div class="dialog-head">
+      <h2 id="entity-delete-title">删除实体</h2>
+      <button class="icon-btn" data-close aria-label="关闭"><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button>
+    </div>
+    <div class="dialog-body">
+      <p class="entity-delete-note" id="entity-delete-note"></p>
+      <div class="dialog-actions">
+        <button class="btn" type="button" data-close>取消</button>
+        <button class="btn danger" type="button" id="entity-delete-confirm">确认删除</button>
+      </div>
+    </div>
+  </dialog>
+
   <script src="/assets/charts.js"></script>
   <script src="/assets/app.js"></script>
 </body>

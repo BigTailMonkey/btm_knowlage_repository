@@ -5,14 +5,16 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .learning import get_or_create_entity, resolve_review, run_reflection
+from .learning import get_or_create_entity, normalize_name, resolve_review, run_reflection
 from .models import (
+    Citation,
     Document,
     Entity,
+    EntityAlias,
     Fact,
     FactEvidence,
     Gap,
@@ -20,7 +22,13 @@ from .models import (
     ReviewItem,
     new_id,
 )
-from .security import Principal, can_read, get_principal, require_admin
+from .security import (
+    Principal,
+    can_read,
+    get_principal,
+    require_admin,
+    require_editor,
+)
 from .serializers import entity_dict, fact_dict
 
 router = APIRouter(tags=["knowledge"])
@@ -41,6 +49,12 @@ class MemoryIn(BaseModel):
 class GapResolveIn(BaseModel):
     status: str = "resolved"
     note: str = ""
+
+
+class EntityUpdateIn(BaseModel):
+    name: str | None = Field(default=None, max_length=300)
+    type: str | None = Field(default=None, max_length=40)
+    description: str | None = Field(default=None, max_length=2000)
 
 
 @router.get("/entities")
@@ -128,6 +142,180 @@ def entity_detail(
         "facts": items,
         "documents": documents,
         "aliases": [],
+    }
+
+
+@router.patch("/entities/{entity_id}")
+def update_entity(
+    entity_id: str,
+    payload: EntityUpdateIn,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    """人工订正实体：改名、改类型、改描述。改名会把旧名留作别名，避免再次抽取时重建同一实体。"""
+    require_editor(principal)
+    entity = db.get(Entity, entity_id)
+    if (
+        not entity
+        or entity.tenant_id != principal.tenant_id
+        or not can_read(principal, entity.acl_principals)
+    ):
+        raise HTTPException(status_code=404, detail="实体不存在或无权访问")
+
+    changed = False
+    if payload.name is not None:
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="实体名称不能为空")
+        normalized = normalize_name(name)
+        if normalized != entity.normalized_name:
+            duplicate = db.scalar(
+                select(Entity).where(
+                    Entity.tenant_id == principal.tenant_id,
+                    Entity.normalized_name == normalized,
+                    Entity.status == "active",
+                    Entity.id != entity.id,
+                )
+            )
+            alias_hit = db.scalar(
+                select(EntityAlias).where(
+                    EntityAlias.normalized_alias == normalized,
+                    EntityAlias.entity_id != entity.id,
+                )
+            )
+            if duplicate or alias_hit:
+                raise HTTPException(
+                    status_code=409,
+                    detail="已存在同名或同别名的实体，请直接编辑或删除那一个",
+                )
+            previous_name = entity.canonical_name
+            previous_normalized = entity.normalized_name
+            if previous_normalized:
+                exists = db.scalar(
+                    select(EntityAlias).where(
+                        EntityAlias.entity_id == entity.id,
+                        EntityAlias.normalized_alias == previous_normalized,
+                    )
+                )
+                if not exists:
+                    db.add(
+                        EntityAlias(
+                            entity_id=entity.id,
+                            alias=previous_name,
+                            normalized_alias=previous_normalized,
+                            source="manual",
+                        )
+                    )
+            entity.canonical_name = name
+            entity.normalized_name = normalized
+            changed = True
+
+    if payload.type is not None:
+        entity_type = payload.type.strip().lower()
+        if not entity_type:
+            raise HTTPException(status_code=400, detail="实体类型不能为空")
+        if entity_type != entity.type:
+            entity.type = entity_type
+            changed = True
+
+    if payload.description is not None:
+        description = payload.description.strip()
+        if description != (entity.description or ""):
+            entity.description = description
+            changed = True
+
+    entity.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(entity)
+    return {"entity": entity_dict(entity), "changed": changed}
+
+
+@router.delete("/entities/{entity_id}")
+def delete_entity(
+    entity_id: str,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+):
+    """删除实体：作为主语的事实连同证据一并删除；作为宾语的事实保留，宾语降级为字面值。"""
+    require_admin(principal)
+    entity = db.get(Entity, entity_id)
+    if (
+        not entity
+        or entity.tenant_id != principal.tenant_id
+        or not can_read(principal, entity.acl_principals)
+    ):
+        raise HTTPException(status_code=404, detail="实体不存在或无权访问")
+
+    facts = db.execute(
+        select(Fact).where(
+            Fact.tenant_id == principal.tenant_id,
+            or_(Fact.subject_id == entity.id, Fact.object_id == entity.id),
+        )
+    ).scalars().all()
+
+    removed_fact_ids: set[str] = set()
+    unlinked = 0
+    for fact in facts:
+        if fact.subject_id == entity.id:
+            removed_fact_ids.add(fact.id)
+            db.execute(delete(FactEvidence).where(FactEvidence.fact_id == fact.id))
+            db.execute(delete(Citation).where(Citation.fact_id == fact.id))
+            db.delete(fact)
+            continue
+        fact.object_id = None
+        if not fact.object_literal:
+            fact.object_literal = entity.canonical_name
+        unlinked += 1
+
+    aliases_removed = len(
+        db.execute(
+            select(EntityAlias).where(EntityAlias.entity_id == entity.id)
+        ).scalars().all()
+    )
+    db.execute(delete(EntityAlias).where(EntityAlias.entity_id == entity.id))
+
+    reviews_closed = 0
+    if removed_fact_ids:
+        open_reviews = db.execute(
+            select(ReviewItem).where(
+                ReviewItem.tenant_id == principal.tenant_id,
+                ReviewItem.status == "open",
+            )
+        ).scalars().all()
+        for item in open_reviews:
+            review_payload = item.payload or {}
+            touched = {review_payload.get("new_fact_id")}
+            touched.update(review_payload.get("old_fact_ids") or [])
+            if not (touched & removed_fact_ids):
+                continue
+            item.status = "resolved"
+            item.resolution = {
+                "action": "entity_deleted",
+                "by": principal.user_id,
+                "entity": entity.canonical_name,
+            }
+            item.resolved_at = datetime.now(timezone.utc)
+            reviews_closed += 1
+        memories = db.execute(
+            select(MemoryItem).where(
+                MemoryItem.tenant_id == principal.tenant_id,
+                MemoryItem.promoted_fact_id.in_(removed_fact_ids),
+            )
+        ).scalars().all()
+        for memory in memories:
+            memory.promoted_fact_id = None
+
+    canonical_name = entity.canonical_name
+    db.delete(entity)
+    db.commit()
+    return {
+        "status": "deleted",
+        "entity_id": entity_id,
+        "name": canonical_name,
+        "facts_removed": len(removed_fact_ids),
+        "facts_unlinked": unlinked,
+        "aliases_removed": aliases_removed,
+        "reviews_closed": reviews_closed,
     }
 
 
@@ -223,7 +411,11 @@ def knowledge_graph(
             )
         else:
             entity = db.get(Entity, node_id)
-            if entity and can_read(principal, entity.acl_principals):
+            if (
+                entity
+                and entity.status == "active"
+                and can_read(principal, entity.acl_principals)
+            ):
                 node_rows.append(
                     {"id": entity.id, "name": entity.canonical_name, "type": entity.type}
                 )

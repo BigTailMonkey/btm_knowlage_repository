@@ -2039,7 +2039,17 @@ async function continueConversation(conversationId) {
   }
 }
 
-const NODE_TYPE_LABEL = { concept: "概念", org: "机构", person: "人物", location: "地点", event: "事件", literal: "字面值" };
+const NODE_TYPE_LABEL = {
+  concept: "概念",
+  org: "机构",
+  person: "人物",
+  location: "地点",
+  event: "事件",
+  literal: "字面值",
+  product: "产品",
+  technology: "技术",
+  tool: "工具",
+};
 
 function nodeTypeLabel(type) {
   return NODE_TYPE_LABEL[type] || type || "实体";
@@ -2090,27 +2100,149 @@ async function selectEntity(entityId) {
     const facts = data.facts || [];
     const documents = data.documents || [];
     target.innerHTML = `
-      <div class="entity-head"><h2>${esc(entity.name)}</h2></div>
-      <div class="entity-tags">
-        <span class="pill">${esc(nodeTypeLabel(entity.type))}</span>
-        <span class="pill ${entity.acl_label === "全员可见" ? "" : "warn"}">${esc(entity.acl_label)}</span>
-      </div>
-      ${entity.description ? `<p class="entity-desc">${esc(plain(entity.description))}</p>` : ""}
-
-      <div class="entity-section">
-        <div class="entity-section-head"><h3>事实</h3><span>${num(facts.length)} 条</span></div>
-        ${facts.length ? `<div class="entity-facts">${facts.map(entityFactHtml).join("")}</div>` : `<div class="rail-empty">暂无事实</div>`}
-      </div>
-
-      <div class="entity-section">
-        <div class="entity-section-head"><h3>相关文档</h3><span>${num(documents.length)} 份</span></div>
-        <div class="doc-links">
-          ${documents.map((doc) => `<button class="doc-link" type="button" data-doc="${esc(doc.id)}">${esc(doc.title)}</button>`).join("") || `<div class="rail-empty">暂无</div>`}
+      <div class="entity-detail-main">
+        <div class="entity-head"><h2>${esc(entity.name)}</h2></div>
+        <div class="entity-tags">
+          <span class="pill">${esc(nodeTypeLabel(entity.type))}</span>
+          <span class="pill ${entity.acl_label === "全员可见" ? "" : "warn"}">${esc(entity.acl_label)}</span>
         </div>
+        ${entity.description ? `<p class="entity-desc">${esc(plain(entity.description))}</p>` : ""}
+
+        <div class="entity-section">
+          <div class="entity-section-head"><h3>事实</h3><span>${num(facts.length)} 条</span></div>
+          ${facts.length ? `<div class="entity-facts">${facts.map(entityFactHtml).join("")}</div>` : `<div class="rail-empty">暂无事实</div>`}
+        </div>
+
+        <div class="entity-section">
+          <div class="entity-section-head"><h3>相关文档</h3><span>${num(documents.length)} 份</span></div>
+          <div class="doc-links">
+            ${documents.map((doc) => `<button class="doc-link" type="button" data-doc="${esc(doc.id)}">${esc(doc.title)}</button>`).join("") || `<div class="rail-empty">暂无</div>`}
+          </div>
+        </div>
+      </div>
+      <div class="entity-detail-foot">
+        <button class="entity-act" type="button" data-entity-edit>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 12.6h2.1l6.2-6.2-2.1-2.1-6.2 6.2v2.1Z"/><path d="M10.6 3.3l.9-.9a.9.9 0 0 1 1.3 0l.8.8a.9.9 0 0 1 0 1.3l-.9.9"/></svg>
+          编辑
+        </button>
+        <button class="entity-act danger" type="button" data-entity-remove>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.9 4.6h10.2M6.4 4.6V3.2h3.2v1.4M4.7 4.6l.5 8.2h5.6l.5-8.2"/></svg>
+          删除
+        </button>
       </div>`;
     $$("#entity-detail [data-doc]").forEach((button) => button.addEventListener("click", () => openDoc(button.dataset.doc)));
+    const editButton = $("#entity-detail [data-entity-edit]");
+    if (editButton) editButton.addEventListener("click", () => openEntityDialog(entity));
+    const removeButton = $("#entity-detail [data-entity-remove]");
+    if (removeButton) {
+      removeButton.addEventListener("click", () =>
+        openEntityDelete(entity, facts.filter((fact) => fact.subject_id === entity.id).length),
+      );
+    }
   } catch (error) {
     target.innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
+  }
+}
+
+const ENTITY_TYPE_OPTIONS = ["concept", "org", "person", "location", "event", "literal"];
+
+function fillEntityTypes(current) {
+  const select = $("#entity-type");
+  if (!select) return;
+  const known = new Set(ENTITY_TYPE_OPTIONS);
+  const extra = new Set();
+  [...state.entities, ...(state.graph?.nodes || [])].forEach((node) => {
+    const type = node?.type;
+    if (type && !known.has(type)) extra.add(type);
+  });
+  if (current && !known.has(current)) extra.add(current);
+  const types = [...ENTITY_TYPE_OPTIONS, ...[...extra].sort()];
+  select.innerHTML = types
+    .map((type) => `<option value="${esc(type)}">${esc(nodeTypeLabel(type))}</option>`)
+    .join("");
+  select.value = current || "concept";
+}
+
+function openEntityDialog(entity) {
+  const dialog = $("#entity-dialog");
+  if (!dialog) return;
+  $("#entity-dialog-title").textContent = `编辑实体 · ${entity.name}`;
+  $("#entity-name").value = entity.name || "";
+  fillEntityTypes(entity.type);
+  $("#entity-description").value = entity.description || "";
+  const hint = $("#entity-form-hint");
+  hint.hidden = true;
+  hint.textContent = "";
+  $("#entity-form").dataset.entityId = entity.id;
+  if (!dialog.open) dialog.showModal();
+  $("#entity-name").focus();
+  $("#entity-name").select();
+}
+
+async function saveEntity(form) {
+  const entityId = form.dataset.entityId;
+  const button = $("#entity-save", form);
+  const name = $("#entity-name", form).value.trim();
+  const hint = $("#entity-form-hint");
+  if (!entityId || !name) {
+    hint.hidden = false;
+    hint.textContent = "实体名称不能为空";
+    return;
+  }
+  setBusy(button, true, "保存中");
+  try {
+    await api(`/entities/${entityId}`, {
+      method: "PATCH",
+      body: { name, type: $("#entity-type", form).value, description: $("#entity-description", form).value.trim() },
+    });
+    $("#entity-dialog").close();
+    toast("实体已更新");
+    state.activeEntity = entityId;
+    await loadEntities($("#entity-search").value.trim());
+    await loadGraph();
+    await selectEntity(entityId);
+  } catch (error) {
+    hint.hidden = false;
+    hint.textContent = error.message;
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+function openEntityDelete(entity, subjectFacts) {
+  const dialog = $("#entity-delete-dialog");
+  if (!dialog) return;
+  $("#entity-delete-title").textContent = `删除实体 · ${entity.name}`;
+  const note = $("#entity-delete-note");
+  note.innerHTML = subjectFacts
+    ? `将以 <strong>${esc(entity.name)}</strong> 为主语的 <strong>${num(subjectFacts)}</strong> 条事实一并删除（含证据引用）；其它事实若只是把它当作宾语，则保留并把宾语降级为文本。删除后无法恢复。`
+    : `该实体没有作为主语的事实，删除后仅移除实体与别名记录。删除后无法恢复。`;
+  $("#entity-delete-confirm").dataset.entityId = entity.id;
+  $("#entity-delete-confirm").dataset.entityName = entity.name;
+  if (!dialog.open) dialog.showModal();
+}
+
+async function confirmEntityDelete(button) {
+  const entityId = button.dataset.entityId;
+  if (!entityId) return;
+  setBusy(button, true, "删除中");
+  try {
+    const result = await api(`/entities/${entityId}`, { method: "DELETE" });
+    $("#entity-delete-dialog").close();
+    state.activeEntity = null;
+    const details = [`已删除「${result.name}」`];
+    if (result.facts_removed) details.push(`移除 ${num(result.facts_removed)} 条事实`);
+    if (result.facts_unlinked) details.push(`${num(result.facts_unlinked)} 条事实转为文本`);
+    if (result.reviews_closed) details.push(`关闭 ${num(result.reviews_closed)} 个待审项`);
+    toast(details.join(" · "));
+    $("#entity-detail").innerHTML = `<div class="empty-block">选择实体</div>`;
+    drawGraph(null);
+    await loadEntities($("#entity-search").value.trim());
+    await loadGraph();
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    setBusy(button, false);
   }
 }
 
@@ -2188,7 +2320,7 @@ function splitGraph(nodes, edges) {
   return components.sort((a, b) => b.nodes.length - a.nodes.length || a.nodes[0].name.localeCompare(b.nodes[0].name, "zh"));
 }
 
-function localComponent(component, radiusOf, compact) {
+function localComponent(component, radiusOf, compact, spread = 1) {
   const degree = new Map(component.nodes.map((node) => [node.id, 0]));
   component.edges.forEach((edge) => {
     degree.set(edge.source, (degree.get(edge.source) || 0) + 1);
@@ -2197,7 +2329,7 @@ function localComponent(component, radiusOf, compact) {
   const hub = component.nodes.reduce((best, node) => (degree.get(node.id) > degree.get(best.id) ? node : best), component.nodes[0]);
   const positions = new Map([[hub.id, { x: 0, y: 0 }]]);
   const others = component.nodes.filter((node) => node.id !== hub.id);
-  const radius = compact ? 34 : 48;
+  const radius = (compact ? 34 : 48) * spread;
   if (others.length === 1) {
     positions.set(others[0].id, { x: radius, y: 0 });
   } else {
@@ -2222,11 +2354,11 @@ function localComponent(component, radiusOf, compact) {
   return { positions, minX, maxX, minY, maxY };
 }
 
-function graphLayout(nodes, edges, width, height, radiusOf, centerId, compact, gridMode) {
+function graphLayout(nodes, edges, width, height, radiusOf, centerId, compact, gridMode, spread = 1) {
   const components = splitGraph(nodes, edges);
   const selected = components.find((component) => component.nodes.some((node) => node.id === centerId)) || components[0];
   const rest = components.filter((component) => component !== selected);
-  const layouts = new Map(components.map((component) => [component, localComponent(component, radiusOf, compact)]));
+  const layouts = new Map(components.map((component) => [component, localComponent(component, radiusOf, compact, spread)]));
   const centers = new Map();
   if (gridMode) {
     const ordered = [selected, ...rest];
@@ -2305,11 +2437,13 @@ function drawGraph(centerId) {
   });
   const compact = width < 420;
   const gridMode = width < 560;
+  // 画布越大，星形排布越舒展，避免小图悬浮在大片空白里
+  const spread = compact || gridMode ? 1 : Math.max(1, Math.min(1.8, Math.min(width, height) / 520));
   const radiusOf = (node) => {
     if (node.id === center.id) return compact ? 19 : 24;
     return (compact ? 8 : 9) + Math.min(compact ? 6 : 8, (degree.get(node.id) || 0) * (compact ? 1.6 : 2));
   };
-  const points = graphLayout(nodes, edges, width, height, radiusOf, center.id, compact, gridMode);
+  const points = graphLayout(nodes, edges, width, height, radiusOf, center.id, compact, gridMode, spread);
 
   const types = [...new Set(nodes.map((node) => node.type).filter(Boolean))];
   if (legend) {
@@ -2999,6 +3133,12 @@ async function boot() {
     clearTimeout(window.__entityTimer);
     window.__entityTimer = setTimeout(() => loadEntities(event.target.value.trim()), 300);
   });
+
+  $("#entity-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveEntity(event.currentTarget);
+  });
+  $("#entity-delete-confirm").addEventListener("click", (event) => confirmEntityDelete(event.currentTarget));
 
   $$("dialog").forEach((dialog) => {
     dialog.addEventListener("click", (event) => {
