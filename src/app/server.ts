@@ -65,6 +65,17 @@ export async function createServer(): Promise<FastifyInstance> {
     app.get('/', async (_request, reply) => reply.sendFile('index.html'))
   }
 
+  // 版式预览自带 PDF.js 与字体/CMap 资源，由主服务同源提供，避免依赖外部 CDN。
+  const pdfjsDir = join(settings.rootDir, 'node_modules', 'pdfjs-dist')
+  if (existsSync(pdfjsDir)) {
+    await app.register(fastifyStatic, {
+      root: pdfjsDir,
+      prefix: '/vendor/pdfjs/',
+      decorateReply: false,
+      maxAge: '7d',
+    })
+  }
+
   return app
 }
 

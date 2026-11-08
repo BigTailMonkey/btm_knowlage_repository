@@ -19,12 +19,9 @@ export interface UserRow {
   status: string
 }
 
-export async function resolveToken(token: string): Promise<Principal | null> {
-  if (!token) return null
-  const row = await queryOne<UserRow>(
-    'SELECT id, tenant_id, name, role, groups, token, status FROM users WHERE token = $1 AND status = $2',
-    [token, 'active'],
-  )
+const USER_COLUMNS = 'id, tenant_id, name, role, groups, token, status'
+
+function toPrincipal(row: UserRow | null): Principal | null {
   if (!row) return null
   return {
     userId: row.id,
@@ -34,6 +31,33 @@ export async function resolveToken(token: string): Promise<Principal | null> {
     groups: row.groups ?? [],
     token: row.token,
   }
+}
+
+export async function resolveToken(token: string): Promise<Principal | null> {
+  if (!token) return null
+  return toPrincipal(await queryOne<UserRow>(
+    `SELECT ${USER_COLUMNS} FROM users WHERE token = $1 AND status = $2`,
+    [token, 'active'],
+  ))
+}
+
+/** 按已绑定身份解析主体，供 DSH 原生工作区启动预热使用。 */
+export async function principalByUserId(tenantId: string, userId: string): Promise<Principal | null> {
+  return toPrincipal(await queryOne<UserRow>(
+    `SELECT ${USER_COLUMNS} FROM users WHERE tenant_id = $1 AND id = $2 AND status = $3`,
+    [tenantId, userId, 'active'],
+  ))
+}
+
+/** 未绑定身份时使用工作区默认所有者，保证对话进程可在启动阶段预热。 */
+export async function defaultPrincipal(tenantId: string): Promise<Principal | null> {
+  return toPrincipal(await queryOne<UserRow>(
+    `SELECT ${USER_COLUMNS} FROM users
+     WHERE tenant_id = $1 AND status = $2
+     ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, created_at
+     LIMIT 1`,
+    [tenantId, 'active'],
+  ))
 }
 
 export function principalSet(principal: Principal): Set<string> {

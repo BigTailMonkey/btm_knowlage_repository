@@ -9,6 +9,7 @@ import { retrieve } from '../../core/retrieval.js'
 import { newId, todayLocal } from '../../core/ids.js'
 import { requireAdmin } from '../../core/security.js'
 import { tokenPrice } from '../../core/tracing.js'
+import { ENTITY_HAS_DISPLAYABLE_FACT } from '../../core/fact-visibility.js'
 import type { TraceRow } from '../../core/rows.js'
 
 export async function opsRoutes(app: FastifyInstance): Promise<void> {
@@ -21,7 +22,11 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
     }
     const documents = await counts(`SELECT count(*)::text AS count FROM documents WHERE tenant_id = $1 AND status = 'active'`, [tenant])
     const chunks = await counts(`SELECT count(*)::text AS count FROM chunks WHERE tenant_id = $1 AND is_parent = false`, [tenant])
-    const entities = await counts(`SELECT count(*)::text AS count FROM entities WHERE tenant_id = $1 AND status = 'active'`, [tenant])
+    const entities = await counts(
+      `SELECT count(*)::text AS count FROM entities e
+       WHERE e.tenant_id = $1 AND e.status = 'active' AND ${ENTITY_HAS_DISPLAYABLE_FACT}`,
+      [tenant],
+    )
     const activeFacts = await counts(`SELECT count(*)::text AS count FROM facts WHERE tenant_id = $1 AND status = 'active'`, [tenant])
     const disputedFacts = await counts(`SELECT count(*)::text AS count FROM facts WHERE tenant_id = $1 AND status = 'disputed'`, [tenant])
     const openReviews = await counts(`SELECT count(*)::text AS count FROM review_queue WHERE tenant_id = $1 AND status = 'open'`, [tenant])
@@ -382,9 +387,31 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
     return {status:'updated'}
   })
 
+  app.get('/evals/failures', { preHandler: authenticate }, async (request) => {
+    const principal = currentPrincipal(request)
+    requireAdmin(principal)
+    const items = await query<{ case_id: string; question: string; error: string }>(
+      `SELECT c.id AS case_id,c.question,latest.error FROM eval_cases c JOIN (
+         SELECT DISTINCT ON (item->>'case_id') item->>'case_id' AS case_id,item->>'error' AS error
+         FROM eval_runs r CROSS JOIN LATERAL jsonb_array_elements(r.metrics->'results') item
+         WHERE r.tenant_id=$1 AND r.metrics->>'mode'='answer' AND item ? 'case_id'
+         ORDER BY item->>'case_id',r.created_at DESC,r.id DESC
+       ) latest ON latest.case_id=c.id
+       WHERE c.tenant_id=$1 AND latest.error IS NOT NULL AND c.source NOT LIKE 'failure-candidate:%'
+       ORDER BY c.question,c.id`,
+      [principal.tenantId],
+    )
+    return { items }
+  })
+
   app.post('/evals/run', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
     requireAdmin(principal)
+    const body = request.body as { mode?: string; case_ids?: unknown } | undefined
+    const ids = body?.case_ids
+    if (ids !== undefined && (!Array.isArray(ids) || !ids.length || ids.some(id => typeof id !== 'string' || !id))) {
+      throw Object.assign(new Error('case_ids 必须为非空评测用例 ID 列表'), { statusCode: 400 })
+    }
     const cases = await query<{
       id: string
       question: string
@@ -392,11 +419,12 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
       expected_keywords: string[]
       should_refuse: boolean
     }>(
-      `SELECT id, question, expected_docs, expected_keywords, should_refuse FROM eval_cases WHERE tenant_id = $1 AND source NOT LIKE 'failure-candidate:%'`,
-      [principal.tenantId],
+      `SELECT id, question, expected_docs, expected_keywords, should_refuse FROM eval_cases
+       WHERE tenant_id = $1 AND source NOT LIKE 'failure-candidate:%' AND ($2::text[] IS NULL OR id=ANY($2::text[]))`,
+      [principal.tenantId, ids ?? null],
     )
     if (!cases.length) throw Object.assign(new Error('尚无评测用例，请先导入黄金集'), { statusCode: 422 })
-    const mode = (request.body as { mode?: string } | undefined)?.mode ?? 'answer'
+    const mode = body?.mode ?? 'answer'
     if (!['answer','retrieval'].includes(mode)) throw Object.assign(new Error('评测mode必须为answer或retrieval'), { statusCode: 400 })
     return runEvaluation(principal, cases, mode as 'answer' | 'retrieval')
   })

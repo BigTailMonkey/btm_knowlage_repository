@@ -392,6 +392,7 @@ CREATE TABLE IF NOT EXISTS knowledge_summaries (
 CREATE INDEX IF NOT EXISTS ix_knowledge_summaries_tenant ON knowledge_summaries(tenant_id);
 ALTER TABLE fact_evidence ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE fact_evidence ADD COLUMN IF NOT EXISTS last_decay_at TIMESTAMPTZ;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS enrichment_error TEXT;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_trust DOUBLE PRECISION NOT NULL DEFAULT 0.5;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS is_core BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE memory_items ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb;

@@ -81,11 +81,27 @@
 
           <!-- 对话 -->
           <section class="page active" id="page-chat">
-            <div class="native-chat-status" id="native-chat-status" role="status" aria-live="polite">
-              <span id="native-chat-message">正在准备对话…</span>
-              <button class="btn sm" id="native-chat-retry" type="button" hidden>重试</button>
+            <div class="native-chat-main">
+              <div class="native-chat-status" id="native-chat-status" role="status" aria-live="polite">
+                <span id="native-chat-message">正在准备对话…</span>
+                <button class="btn sm" id="native-chat-retry" type="button" hidden>重试</button>
+              </div>
+              <iframe class="native-chat-frame" id="native-chat-frame" title="知织 AI 对话" allow="clipboard-read; clipboard-write" referrerpolicy="no-referrer" hidden></iframe>
             </div>
-            <iframe class="native-chat-frame" id="native-chat-frame" title="知织 AI 对话" allow="clipboard-read; clipboard-write" referrerpolicy="no-referrer" hidden></iframe>
+            <aside class="chat-citation" id="chat-citation" aria-labelledby="chat-citation-title" hidden>
+              <header class="chat-citation-header">
+                <div>
+                  <h2 id="chat-citation-title">引用原文</h2>
+                  <div id="chat-citation-meta" class="muted small"></div>
+                </div>
+                <button id="chat-citation-close" class="btn sm" type="button" aria-label="关闭引用预览">关闭</button>
+              </header>
+              <div class="chat-citation-toolbar" id="chat-citation-toolbar" hidden>
+                <button id="chat-citation-file" class="btn sm" type="button" aria-pressed="true">文档版式</button>
+                <button id="chat-citation-text" class="btn sm" type="button" aria-pressed="false">引用文本</button>
+              </div>
+              <div class="chat-citation-body" id="chat-citation-body" aria-busy="false"></div>
+            </aside>
           </section>
 
           <!-- 概览 -->
@@ -166,6 +182,7 @@
             </div>
 
             <div class="ingest-jobs" id="ingest-jobs" hidden></div>
+            <section class="ingest-jobs" id="extraction-jobs" aria-label="事实与实体抽取任务" hidden></section>
 
             <div class="table-wrap">
               <table class="table docs-table">
@@ -378,22 +395,28 @@
       </div>
 
       <form id="ingest-file-form" class="form">
-        <label class="dropzone" for="file-input" id="file-drop">
-          <span class="dropzone-main" id="file-drop-label">选择文件</span>
-          <input type="file" id="file-input" accept=".pdf,.docx,.md,.txt" hidden />
-        </label>
-        <div class="field"><label for="file-title">标题</label><input id="file-title" /></div>
-        <div class="field">
-          <label for="file-acl-input">权限组</label>
-          <div class="acl-combobox" id="file-acl" data-acl-picker>
-            <div class="acl-picker">
-              <div class="acl-tags" data-acl-tags></div>
-              <input id="file-acl-input" class="acl-input" data-acl-input type="text" placeholder="搜索权限组" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="file-acl-menu" />
+        <div class="form" id="ingest-file-fields">
+          <button type="button" class="dropzone" id="file-drop">
+            <span class="dropzone-main" id="file-drop-label">选择文件</span>
+            <span class="file-hint" id="file-drop-hint">可多选或拖入多个文件</span>
+          </button>
+          <input type="file" id="file-input" accept=".pdf,.docx,.md,.txt" multiple hidden />
+          <ul id="ingest-files" class="ingest-files" aria-label="所选文件" hidden></ul>
+          <div class="field" id="file-title-field"><label for="file-title">标题</label><input id="file-title" /></div>
+          <div class="field">
+            <label for="file-acl-input">权限组</label>
+            <span class="file-hint" id="file-batch-hint" hidden>各文件以文件名作为标题，并共用所选权限组。</span>
+            <div class="acl-combobox" id="file-acl" data-acl-picker>
+              <div class="acl-picker">
+                <div class="acl-tags" data-acl-tags></div>
+                <input id="file-acl-input" class="acl-input" data-acl-input type="text" placeholder="搜索权限组" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="file-acl-menu" />
+              </div>
+              <div class="acl-menu" id="file-acl-menu" data-acl-menu role="listbox" hidden></div>
             </div>
-            <div class="acl-menu" id="file-acl-menu" data-acl-menu role="listbox" hidden></div>
           </div>
         </div>
-        <button class="btn primary" type="submit">接入</button>
+        <p class="file-hint" id="file-submit-status" role="status" hidden></p>
+        <button class="btn primary" type="submit" id="file-submit">接入</button>
       </form>
 
       <form id="ingest-text-form" class="form" hidden>

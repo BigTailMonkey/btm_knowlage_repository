@@ -1,7 +1,19 @@
 (() => {
   'use strict'
 
-  if (window.self !== window.top) document.documentElement.dataset.knowweaveEmbedded = ''
+  const embedded = window.self !== window.top
+  if (embedded) {
+    document.documentElement.dataset.knowweaveEmbedded = ''
+    document.addEventListener('click', (event) => {
+      const link = event.target.closest?.('a[href]')
+      if (!link || !link.href.startsWith('https://citation.knowweave.invalid/')) return
+      const path = new URL(link.href).pathname
+      if (!/^\/[\w-]{1,100}\/[\w-]{1,100}(?:\/[\w-]{1,100})?$/.test(path)) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      window.parent.postMessage({ type: 'knowweave:open-citation', path }, '*')
+    }, true)
+  }
 
   // Only presentation templates are adapted. IDs, URLs, substituted parameters,
   // editable fields and user-authored messages never pass through this function.
@@ -108,7 +120,22 @@
     '[class~="_7KE1Ra_option"]', labelSelector,
   ].join(',')
 
+  let blankSession = null
+  function notifyNewConversation() {
+    // DSH uses the hero phase for its new conversation, including keyboard
+    // shortcuts and workspace actions that do not click the sidebar button.
+    const conversation = document.querySelector('[data-conversation-content]')
+    const next = conversation?.dataset.contentPhase === 'hero'
+      ? conversation.dataset.conversationSession ?? ''
+      : null
+    if (next !== null && next !== blankSession) {
+      window.parent.postMessage({ type: 'knowweave:new-conversation' }, '*')
+    }
+    blankSession = next
+  }
+
   function updateChrome() {
+    if (embedded) notifyNewConversation()
     updateTitle()
     for (const boot of document.querySelectorAll('[data-dsh-boot]')) {
       for (const child of boot.querySelectorAll('div')) {
@@ -135,7 +162,7 @@
   })
   observer.observe(document.documentElement, {
     subtree: true, childList: true, characterData: true,
-    attributes: true, attributeFilter: ['title', 'aria-label'],
+    attributes: true, attributeFilter: ['title', 'aria-label', 'data-content-phase', 'data-conversation-session'],
   })
   updateChrome()
 })()

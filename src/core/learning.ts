@@ -1,5 +1,5 @@
 import { query, queryOne } from '../db/index.js'
-import { harness } from '../adapters/harness/index.js'
+import { completeStructured, modelUnavailable, requireModelText } from '../adapters/harness/index.js'
 import { estimateTokens } from './chunking.js'
 import { newId, todayLocal } from './ids.js'
 import type { ChunkRow, DocumentRow, EntityRow, FactRow, VersionRow } from './rows.js'
@@ -8,14 +8,16 @@ import { settings } from '../config.js'
 import { evidenceWeight } from './source-policy.js'
 import { resolveSemanticEntity } from './entity-resolution.js'
 import { consolidateKnowledge } from './consolidation.js'
+import { MIN_FACT_CONFIDENCE } from './fact-visibility.js'
 
 const EXTRACT_SYSTEM = `你是 KnoWeave 的事实抽取器。只抽取原文明确陈述、可被引用验证的断言。
 输出一个 JSON 数组，不要输出任何解释或 Markdown。每项字段：
 subject, subject_type(product|org|person|concept|event), predicate, object,
 object_type, object_literal, valid_from(YYYY-MM-DD 或 null), valid_to(YYYY-MM-DD 或 null),
 confidence(0-1), quote(必须逐字来自原文，不超过120字)。
-规则：谓词用简短中文动词短语；不要抽取常识、推测、代词指代；最多 12 条；
-数字、日期、版本必须保留；主语与宾语保留引文中的写法；没有明确主语时不要抽取。`
+规则：最多 8 条，优先抽取有明确主体和对象的重要关系。谓词用简短动词短语。
+主语和实体型宾语必须是可独立指代的完整名称或名词短语，保留引文中的写法。排除动作片段、连词结尾的残句、代词、跨句拼接。
+没有明确主语时跳过，例如“收集和提供风险信息”不产生事实。数字、日期、版本必须保留。没有符合条件的事实时返回 []。`
 
 const DATE_RE = /(20\d{2})[-年/.](\d{1,2})[-月/.](\d{1,2})?/
 
@@ -53,19 +55,19 @@ export function parseDate(value: unknown): string | null {
   return `${year.toString().padStart(4, '0')}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`
 }
 
-function parseJsonArray(text: string): Array<Record<string, unknown>> {
+function parseJsonArray(text: string): Array<Record<string, unknown>> | null {
   let body = text.trim()
-  if (!body) return []
+  if (!body) return null
   const fence = /```(?:json)?\s*([\s\S]*?)```/.exec(body)
   if (fence) body = fence[1]!.trim()
   const start = body.indexOf('[')
   const end = body.lastIndexOf(']')
-  if (start < 0 || end < start) return []
+  if (start < 0 || end < start) return null
   try {
     const payload = JSON.parse(body.slice(start, end + 1)) as unknown
-    return Array.isArray(payload) ? payload.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object') : []
+    return Array.isArray(payload) ? payload.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item)) : null
   } catch {
-    return []
+    return null
   }
 }
 
@@ -83,7 +85,7 @@ export async function getOrCreateEntity(
   if (existing) return existing
   const alias = await queryOne<{ entity_id: string }>(
     `SELECT a.entity_id FROM entity_aliases a JOIN entities e ON a.entity_id = e.id
-     WHERE e.tenant_id = $1 AND a.normalized_alias = $2 LIMIT 1`,
+     WHERE e.tenant_id = $1 AND a.normalized_alias = $2 AND e.status = 'active' LIMIT 1`,
     [tenantId, normalized],
   )
   if (alias) {
@@ -110,7 +112,6 @@ export async function getOrCreateEntity(
 }
 
 const EXTRACTION_BATCH_CHARS = 7000
-const MIN_FACT_CONFIDENCE = 0.7
 const EXTRACTION_OVERLAP = 180
 
 function quotedChunk(chunks: ChunkRow[], quote: string): ChunkRow | null {
@@ -165,6 +166,15 @@ function quoteContains(quote: string, term: string): boolean {
   return false
 }
 
+const entityWords = new Intl.Segmenter('zh', { granularity: 'word' })
+const incompleteEntityWords = new Set(['和', '与', '及', '以及', '或', '或者', '并', '、'])
+
+export function isEntityName(name: string): boolean {
+  if (!name || ['它', '他', '她', '该系统', '本系统', '这'].includes(name)) return false
+  const words = [...entityWords.segment(name)]
+  return !incompleteEntityWords.has(words.at(-1)?.segment ?? '')
+}
+
 async function extractCandidates(document: DocumentRow): Promise<Candidate[]> {
   const chunks = await query<ChunkRow>(
     `SELECT c.* FROM chunks c JOIN document_versions v ON c.version_id = v.id
@@ -175,16 +185,17 @@ async function extractCandidates(document: DocumentRow): Promise<Candidate[]> {
   const seen = new Set<string>()
   for (const [index, batch] of extractionBatches(chunks).entries()) {
     const prompt = `文档标题：${document.title}\n来源类型：${document.source_type}\n分批：${index + 1}\n\n原文：\n${batch.text}\n\n请输出 JSON 数组。`
-    const result = await harness.complete(prompt, EXTRACT_SYSTEM, 1600)
-    const extracted: Candidate[] = []
-    for (const item of parseJsonArray(result.text)) {
+    const result = await completeStructured(prompt, EXTRACT_SYSTEM)
+    const operation = `第 ${index + 1} 批抽取`
+    const items = parseJsonArray(requireModelText(result, operation))
+    if (items === null) throw modelUnavailable(operation, '模型未返回完整的 JSON 数组')
+    for (const item of items) {
       const subject = String(item.subject ?? '').trim()
       const predicate = String(item.predicate ?? '').trim()
       const object = String(item.object ?? '').trim()
       const literal = String(item.object_literal ?? '').trim()
       const quote = String(item.quote ?? '').trim()
-      if (!subject || !predicate || !(object || literal) || !quote) continue
-      if (['它', '他', '她', '该系统', '本系统', '这'].includes(subject)) continue
+      if (!isEntityName(subject) || !predicate || !(object || literal) || !quote) continue
       const chunk = quotedChunk(batch.chunks, quote)
       // A nearby sentence, fuzzy token overlap or matching quote prefix is not
       // evidence for an extracted assertion. Keep the entire verbatim quote.
@@ -197,7 +208,8 @@ async function extractCandidates(document: DocumentRow): Promise<Candidate[]> {
       const confidence = Number(item.confidence ?? 0.7)
       const objectType = String(item.object_type ?? 'concept').slice(0, 24)
       const literalTarget = !object || isLiteralTarget(object, objectType)
-      extracted.push({
+      if (!literalTarget && !isEntityName(object)) continue
+      const candidate: Candidate = {
         subject: subject.slice(0, 120),
         subjectType: String(item.subject_type ?? 'concept').slice(0, 24),
         predicate: predicate.slice(0, 120),
@@ -209,45 +221,11 @@ async function extractCandidates(document: DocumentRow): Promise<Candidate[]> {
         confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(0.99, confidence)) : 0.7,
         quote,
         chunkId: chunk.id,
-      })
-    }
-    for (const candidate of extracted.length ? extracted : ruleExtractCandidates(batch.text, batch.chunks)) {
+      }
       const key = [normalizeName(candidate.subject), candidate.predicate, normalizeName(candidate.objectName || candidate.objectLiteral), candidate.validFrom, candidate.validTo, candidate.chunkId].join('|')
       if (seen.has(key)) continue
       seen.add(key)
       candidates.push(candidate)
-    }
-  }
-  return candidates
-}
-
-function ruleExtractCandidates(text: string, chunks: ChunkRow[]): Candidate[] {
-  const pattern = /([\u4e00-\u9fffA-Za-z0-9·\-]{2,24})(采用|使用|基于|依赖|支持|提供|发布|推出|属于|位于|成立于|由)([^，。；：\n]{2,40})/g
-  const candidates: Candidate[] = []
-  for (const sentence of text.split(/[。！？!?；;\n]/)) {
-    const body = sentence.trim()
-    if (body.length < 6) continue
-    for (const match of body.matchAll(pattern)) {
-      const subject = match[1]!.trim()
-      const predicate = match[2]!.trim()
-      const object = match[3]!.trim()
-      if (['我们', '本系统', '该系统', '它'].includes(subject) || object.length < 2) continue
-      const quote = match[0]
-      const chunk = quotedChunk(chunks, quote)
-      if (!chunk) continue
-      candidates.push({
-        subject: subject.slice(0, 120),
-        subjectType: /[A-Za-z]/.test(subject) ? 'product' : 'concept',
-        predicate,
-        objectName: isLiteralTarget(object, '') ? '' : object.slice(0, 120),
-        objectType: /[A-Za-z]/.test(object) ? 'product' : 'concept',
-        objectLiteral: object.slice(0, 200),
-        validFrom: null,
-        validTo: null,
-        confidence: 0.52,
-        quote,
-        chunkId: chunk.id,
-      })
     }
   }
   return candidates
@@ -467,7 +445,7 @@ async function extractDocument(principal: Principal, document: DocumentRow): Pro
   )
   if (!version) return { error: '版本不存在' }
   const startedVersion = await query(
-    `UPDATE documents SET enrichment_status = 'running' WHERE id = $1 AND current_version = $2 AND status = 'active' RETURNING id`,
+    `UPDATE documents SET enrichment_status = 'running', enrichment_error = NULL WHERE id = $1 AND current_version = $2 AND status = 'active' RETURNING id`,
     [docId, document.current_version],
   )
   if (!startedVersion.length) return { status: 'stale' }
@@ -492,7 +470,8 @@ async function extractDocument(principal: Principal, document: DocumentRow): Pro
       elapsed_ms: Date.now() - started,
     }
   } catch (error) {
-    await query(`UPDATE documents SET enrichment_status = 'failed' WHERE id = $1 AND current_version = $2 AND status = 'active'`, [docId, document.current_version])
+    const message = (error instanceof Error ? error.message : String(error)).slice(0, 300)
+    await query(`UPDATE documents SET enrichment_status = 'failed', enrichment_error = $3 WHERE id = $1 AND current_version = $2 AND status = 'active'`, [docId, document.current_version, message])
     throw error
   }
 }

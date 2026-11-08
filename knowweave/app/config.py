@@ -36,16 +36,11 @@ class Settings:
     seed_demo: bool = True
     timezone: str = "Asia/Shanghai"
 
-    harness_enabled: bool = True
-    dsh_repo: Path = Path.home() / "projects" / "deepseek-harness"
-    dsh_profile: str = "headless"
-    dsh_command: str = "pnpm"
-    dsh_timeout_seconds: int = 120
-    model: str = "deepseek-v4.1-flash"
-    provider: str = "volcengine-ark"
+    model: str = ""
+    provider: str = "openai-compatible"
     model_api_key: str = ""
-    model_base_url: str = "https://api.deepseek.com"
-    fallback_model: str = "deepseek-chat"
+    model_base_url: str = ""
+    model_max_tokens: int | None = None
 
     embedding_provider: str = "volcengine-ark"
     embedding_model: str = "doubao-embedding-vision-251215"
@@ -80,19 +75,16 @@ class Settings:
         time_cfg = raw.get("time", {})
         settings.timezone = time_cfg.get("timezone", settings.timezone)
 
-        model = raw.get("model", {})
-        settings.provider = model.get("provider", settings.provider)
-        settings.model = model.get("model", settings.model)
-        settings.harness_enabled = bool(model.get("harness_enabled", True))
-        settings.dsh_repo = _resolve_path(model.get("dsh_repo", ""), settings.dsh_repo)
-        settings.dsh_profile = model.get("dsh_profile", settings.dsh_profile)
-        settings.dsh_command = model.get("dsh_command", settings.dsh_command)
-        settings.dsh_timeout_seconds = int(
-            model.get("dsh_timeout_seconds", settings.dsh_timeout_seconds)
-        )
-        settings.model_api_key = model.get("api_key", "")
-        settings.model_base_url = model.get("base_url", settings.model_base_url)
-        settings.fallback_model = model.get("fallback_model", settings.fallback_model)
+        project_config = BASE_DIR.parent / "config.toml"
+        model_config = _read_config(project_config) if path == CONFIG_PATH and project_config.is_file() else raw
+        model = model_config.get("model", {})
+        settings.provider = model.get("provider", settings.provider).strip()
+        settings.model = model.get("model", "").strip()
+        settings.model_api_key = model.get("api_key", "").strip()
+        settings.model_base_url = model.get("base_url", "").strip()
+        settings.model_max_tokens = model.get("max_tokens")
+        if settings.model_max_tokens is not None and (type(settings.model_max_tokens) is not int or settings.model_max_tokens <= 0):
+            raise ValueError("[model].max_tokens 必须为正整数")
 
         embedding = raw.get("embedding", {})
         settings.embedding_provider = embedding.get("provider", settings.embedding_provider)

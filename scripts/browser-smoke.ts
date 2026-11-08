@@ -7,8 +7,14 @@ import { testWorkspace } from '../tests/helpers.js'
 import { createServer } from '../src/app/server.js'
 import { ingestParsed } from '../src/core/ingestion.js'
 import { parseText } from '../src/adapters/parsing/index.js'
+import { harness } from '../src/adapters/harness/index.js'
 import { stopIngestWorker } from '../src/core/ingestion.js'
+import { query, queryOne } from '../src/db/index.js'
 const workspace = await testWorkspace()
+harness.ask = async () => ({
+  text: '知织支持本地文档检索，并为回答提供原文引用。[1]',
+  model: 'browser-fixture', provider: 'test', ok: true, error: null, tokensIn: 0, tokensOut: 0, latencyMs: 0,
+})
 const app = await createServer(); app.log.level='silent'
 const directory = await mkdtemp(join(tmpdir(),'knowweave-browser-'))
 const chrome = process.env.KNOWWEAVE_CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
@@ -16,7 +22,39 @@ let browser: ReturnType<typeof spawn> | undefined
 let socket: WebSocket | undefined
 const errors: string[]=[]
 try {
-  await ingestParsed(workspace.principal,parseText('知织支持本地文档检索，并为回答提供原文引用。','浏览器验收文档'),{sourceType:'text',uri:'browser:fixture'})
+  const source = await ingestParsed(workspace.principal,parseText('知织支持本地文档检索，并为回答提供原文引用。','浏览器验收文档'),{sourceType:'pdf',uri:'browser:fixture'})
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << >> >>',
+  ]
+  let pdf = '%PDF-1.7\n'
+  const offsets = objects.map((object, i) => {
+    const offset = pdf.length
+    pdf += `${i + 1} 0 obj\n${object}\nendobj\n`
+    return `${String(offset).padStart(10, '0')} 00000 n \n`
+  })
+  pdf += `xref\n0 4\n0000000000 65535 f \n${offsets.join('')}trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n${pdf.length}\n%%EOF\n`
+  await query('UPDATE jobs SET payload = payload || $2::jsonb WHERE id = $1', [
+    source.job_id,
+    JSON.stringify({ source: 'file', request: { filename: 'fixture.pdf', data: Buffer.from(pdf).toString('base64') } }),
+  ])
+  const chunk = await queryOne<{ id: string }>('SELECT id FROM chunks WHERE version_id=$1 AND is_parent=false', [source.version_id])
+  const citation = `/${source.document_id}/${source.version_id}/${chunk!.id}`
+  const bootstrap = await readFile('src/adapters/dsh-web/branding/bootstrap.js', 'utf8')
+  app.get('/browser-fixture-native', async (_request, reply) => reply.type('text/html').send(`
+    <!doctype html><title>DSH fixture</title><script>${bootstrap}</script>
+    <div data-conversation-content data-conversation-session="existing" data-content-phase="active">
+      <a href="https://citation.knowweave.invalid${citation}">浏览器验收文档</a>
+    </div>
+    <script>window.addEventListener('message', (event) => {
+      const conversation = document.querySelector('[data-conversation-content]');
+      if (event.data === 'new') {
+        conversation.dataset.conversationSession = 'new';
+        conversation.dataset.contentPhase = 'hero';
+      } else if (event.data === 'click') conversation.querySelector('a').click();
+    })</script>
+  `))
   const url=await app.listen({host:'127.0.0.1',port:0})
   const folder=join(directory,'sync-fixture')
   await mkdir(folder)
@@ -66,6 +104,26 @@ try {
   await until("document.querySelector('#native-chat-retry')?.hidden === false")
   assert.equal(await evaluate("document.querySelector('.nav-item[data-page=chat]').textContent.trim()"), '对话')
   assert.equal(await evaluate("document.querySelector('#native-chat-frame').hidden"), true)
+  const fixtureUrl = url.replace('127.0.0.1', 'localhost') + '/browser-fixture-native'
+  await evaluate(`new Promise(resolve => {
+    const frame = document.querySelector('#native-chat-frame');
+    frame.addEventListener('load', () => resolve(true), { once: true });
+    frame.hidden = false;
+    frame.src = ${JSON.stringify(fixtureUrl)};
+  })`)
+  await evaluate(`window.postMessage({ type: 'knowweave:open-citation', path: ${JSON.stringify(citation)} }, location.origin)`)
+  assert.equal(await evaluate("document.querySelector('#chat-citation').hidden"), true)
+  const tellNative = (message: string) => evaluate(`document.querySelector('#native-chat-frame').contentWindow.postMessage(${JSON.stringify(message)}, ${JSON.stringify(new URL(fixtureUrl).origin)})`)
+  await tellNative('click')
+  await until("document.querySelector('#chat-citation-body .pdf-page.is-rendered')")
+  assert.equal(await evaluate("document.querySelector('#chat-citation-title').textContent"), '浏览器验收文档')
+  assert.equal(await evaluate("document.querySelector('#chat-citation-toolbar').hidden"), false)
+  assert.equal(await evaluate("document.querySelector('#chat-citation-file').getAttribute('aria-pressed')"), 'true')
+  await evaluate("document.querySelector('#chat-citation-text').click()")
+  await until("document.querySelector('#chat-citation-body mark')?.textContent.includes('知织支持本地文档检索')")
+  await tellNative('new')
+  await until("document.querySelector('#chat-citation').hidden && document.querySelector('#chat-citation-body').childElementCount === 0")
+  await evaluate("resetNativeChat()")
   await evaluate("document.querySelector('.nav-item[data-page=ask]').click()")
   await until("document.querySelector('#question') && typeof runAsk === 'function'")
   await evaluate("document.querySelectorAll('dialog[open]').forEach(dialog=>dialog.close());document.querySelector('#question').value='知织支持什么？';document.querySelector('#ask-form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))")
@@ -90,7 +148,7 @@ try {
   const screenshot=await call('Page.captureScreenshot',{format:'png'})
   const artifact=join(directory,'knowledge-chat.png')
   await writeFile(artifact,Buffer.from(screenshot.data,'base64'))
-  console.log(JSON.stringify({browser:'Chrome headless',directoryCli:true,nativeChatDisabledState:true,researchChat:true,citation:true,sourceHighlight:true,reindex:true,sourcePolicy:true,evaluationImport:true,javascriptErrors:errors,artifact}))
+  console.log(JSON.stringify({browser:'Chrome headless',directoryCli:true,nativeChatDisabledState:true,nativeChatCitation:true,researchChat:true,citation:true,sourceHighlight:true,reindex:true,sourcePolicy:true,evaluationImport:true,javascriptErrors:errors,artifact}))
 } finally {
   socket?.close()
   if(browser && browser.exitCode===null)browser.kill('SIGKILL')

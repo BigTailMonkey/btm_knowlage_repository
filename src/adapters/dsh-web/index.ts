@@ -4,14 +4,17 @@ import { dirname, join } from 'node:path'
 import { createRequire } from 'node:module'
 
 import { settings } from '../../config.js'
-import type { Principal } from '../../core/security.js'
+import {
+  defaultPrincipal,
+  principalByUserId,
+  type Principal,
+} from '../../core/security.js'
 
 const WELCOME_VERSION = '2026-09-28.1'
 
 /**
  * 关闭 DSH 自带的新手引导弹窗：
  * - ui-settings-general.welcomeNoticeVersion 标记预览版说明已读；
- * - ui-settings-models.credentialOnboarding=false 不再自动弹出 API Key 引导。
  */
 function ensureQuietProfile(): void {
   const profileDir = join(settings.dshWebHome, 'profiles', 'web')
@@ -26,9 +29,6 @@ function ensureQuietProfile(): void {
     appended +=
       `- id: ui-settings-general\n  config:\n    welcomeNoticeVersion: '${WELCOME_VERSION}'\n`
   }
-  if (!hasId('ui-settings-models')) {
-    appended += '- id: ui-settings-models\n  config:\n    credentialOnboarding: false\n'
-  }
   // DSH 默认工作区落在系统「文档」目录，容器/沙箱内不可写会弹出工作区选择；
   // 指向项目内目录后首次使用自动建好并直接进入对话。
   if (!hasId('workspace-controller')) {
@@ -36,11 +36,6 @@ function ensureQuietProfile(): void {
     mkdirSync(documentsDir, { recursive: true })
     appended += `- id: workspace-controller\n  config:\n    documentsDirectory: '${documentsDir}'\n`
   }
-  // Seed model settings once in the editable profile. Native Models-page edits
-  // (including additional providers) must survive every subsequent restart.
-  const modelRows = dshModelPatch(settings)
-  if (!hasId('agent-default-model')) appended += modelRows.slice(0, 4).join('\n') + '\n'
-  if (!hasId('llm-pi-ai') && modelRows.length > 4) appended += modelRows.slice(4).join('\n') + '\n'
   if (appended) {
     const prefix = content.trim() ? `${content.trimEnd()}\n` : ''
     const body = prefix + appended
@@ -52,15 +47,21 @@ function ensureQuietProfile(): void {
 // identity. Never hand another identity the same session history or KB token.
 let knowledgeToken: string | null = null
 
+function storedIdentity(): { tenantId: string; userId: string } | null {
+  const path = join(settings.dshWebHome, 'knowledge-identity.json')
+  if (!existsSync(path)) return null
+  return JSON.parse(readFileSync(path, 'utf8')) as { tenantId: string; userId: string }
+}
+
 function bindKnowledgeIdentity(principal: Principal): void {
   mkdirSync(settings.dshWebHome, { recursive: true })
-  const path = join(settings.dshWebHome, 'knowledge-identity.json')
-  if (existsSync(path)) {
-    const identity = JSON.parse(readFileSync(path, 'utf8')) as { tenantId: string; userId: string }
+  const identity = storedIdentity()
+  if (identity) {
     if (identity.tenantId !== principal.tenantId || identity.userId !== principal.userId) {
       throw Object.assign(new Error('此原生对话工作区属于另一身份，请使用研究台访问当前身份的知识库。'), { statusCode: 403 })
     }
   } else {
+    const path = join(settings.dshWebHome, 'knowledge-identity.json')
     writeFileSync(path, JSON.stringify({ tenantId: principal.tenantId, userId: principal.userId }), { mode: 0o600 })
   }
   knowledgeToken = principal.token
@@ -80,34 +81,36 @@ function dshBin(): string {
   return join(settings.rootDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 }
 
-/** DSH's official route speaks Messages; configured gateways use OpenAI chat completions. */
-function dshModelPatch(config: { modelProvider: string; modelBaseUrl: string; model: string; modelMaxTokens: number }): string[] {
-  const official = config.modelProvider === 'deepseek-official'
-  const provider = official ? 'deepseek-official' : 'knowweave-model'
-  const rows = [
+/** The launch patch replaces any model settings saved by older profiles. */
+function dshModelPatch(): string[] {
+  return [
+    '- id: llm-deepseek',
+    '  disabled: true',
+    '- id: llm-deepseek-account',
+    '  disabled: true',
+    '- id: ui-settings-models',
+    '  disabled: true',
     '- id: agent-default-model',
     '  config:',
-    `    provider: ${provider}`,
-    `    model: ${JSON.stringify(config.model)}`,
-  ]
-  if (!official) rows.push(
+    '    provider: knowweave-model',
+    `    model: ${JSON.stringify(settings.model)}`,
     '- id: llm-pi-ai',
+    '  disabled: false',
     '  config:',
     '    providers:',
     '      knowweave-model:',
     '        displayName: 知织模型',
     '        api: openai-completions',
-    '        apiKeyEnv: KNOWWEAVE_MODEL_API_KEY',
-    `        baseURL: ${JSON.stringify(config.modelBaseUrl)}`,
-    `        defaultMaxTokens: ${config.modelMaxTokens}`,
+    '        apiKeyEnv: KNOWWEAVE_CONFIGURED_MODEL_API_KEY',
+    `        baseURL: ${JSON.stringify(settings.modelBaseUrl)}`,
     '        compat:',
     '          supportsDeveloperRole: false',
     '          supportsStore: false',
     '          maxTokensField: max_tokens',
     '        models:',
-    `          - id: ${JSON.stringify(config.model)}`,
-  )
-  return rows
+    `          - id: ${JSON.stringify(settings.model)}`,
+    ...(settings.modelMaxTokens === undefined ? [] : [`            maxTokens: ${settings.modelMaxTokens}`]),
+  ]
 }
 
 const KNOWLEDGE_POLICY = [
@@ -120,6 +123,8 @@ const KNOWLEDGE_POLICY = [
   '遇到复杂问题可组合多个工具，例如先混合检索定位实体，再查关系路径，最后核对证据。',
   '路径结果截断或查询范围不全时，说明限制，不得断言关系不存在。',
   '回答的主要事实、数字、结论全部来自知识库检索结果，并标注文档标题和引用片段标识。',
+  '用可点击的 Markdown 链接标注知识库出处，优先直接使用证据的 preview_url：[文档标题](preview_url)。没有 preview_url 时格式为 https://citation.knowweave.invalid/文档ID/版本ID/片段ID。',
+  '链接必须使用工具返回的 doc_id、version_id、chunk_id 原值；引用整份文档时省略末尾的 /片段ID。缺少版本时先检索或核对原文，不要猜测 ID。',
   '资料不足时明确说明知识库暂无足够依据，不得用模型记忆补造事实，不得自动改用网页搜索。',
   '默认不访问互联网，也不得用 bash、脚本或其他工具绕过此规则抓取网页。',
   '只有用户明确要求联网并且联网功能已开启时，才可使用网页信息作为补充，并与知识库依据分开标注。',
@@ -163,8 +168,10 @@ function knowledgePresetPatches(): string {
 function ensureBrandingPatch(): string {
   const patchPath = join(settings.dshWebHome, 'knowweave-branding.patch.yml')
   const pluginPath = join(settings.rootDir, 'src', 'adapters', 'dsh-web', 'branding', 'index.mjs')
+  const modelPluginPath = join(settings.rootDir, 'src', 'adapters', 'dsh-web', 'model.mjs')
   const content = [
     '# managed by KnoWeave',
+    ...dshModelPatch(),
     '- id: tool-web',
     '  config:',
     `    search: ${settings.dshWebSearchEnabled}`,
@@ -187,6 +194,8 @@ function ensureBrandingPatch(): string {
     '          X-Knowweave-Native: "true"',
     '    - id: knowweave-branding',
     `      name: ${JSON.stringify(pluginPath)}`,
+    '    - id: knowweave-configured-model',
+    `      name: ${JSON.stringify(modelPluginPath)}`,
     '',
   ].join('\n') + '\n' + knowledgePresetPatches()
   if (!existsSync(patchPath) || readFileSync(patchPath, 'utf8') !== content) {
@@ -227,19 +236,20 @@ async function spawnAndWait(): Promise<void> {
   mkdirSync(settings.dshRuntimeCwd, { recursive: true })
   ensureQuietProfile()
   const brandingPatch = ensureBrandingPatch()
+  const modelRequest = join(settings.rootDir, 'src', 'adapters', 'dsh-web', 'model-request.mjs')
 
   child = spawn(
     process.execPath,
-    [dshBin(), '--profile', 'web', '--patch', brandingPatch, '--no-open', '--port', String(settings.dshWebPort)],
+    ['--import', modelRequest, dshBin(), '--profile', 'web', '--patch', brandingPatch, '--no-open', '--port', String(settings.dshWebPort)],
     {
       cwd: settings.dshRuntimeCwd,
       env: {
         ...process.env,
         DSH_HOME: settings.dshWebHome,
-        DEEPSEEK_BASE_URL: settings.modelBaseUrl,
         KNOWWEAVE_KB_TOKEN: knowledgeToken!,
-        KNOWWEAVE_MODEL_API_KEY: settings.modelApiKey || process.env.DEEPSEEK_API_KEY || '',
-        ...(settings.modelApiKey ? { DEEPSEEK_API_KEY: settings.modelApiKey } : {}),
+        KNOWWEAVE_CONFIGURED_MODEL_API_KEY: settings.modelApiKey,
+        KNOWWEAVE_MODEL_COMPLETIONS_URL: `${settings.modelBaseUrl.replace(/\/+$/, '')}/chat/completions`,
+        KNOWWEAVE_MODEL_MAX_TOKENS: String(settings.modelMaxTokens ?? ''),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
@@ -280,6 +290,10 @@ async function spawnAndWait(): Promise<void> {
 
 export function ensureDshWeb(principal?: Principal): Promise<void> {
   if (!settings.dshWebEnabled) return Promise.resolve()
+  if (!settings.model || !settings.modelBaseUrl || !settings.modelApiKey) {
+    lastError = '请配置 [model] 的 model、base_url 和 api_key'
+    return Promise.resolve()
+  }
   if (principal) bindKnowledgeIdentity(principal)
   // A native knowledge session starts only after an authenticated user opens it.
   if (!knowledgeToken) return Promise.resolve()
@@ -291,10 +305,23 @@ export function ensureDshWeb(principal?: Principal): Promise<void> {
   return starting
 }
 
-/** 主聊天入口使用完整 DSH 原生界面与流式传输。 */
-export function startDshWeb(): void {
+/** 启动预热使用的身份：已有绑定优先，否则取工作区默认所有者。 */
+async function preloadPrincipal(): Promise<Principal | null> {
+  const identity = storedIdentity()
+  if (identity) {
+    const principal = await principalByUserId(identity.tenantId, identity.userId)
+    if (!principal) lastError = '已绑定的对话身份不存在或已停用'
+    return principal
+  }
+  return defaultPrincipal(settings.defaultTenantId)
+}
+
+/** 主聊天入口使用完整 DSH 原生界面；服务启动后即在后台预热，打开对话时直接可用。 */
+export async function startDshWeb(): Promise<void> {
   if (!settings.dshWebEnabled || !settings.dshWebAutoStart) return
-  void ensureDshWeb()
+  const principal = await preloadPrincipal()
+  if (!principal) return
+  await ensureDshWeb(principal)
 }
 
 export async function stopDshWeb(): Promise<void> {

@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs'
 
 import { settings } from './config.js'
 import { closePool, initSchema, seedIfEmpty, query } from './db/index.js'
-import { harness } from './adapters/harness/index.js'
+import { assertModelReady, harness } from './adapters/harness/index.js'
 import { startDshWeb, stopDshWeb } from './adapters/dsh-web/index.js'
 import { startSidecar, stopSidecar } from './adapters/sidecar/index.js'
 import { runReflection } from './core/learning.js'
@@ -11,6 +11,7 @@ import { startIngestWorker, stopIngestWorker } from './core/ingestion.js'
 import { runDailyReflection } from './core/scheduling.js'
 
 async function main(): Promise<void> {
+  await assertModelReady()
   mkdirSync(settings.dataDir, { recursive: true })
   await initSchema()
   if (settings.seedDemo) await seedIfEmpty()
@@ -18,12 +19,16 @@ async function main(): Promise<void> {
   const app = await createServer()
   await app.listen({ host: settings.serverHost, port: settings.serverPort })
 
+  // 对话界面在后台预热，与边车启动并行，用户打开对话页时无需等待进程启动。
+  void startDshWeb().catch((error) => {
+    app.log.warn(`对话服务预热未完成：${error instanceof Error ? error.message : String(error)}`)
+  })
+
   try {
     await startSidecar()
   } catch (error) {
     app.log.warn(`解析边车未就绪：${error instanceof Error ? error.message : String(error)}`)
   }
-  startDshWeb()
   startIngestWorker()
 
   let timer: NodeJS.Timeout | null = null

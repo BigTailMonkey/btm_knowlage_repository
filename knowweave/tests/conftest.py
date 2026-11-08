@@ -11,7 +11,6 @@ from app.config import settings  # noqa: E402
 
 settings.database_url = f"sqlite:///{(_TEST_DIR / 'test.db').as_posix()}"
 settings.seed_demo = True
-settings.harness_enabled = False
 settings.reflection_enabled = False
 
 import pytest  # noqa: E402
@@ -23,19 +22,25 @@ OUTSIDER = {"Authorization": "Bearer outsider-token"}
 AGENT = {"Authorization": "Bearer agent-token"}
 
 
-class DisabledHarness:
-    """Deterministic offline harness: forces extractive answers and rule facts."""
+class StubHarness:
+    """Deterministic model responses for API tests."""
 
-    def complete(self, prompt: str, system: str | None = None, max_tokens: int = 2048):
+    def complete(self, prompt: str, system: str | None = None):
         from app.harness import HarnessResult
 
-        return HarnessResult("", error="model disabled in tests")
+        if prompt == "Reply with OK.":
+            return HarnessResult("OK")
+        if system and "事实抽取器" in system:
+            return HarnessResult("[]")
+        if "向量数据库" in prompt:
+            return HarnessResult("KnoWeave 使用 Qdrant 作为向量索引。[1]")
+        return HarnessResult("KnoWeave 使用 RRF 做检索融合。[1]")
 
     def stream(self, prompt: str, system: str | None = None):
         return iter(())
 
     def health(self) -> dict:
-        return {"adapter": "test-offline", "available": False}
+        return {"adapter": "test-offline", "available": True}
 
 
 class StubEmbedder:
@@ -67,9 +72,10 @@ class StubEmbedder:
 
 @pytest.fixture(scope="session", autouse=True)
 def offline_harness():
-    from app import answering, embeddings, ingestion, learning, retrieval
+    from app import answering, embeddings, harness as model_adapter, ingestion, learning, retrieval
 
-    harness = DisabledHarness()
+    harness = StubHarness()
+    model_adapter.harness = harness
     answering.harness = harness
     learning.harness = harness
     stub = StubEmbedder()

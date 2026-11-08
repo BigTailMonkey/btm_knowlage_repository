@@ -62,6 +62,31 @@ test('requires the entire verbatim quote and assertion terms, not prefix or toke
   assert.equal((await query('SELECT id FROM fact_evidence')).length, 0)
 })
 
+test('an empty or failed model result never produces facts from verb fragments', async () => {
+  const doc = await document('收集和提供风险信息。')
+  harness.complete = async () => modelResult([])
+  assert.equal((await extractFactsForDocument(workspace.principal, doc)).candidates, 0)
+  assert.equal((await queryOne<{ enrichment_status: string }>('SELECT enrichment_status FROM documents'))?.enrichment_status, 'empty')
+
+  harness.complete = async () => ({ ...modelResult([]), text: '', ok: false, error: '模型接口返回 HTTP 401' })
+  await assert.rejects(extractFactsForDocument(workspace.principal, doc), /HTTP 401/)
+  harness.complete = async () => ({ ...modelResult([]), text: '[{"subject":"收集和"' })
+  await assert.rejects(extractFactsForDocument(workspace.principal, doc), /完整的 JSON 数组/)
+  assert.equal((await queryOne<{ enrichment_status: string }>('SELECT enrichment_status FROM documents'))?.enrichment_status, 'failed')
+  assert.equal((await query('SELECT id FROM entities')).length, 0)
+})
+
+test('a model-proposed conjunction fragment is rejected while an intact organization name is kept', async () => {
+  const doc = await document('收集和提供风险信息。协和医院提供随访服务。')
+  harness.complete = async () => modelResult([
+    candidate({ subject: '收集和', predicate: '提供', object: '风险信息', quote: '收集和提供风险信息' }),
+    candidate({ subject: '协和医院', predicate: '提供', object: '随访服务', quote: '协和医院提供随访服务' }),
+  ])
+  assert.equal((await extractFactsForDocument(workspace.principal, doc)).candidates, 1)
+  assert.deepEqual((await query<{ canonical_name: string }>('SELECT canonical_name FROM entities ORDER BY canonical_name'))
+    .map((row) => row.canonical_name), ['协和医院', '随访服务'])
+})
+
 test('single-source and low-confidence candidates await review with exact evidence spans', async () => {
   const doc = await document(`Intro. ${quote} Closing.`)
   harness.complete = async () => modelResult([candidate({ confidence: 0.2 })])

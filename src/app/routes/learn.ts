@@ -3,7 +3,9 @@ import { FastifyInstance } from 'fastify'
 import { authenticate, currentPrincipal } from '../server.js'
 import { query, queryOne } from '../../db/index.js'
 import { entityDict, factDict } from '../../core/serializers.js'
-import { extractFactsForDocument, resolveReview, runReflection } from '../../core/learning.js'
+import { isEntityName, resolveReview, runReflection } from '../../core/learning.js'
+import { processEnrichmentQueue, requestEnrichment } from '../../core/enrichment-queue.js'
+import { DISPLAYABLE_FACT, ENTITY_HAS_DISPLAYABLE_FACT } from '../../core/fact-visibility.js'
 import { ingestParsed } from '../../core/ingestion.js'
 import { parseTextContent } from '../../adapters/parsing/index.js'
 import { canRead, requireAdmin } from '../../core/security.js'
@@ -15,7 +17,7 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
     const principal = currentPrincipal(request)
     const params = request.query as Record<string, string | undefined>
     const limit = Math.min(200, Math.max(1, Number(params.limit ?? 60)))
-    const where = [`tenant_id = $1`, `status = 'active'`]
+    const where = [`e.tenant_id = $1`, `e.status = 'active'`, ENTITY_HAS_DISPLAYABLE_FACT]
     const values: unknown[] = [principal.tenantId]
     if (params.q) {
       values.push(`%${params.q}%`)
@@ -26,17 +28,18 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
       where.push(`type = $${values.length}`)
     }
     const entities = await query<EntityRow>(
-      `SELECT * FROM entities WHERE ${where.join(' AND ')} ORDER BY updated_at DESC LIMIT ${limit}`,
+      `SELECT e.* FROM entities e WHERE ${where.join(' AND ')} ORDER BY e.updated_at DESC LIMIT ${limit}`,
       values,
     )
-    const visible = entities.filter((entity) => canRead(principal, entity.acl_principals))
+    const visible = entities.filter((entity) => isEntityName(entity.canonical_name) && canRead(principal, entity.acl_principals))
     const items = []
     for (const entity of visible) {
       const facts = await query<FactRow>(
-        `SELECT * FROM facts WHERE tenant_id = $1 AND (subject_id = $2 OR object_id = $2)`,
+        `SELECT f.* FROM facts f WHERE f.tenant_id = $1 AND ${DISPLAYABLE_FACT} AND (f.subject_id = $2 OR f.object_id = $2)`,
         [principal.tenantId, entity.id],
       )
-      items.push({ ...entityDict(entity), facts: facts.filter((fact) => canRead(principal, fact.acl_principals)).length })
+      const count = facts.filter((fact) => canRead(principal, fact.acl_principals)).length
+      if (count) items.push({ ...entityDict(entity), facts: count })
     }
     return { items }
   })
@@ -45,12 +48,16 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
     const principal = currentPrincipal(request)
     const { entity_id: entityId } = request.params as { entity_id: string }
     const asOf = (request.query as { as_of?: string }).as_of
-    const entity = await queryOne<EntityRow>('SELECT * FROM entities WHERE id = $1', [entityId])
-    if (!entity || entity.tenant_id !== principal.tenantId || !canRead(principal, entity.acl_principals)) {
+    const entity = await queryOne<EntityRow>(
+      `SELECT e.* FROM entities e WHERE e.id = $1 AND ${ENTITY_HAS_DISPLAYABLE_FACT}`,
+      [entityId],
+    )
+    if (!entity || entity.status === 'retracted' || entity.tenant_id !== principal.tenantId
+      || !isEntityName(entity.canonical_name) || !canRead(principal, entity.acl_principals)) {
       throw Object.assign(new Error('实体不存在或无权访问'), { statusCode: 404 })
     }
     const facts = await query<FactRow>(
-      `SELECT * FROM facts WHERE tenant_id = $1 AND (subject_id = $2 OR object_id = $2)
+      `SELECT f.* FROM facts f WHERE f.tenant_id = $1 AND ${DISPLAYABLE_FACT} AND (f.subject_id = $2 OR f.object_id = $2)
        ORDER BY valid_from, recorded_at`,
       [principal.tenantId, entity.id],
     )
@@ -61,7 +68,9 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
         if (fact.valid_from && String(fact.valid_from).slice(0, 10) > asOf) continue
         if (fact.valid_to && String(fact.valid_to).slice(0, 10) <= asOf) continue
       }
-      items.push(await factDict(fact))
+      const item = await factDict(fact)
+      if (!isEntityName(String(item.subject)) || (fact.object_id && !isEntityName(String(item.object)))) continue
+      items.push(item)
     }
     const documents: Array<{ id: string; title: string; source_type: string }> = []
     for (const docId of new Set(items.map((item) => item.source_doc_id).filter(Boolean))) {
@@ -82,7 +91,7 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
     if (params.status) {
       values.push(params.status)
       where.push(`status = $${values.length}`)
-    }
+    } else where.push(DISPLAYABLE_FACT)
     if (params.subject) {
       const entity = await queryOne<EntityRow>(
         'SELECT * FROM entities WHERE tenant_id = $1 AND canonical_name = $2',
@@ -94,7 +103,7 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
       }
     }
     const facts = await query<FactRow>(
-      `SELECT * FROM facts WHERE ${where.join(' AND ')} ORDER BY recorded_at DESC LIMIT ${limit}`,
+      `SELECT f.* FROM facts f WHERE ${where.join(' AND ')} ORDER BY recorded_at DESC LIMIT ${limit}`,
       values,
     )
     const items = []
@@ -108,20 +117,21 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
     const principal = currentPrincipal(request)
     const limit = Math.min(300, Math.max(10, Number((request.query as { limit?: string }).limit ?? 80)))
     const facts = await query<FactRow>(
-      `SELECT * FROM facts WHERE tenant_id = $1 AND status IN ('active', 'disputed')
+      `SELECT f.* FROM facts f WHERE f.tenant_id = $1 AND f.status IN ('active', 'disputed') AND ${DISPLAYABLE_FACT}
        ORDER BY confidence DESC LIMIT ${limit * 3}`,
       [principal.tenantId],
     )
     const visible = facts.filter((fact) => canRead(principal, fact.acl_principals))
     const nodeIds = new Set<string>()
     const edges = []
-    for (const fact of visible.slice(0, limit)) {
-      nodeIds.add(fact.subject_id)
-      nodeIds.add(fact.object_id ?? fact.subject_id)
+    for (const fact of visible) {
+      if (edges.length >= limit) break
       const subject = await queryOne<EntityRow>('SELECT * FROM entities WHERE id = $1', [fact.subject_id])
       const target = fact.object_id
         ? await queryOne<EntityRow>('SELECT * FROM entities WHERE id = $1', [fact.object_id])
         : null
+      if (!subject || !isEntityName(subject.canonical_name) || !canRead(principal, subject.acl_principals)) continue
+      if (fact.object_id && (!target || !isEntityName(target.canonical_name) || !canRead(principal, target.acl_principals))) continue
       const targetId = fact.object_id ?? `lit_${fact.id}`
       edges.push({
         id: fact.id,
@@ -132,9 +142,8 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
         status: fact.status,
         confidence: fact.confidence,
       })
+      nodeIds.add(fact.subject_id)
       nodeIds.add(targetId)
-      void subject
-      void target
     }
     const nodes = []
     for (const nodeId of nodeIds) {
@@ -192,14 +201,16 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
     if (review.kind === 'memory_promotion') {
       if (review.status !== 'open') throw Object.assign(new Error('审阅项已处理'), { statusCode: 409 })
       const memory = await queryOne<{ id: string; text: string }>(
-        'SELECT id, text FROM memory_items WHERE id = $1',
-        [String(review.payload.memory_id ?? '')],
+        'SELECT id, text FROM memory_items WHERE id = $1 AND tenant_id = $2',
+        [String(review.payload.memory_id ?? ''), principal.tenantId],
       )
       if (['accept_new', 'merge'].includes(payload.action) && memory) {
         const document = await ingestParsed(principal,parseTextContent(memory.text,`审阅记忆 ${memory.id}`),{sourceType:'text',uri:`memory:${memory.id}`,acl:['tenant:public']})
-        await extractFactsForDocument(principal,String(document.document_id))
-        const fact = await queryOne<{ fact_id: string }>('SELECT fact_id FROM fact_evidence WHERE doc_id=$1 ORDER BY id LIMIT 1',[document.document_id])
-        await query('UPDATE memory_items SET promoted_fact_id = $1 WHERE id = $2', [fact?.fact_id ?? null, memory.id])
+        await requestEnrichment(principal, String(document.document_id), undefined, {
+          review_id: reviewId, memory_id: memory.id, action: payload.action, note: payload.note ?? '',
+        })
+        void processEnrichmentQueue().catch(app.log.error.bind(app.log))
+        return { review_id: reviewId, status: 'queued' }
       }
       await query(
         `UPDATE review_queue SET status = 'resolved', resolution = $1::jsonb, resolved_at = now() WHERE id = $2`,

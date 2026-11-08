@@ -34,8 +34,8 @@ EXTRACT_SYSTEM = """你是 KnoWeave 的事实抽取器。只抽取原文明确�
 subject, subject_type(product|org|person|concept|event), predicate, object,
 object_type, object_literal, valid_from(YYYY-MM-DD 或 null), valid_to(YYYY-MM-DD 或 null),
 confidence(0-1), quote(必须逐字来自原文，不超过120字)。
-规则：谓词用简短中文动词短语；不要抽取常识、推测、代词指代；最多 12 条；
-数字、日期、版本必须保留；没有明确主语时不要抽取。"""
+规则：最多 8 条，主体和实体型宾语必须是完整的名称或名词短语。排除连词结尾的动作片段和代词。
+数字、日期、版本必须保留；没有明确主语时跳过，没有符合条件的事实时返回 []。"""
 
 
 def normalize_name(name: str) -> str:
@@ -183,9 +183,14 @@ def extract_candidates(
         f"来源类型：{document.source_type}\n\n原文：\n{text}\n\n"
         "请输出 JSON 数组。"
     )
-    result = harness.complete(prompt, system=EXTRACT_SYSTEM, max_tokens=1600)
+    result = harness.complete(prompt, system=EXTRACT_SYSTEM)
+    if not result.ok:
+        raise ValueError(result.error or "模型不可用")
+    items = parse_json_array(result.text)
+    if items is None:
+        raise ValueError("模型未返回完整的 JSON 数组")
     candidates: list[Candidate] = []
-    for item in parse_json_array(result.text):
+    for item in items:
         subject = str(item.get("subject") or "").strip()
         predicate = str(item.get("predicate") or "").strip()
         obj = str(item.get("object") or "").strip()
@@ -211,63 +216,6 @@ def extract_candidates(
                 chunk_id=chunk.id if chunk else None,
             )
         )
-    if candidates:
-        return candidates
-    return rule_extract_candidates(text, chunks)
-
-
-def rule_extract_candidates(text: str, chunks: list[Chunk]) -> list[Candidate]:
-    """Deterministic fallback so ingestion still produces facts without an LLM."""
-    pattern = re.compile(
-        r"([\u4e00-\u9fffA-Za-z0-9·\-]{2,24})"
-        r"(采用|使用|基于|依赖|支持|提供|发布|推出|属于|位于|成立于|由)"
-        r"([^，。；：\n]{2,40})"
-    )
-    candidates: list[Candidate] = []
-    seen: set[tuple[str, str]] = set()
-    for sentence in re.split(r"[。！？!?；;\n]", text):
-        sentence = sentence.strip()
-        if len(sentence) < 10:
-            continue
-        for match in pattern.finditer(sentence):
-            subject, predicate, obj = (
-                match.group(1).strip(),
-                match.group(2).strip(),
-                match.group(3).strip(),
-            )
-            if subject in {"我们", "本系统", "该系统", "它"} or len(obj) < 2:
-                continue
-            key = (normalize_name(subject), predicate + "|" + normalize_name(obj))
-            if key in seen:
-                continue
-            seen.add(key)
-            chunk = None
-            best_score = 0.0
-            for candidate_chunk in chunks:
-                if match.group(0) in candidate_chunk.text:
-                    chunk = candidate_chunk
-                    break
-                score = len(set(tokenize(sentence)) & set(tokenize(candidate_chunk.text)))
-                if score > best_score:
-                    best_score = score
-                    chunk = candidate_chunk
-            candidates.append(
-                Candidate(
-                    subject=subject[:120],
-                    subject_type="product" if re.search(r"[A-Za-z]", subject) else "concept",
-                    predicate=predicate,
-                    object_name=obj[:120],
-                    object_type="product" if re.search(r"[A-Za-z]", obj) else "concept",
-                    object_literal=obj[:200],
-                    valid_from=None,
-                    valid_to=None,
-                    confidence=0.52,
-                    quote=sentence[:180],
-                    chunk_id=chunk.id if chunk else None,
-                )
-            )
-            if len(candidates) >= 8:
-                return candidates
     return candidates
 
 
@@ -445,7 +393,12 @@ def extract_facts_for_document(db: Session, principal: Principal, doc_id: str) -
     document.enrichment_status = "running"
     db.commit()
     started = datetime.now(timezone.utc)
-    candidates = extract_candidates(db, principal, document, version)
+    try:
+        candidates = extract_candidates(db, principal, document, version)
+    except ValueError as error:
+        document.enrichment_status = "failed"
+        db.commit()
+        return {"document_id": doc_id, "error": str(error)}
     counts = {"created": 0, "merged": 0, "superseded": 0, "disputed": 0}
     for candidate in candidates:
         outcome = _merge_or_arbitrate(db, principal, document, candidate)

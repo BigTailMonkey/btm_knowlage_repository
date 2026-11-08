@@ -17,7 +17,7 @@ const state = {
   activeEntity: null,
   opsTab: "traces",
   harness: null,
-  file: null,
+  ingestFiles: [],
   ingestDocumentId: null,
   aclOptions: null,
   jobs: [],
@@ -206,6 +206,7 @@ function loadingLines() {
 /* ============ Shell ============ */
 function showPage(page) {
   if (!PAGE_META[page]) page = "chat";
+  if (state.page === "chat" && page !== "chat") closeChatCitation();
   state.page = page;
   document.body.dataset.page = page;
   $$(".nav-item").forEach((item) => {
@@ -427,6 +428,8 @@ function docQuery() {
 const JOB_POLL_MS = 1500;
 let jobPollTimer = null;
 let jobStatusCache = null;
+let activeExtractions = new Set();
+let extractionRetrying = false;
 
 function stopJobPoll() {
   if (jobPollTimer) {
@@ -458,9 +461,11 @@ async function loadIngestJobs() {
     stopJobPoll();
     return;
   }
-  try {
-    const data = await api("/documents/jobs");
-    state.jobs = data.items;
+  const token = state.token;
+  const [ingest, extraction] = await Promise.allSettled([api("/documents/jobs"), api("/documents/extractions")]);
+  if (state.page !== "library" || state.token !== token) return;
+  if (ingest.status === "fulfilled") {
+    state.jobs = ingest.value.items;
     renderIngestJobs();
     const current = new Map(state.jobs.map((job) => [job.job_id, job.status]));
     if (jobStatusCache) {
@@ -470,7 +475,8 @@ async function loadIngestJobs() {
           const job = state.jobs.find((item) => item.job_id === id);
           if (!job) return;
           if (status === "done") {
-            toast(job.duplicate ? "内容与已有版本相同，未重复入库" : `已接入 ${num(job.chunks)} 个检索单元 · v${job.version}`);
+            if (job.error) toast(`文档已入库，${job.error}`);
+            else toast(job.duplicate ? "内容与已有版本相同，未重复入库" : `已接入 ${num(job.chunks)} 个检索单元 · v${job.version}`);
             loadDocs();
             loadDashboard();
           } else {
@@ -480,12 +486,58 @@ async function loadIngestJobs() {
       });
     }
     jobStatusCache = current;
-    const hasActive = state.jobs.some((job) => job.status === "pending" || job.status === "running");
-    if (hasActive) scheduleJobPoll();
-    else stopJobPoll();
-  } catch (error) {
-    stopJobPoll();
   }
+  if (extraction.status === "fulfilled") {
+    const extractions = extraction.value;
+    const nextActive = new Set(extractions.items.filter(task => task.status !== "failed").map(task => task.id));
+    if ([...activeExtractions].some(id => !nextActive.has(id))) loadDocs();
+    activeExtractions = nextActive;
+    renderExtractionJobs(extractions);
+  } else {
+    const box = $("#extraction-jobs");
+    if (box) {
+      box.hidden = false;
+      box.textContent = `无法加载抽取任务：${extraction.reason.message}`;
+    }
+  }
+  const hasActive = activeExtractions.size || state.jobs.some((job) => job.status === "pending" || job.status === "running");
+  const transient = [ingest, extraction].some(result => result.status === "rejected" && (!result.reason.status || result.reason.status >= 500));
+  if (hasActive || transient) scheduleJobPoll();
+  else stopJobPoll();
+}
+
+function renderExtractionJobs({ items, can_retry }) {
+  const box = $("#extraction-jobs");
+  if (!box) return;
+  box.hidden = !items.length;
+  const failures = items.filter(task => task.status === "failed");
+  box.innerHTML = items.length ? `
+    <div class="toolbar">
+      <strong>事实与实体抽取</strong>
+      ${can_retry && failures.length ? `<button class="btn sm" data-extraction-retry="" ${extractionRetrying ? "disabled" : ""}>重试全部失败项（${num(failures.length)}）</button>` : ""}
+    </div>
+    ${items.map(task => `
+      <div class="job-card${task.status === "failed" ? " failed" : ""}">
+        <div class="job-line"><strong class="job-title">${esc(task.title)} · v${num(task.version)}</strong>
+          <span class="job-stage">${task.status === "failed" ? "抽取失败" : task.status === "running" ? "抽取中" : "等待抽取"}</span>
+        </div>
+        ${task.status === "failed" ? `<p class="muted small">${esc(task.error || "上次抽取失败，可重试。")}</p>
+          ${can_retry ? `<button class="text-btn" data-extraction-retry="${esc(task.id)}" ${extractionRetrying ? "disabled" : ""}>重试抽取</button>` : ""}` : ""}
+      </div>`).join("")}` : "";
+  $$("[data-extraction-retry]", box).forEach(button => button.addEventListener("click", async () => {
+    if (extractionRetrying) return;
+    extractionRetrying = true;
+    const id = button.dataset.extractionRetry;
+    renderExtractionJobs({ items, can_retry });
+    try {
+      const result = await api("/documents/extractions/retry", { method: "POST", body: id ? { document_ids: [id] } : {} });
+      toast(result.queued ? `已提交 ${num(result.queued)} 项抽取重试` : "没有可重试的失败项");
+    } catch (error) { toast(error.message); }
+    finally {
+      extractionRetrying = false;
+      await loadIngestJobs();
+    }
+  }));
 }
 
 function renderIngestJobs() {
@@ -689,6 +741,7 @@ async function openDoc(docId, citation = null) {
 
       <div class="section">
         <h3>事实层</h3>
+        ${data.review_only_facts ? `<p class="muted small">${num(data.review_only_facts)} 条低置信度候选仅供审阅。</p>` : ""}
         ${data.facts.length ? data.facts.map((fact) => `
           <div class="fact-item">
             <div class="fact-line">${esc(fact.subject)} <span class="pred">${esc(fact.predicate)}</span> <span class="obj">${esc(fact.object || "")}</span></div>
@@ -711,6 +764,7 @@ async function openDoc(docId, citation = null) {
       <div class="section">
         <h3>关联实体</h3>
         ${enrichmentLabel ? `<p class="muted small">${esc(enrichmentLabel)}</p>` : ""}
+        ${doc.enrichment_status === "failed" && doc.enrichment_error ? `<p class="muted small">${esc(doc.enrichment_error)}</p>` : ""}
         <div class="pill-row">${data.entities.length ? data.entities.map((entity) => `<span class="pill">${esc(entity.name)}</span>`).join("") : enrichmentLabel ? "" : `<span class="muted small">暂无</span>`}</div>
       </div>`;
     $$("[data-doc-action]", $("#doc-dialog-body")).forEach((button) => {
@@ -753,6 +807,8 @@ async function handleDocAction(action, docId, button) {
     try {
       await api(`/documents/${docId}/reprocess`, { method: "POST" });
       toast("已排入事实抽取队列");
+      void loadIngestJobs();
+      await openDoc(docId);
     } catch (error) {
       toast(error.message);
     } finally {
@@ -980,18 +1036,43 @@ function selectIngestTab(type) {
   $("#ingest-url-form").hidden = type !== "url";
 }
 
+function renderIngestFiles() {
+  const { ingestFiles, ingestDocumentId } = state;
+  const count = ingestFiles.length;
+  const list = $("#ingest-files");
+  $("#file-drop-label").textContent = count ? `已选 ${num(count)} 份文件，点击重选` : "选择文件";
+  $("#file-drop-hint").textContent = ingestDocumentId ? "选择或拖入一份文件" : "可多选或拖入多个文件";
+  $("#file-title-field").hidden = count > 1;
+  $("#file-batch-hint").hidden = count <= 1;
+  list.hidden = count === 0;
+  list.innerHTML = ingestFiles.map(({ file, error }) =>
+    `<li>${esc(file.name)}${error ? `<span class="ingest-file-error">${esc(error)}</span>` : ""}</li>`
+  ).join("");
+  $("#file-submit").textContent = ingestFiles.some((item) => item.error) ? "重试提交" : count > 1 ? "批量接入" : "接入";
+}
+
+function setIngestFileStatus(message) {
+  const status = $("#file-submit-status");
+  status.textContent = message;
+  status.hidden = !message;
+}
+
 function resetIngest() {
   state.ingestDocumentId = null;
-  state.file = null;
+  state.ingestFiles = [];
+  $("#file-input").multiple = true;
   $("#ingest-title").textContent = "添加文档";
   for (const type of ["file", "text", "url"]) $("#ingest-" + type + "-form").reset();
   $$("[data-acl-picker]").forEach((picker) => aclPickerState.get(picker)?.reset());
-  $("#file-drop-label").textContent = "选择文件";
+  setIngestFileStatus("");
+  renderIngestFiles();
 }
 
 function openIngest(doc = null) {
   resetIngest();
   state.ingestDocumentId = doc?.id || null;
+  $("#file-input").multiple = !state.ingestDocumentId;
+  renderIngestFiles();
   $("#ingest-title").textContent = doc ? "更新文档" : "添加文档";
   for (const type of ["file", "text", "url"]) $("#" + type + "-title").value = doc?.title || "";
   if (doc?.source_type === "web") $("#url-input").value = doc.uri || "";
@@ -1013,53 +1094,85 @@ function setupIngest() {
   });
 
   $("#open-ingest").addEventListener("click", () => openIngest());
-  $("#ingest-dialog").addEventListener("close", resetIngest);
-
+  const dialog = $("#ingest-dialog");
+  const closeButton = $("[data-close]", dialog);
+  const tabs = $("#ingest-tabs");
   const fileInput = $("#file-input");
-  const dropLabel = $("#file-drop-label");
-  const applyFileTitle = (file) => {
-    const name = file?.name || "";
-    const dot = name.lastIndexOf(".");
-    $("#file-title").value = dot > 0 ? name.slice(0, dot) : name;
-  };
-  fileInput.addEventListener("change", () => {
-    state.file = fileInput.files?.[0] || null;
-    dropLabel.textContent = state.file ? state.file.name : "选择文件";
-    if (state.file) applyFileTitle(state.file);
+  const fileDrop = $("#file-drop");
+  const fileFields = $("#ingest-file-fields");
+  const fileSubmit = $("#file-submit");
+
+  dialog.addEventListener("close", resetIngest);
+  dialog.addEventListener("cancel", (event) => {
+    if (fileSubmit.disabled) event.preventDefault();
   });
-  ["dragenter", "dragover"].forEach((event) => $("#file-drop").addEventListener(event, (e) => { e.preventDefault(); }));
-  $("#file-drop").addEventListener("drop", (event) => {
+  const selectFiles = (files) => {
+    if (fileSubmit.disabled || !files?.length) return;
+    if (state.ingestDocumentId && files.length > 1) {
+      setIngestFileStatus("更新文档时请选择一份文件。");
+      return;
+    }
+    state.ingestFiles = Array.from(files, (file) => ({ file }));
+    const name = files.length === 1 ? files[0].name : "";
+    $("#file-title").value = name.replace(/\.[^.]*$/, "") || name;
+    setIngestFileStatus("");
+    renderIngestFiles();
+  };
+
+  fileDrop.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", () => {
+    selectFiles(fileInput.files);
+    fileInput.value = "";
+  });
+  dialog.addEventListener("dragover", (event) => event.preventDefault());
+  dialog.addEventListener("drop", (event) => event.preventDefault());
+  fileDrop.addEventListener("drop", (event) => {
     event.preventDefault();
-    const file = event.dataTransfer.files?.[0];
-    if (!file) return;
-    state.file = file;
-    fileInput.files = event.dataTransfer.files;
-    dropLabel.textContent = file.name;
-    applyFileTitle(file);
+    selectFiles(event.dataTransfer.files);
   });
 
   $("#ingest-file-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (!state.file) { toast("先选择文件"); return; }
-    const button = event.submitter;
-    const form = new FormData();
-    if (state.ingestDocumentId) form.append("doc_id", state.ingestDocumentId);
-    const title = $("#file-title").value.trim();
+    if (fileSubmit.disabled) return;
+    const { ingestFiles, ingestDocumentId } = state;
+    const count = ingestFiles.length;
+    if (!count) { setIngestFileStatus("请先选择文件。"); return; }
+    const title = count === 1 ? $("#file-title").value.trim() : "";
     const acl = (ingestAcl($("#file-acl")) || []).join(",");
-    if (title) form.append("title", title);
-    if (acl) form.append("acl", acl);
-    form.append("file", state.file);
-    setBusy(button, true, "提交中");
+    const failures = [];
+    setBusy(fileSubmit, true, "提交中");
+    fileFields.inert = tabs.inert = closeButton.disabled = true;
     try {
-      const result = await api("/documents/upload", { method: "POST", body: form });
-      closeIngest();
-      toast("已提交，正在后台处理");
-      trackIngestJob(result);
-    } catch (error) {
-      toast(error.message);
+      for (const [index, { file }] of ingestFiles.entries()) {
+        setIngestFileStatus(`正在提交 ${index + 1} / ${count} 份文件…`);
+        let job;
+        try {
+          if (file.size === 0) throw new Error("文件为空");
+          if (file.size > 30 * 1024 * 1024) throw new Error("文件超过 30 MB");
+          const form = new FormData();
+          if (ingestDocumentId) form.append("doc_id", ingestDocumentId);
+          if (title) form.append("title", title);
+          if (acl) form.append("acl", acl);
+          form.append("file", file);
+          job = await api("/documents/upload", { method: "POST", body: form });
+        } catch (error) {
+          failures.push({ file, error: error.message });
+          continue;
+        }
+        trackIngestJob(job);
+      }
     } finally {
-      setBusy(button, false);
+      fileFields.inert = tabs.inert = closeButton.disabled = false;
+      setBusy(fileSubmit, false);
     }
+    if (!failures.length) {
+      closeIngest();
+      toast(count === 1 ? "已提交，正在后台处理" : `已提交 ${num(count)} 份文件，正在后台处理`);
+      return;
+    }
+    state.ingestFiles = failures;
+    renderIngestFiles();
+    setIngestFileStatus(`已提交 ${num(count - failures.length)} 份，${num(failures.length)} 份提交失败。`);
   });
 
   $("#ingest-text-form").addEventListener("submit", async (event) => {
@@ -1161,8 +1274,255 @@ function chatWhen(value) {
 let nativeChatTimer = null;
 let nativeChatLoading = false;
 let nativeChatGeneration = 0;
+let chatCitation = null;
+
+function releasePdf(preview) {
+  preview.observer?.disconnect();
+  preview.observer = null;
+  const task = preview.pdfTask;
+  preview.pdfTask = null;
+  preview.pdf = null;
+  if (task) void task.destroy().catch(() => undefined);
+  if (preview.url) URL.revokeObjectURL(preview.url);
+  preview.url = null;
+}
+
+function closeChatCitation() {
+  if (chatCitation) {
+    chatCitation.controller.abort();
+    releasePdf(chatCitation);
+    chatCitation = null;
+  }
+  $("#chat-citation").hidden = true;
+  $("#chat-citation-body").textContent = "";
+}
+
+let pdfjsModule = null;
+function loadPdfjs() {
+  pdfjsModule ??= import("/vendor/pdfjs/build/pdf.min.mjs").then((lib) => {
+    lib.GlobalWorkerOptions.workerSrc = "/vendor/pdfjs/build/pdf.worker.min.mjs";
+    return lib;
+  });
+  return pdfjsModule;
+}
+
+function pdfFlatText(value) {
+  return String(value ?? "").replace(/\s+/g, "");
+}
+
+function pdfMergeRects(rects) {
+  const lines = [];
+  for (const rect of rects.sort((a, b) => a.top - b.top || a.left - b.left)) {
+    const line = lines.find((item) => Math.abs(item.top - rect.top) <= Math.max(2, Math.min(item.height, rect.height) * 0.5));
+    if (!line) {
+      lines.push({ ...rect });
+      continue;
+    }
+    const right = Math.max(line.left + line.width, rect.left + rect.width);
+    line.left = Math.min(line.left, rect.left);
+    line.top = Math.min(line.top, rect.top);
+    line.height = Math.max(line.height, rect.height);
+    line.width = right - line.left;
+  }
+  return lines;
+}
+
+// PDF 文本层按字符定位引用，不依赖解析器是否给出 bbox；同一行的字符合并为一条高亮。
+function pdfHighlightRects(textContent, viewport, lib, quote) {
+  const items = textContent.items.filter((item) => item.str && item.str.trim());
+  if (!items.length || !quote) return [];
+  let pageText = "";
+  const owners = [];
+  for (let index = 0; index < items.length; index += 1) {
+    const value = pdfFlatText(items[index].str);
+    pageText += value;
+    for (let offset = 0; offset < value.length; offset += 1) owners.push(index);
+  }
+  for (const size of [60, 32, 16, 8]) {
+    const needle = quote.slice(0, size);
+    if (needle.length < 6) break;
+    const at = pageText.indexOf(needle);
+    if (at < 0) continue;
+    const rects = [];
+    for (const index of new Set(owners.slice(at, at + needle.length))) {
+      const item = items[index];
+      const tx = lib.Util.transform(viewport.transform, item.transform);
+      const height = Math.hypot(tx[2], tx[3]);
+      rects.push({ left: tx[4], top: tx[5] - height, width: item.width * viewport.scale, height });
+    }
+    return pdfMergeRects(rects);
+  }
+  return [];
+}
+
+async function renderPdfPage(preview, entry, body) {
+  if (entry.rendered) return;
+  if (entry.rendering) return entry.rendering;
+  entry.rendering = (async () => {
+    const lib = await loadPdfjs();
+    const page = await preview.pdf.getPage(entry.number);
+    if (chatCitation !== preview) return;
+    const base = page.getViewport({ scale: 1 });
+    const width = entry.page.clientWidth || body.clientWidth || 480;
+    const scale = width / base.width;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const viewport = page.getViewport({ scale: scale * dpr });
+    entry.canvas.width = Math.floor(viewport.width);
+    entry.canvas.height = Math.floor(viewport.height);
+    await page.render({ canvasContext: entry.canvas.getContext("2d"), viewport }).promise;
+    if (chatCitation !== preview) return;
+    entry.page.style.aspectRatio = `${base.width} / ${base.height}`;
+    entry.page.classList.add("is-rendered");
+    entry.rendered = true;
+    if (entry.number !== (Number(preview.data.page) || 0)) return;
+    const cssViewport = page.getViewport({ scale });
+    const quote = pdfFlatText(preview.data.chunks[0]?.text);
+    const rects = pdfHighlightRects(await page.getTextContent(), cssViewport, lib, quote);
+    for (const rect of rects) {
+      const mark = document.createElement("span");
+      mark.className = "pdf-citation-highlight";
+      mark.style.left = `${Math.max(0, rect.left)}px`;
+      mark.style.top = `${Math.max(0, rect.top)}px`;
+      mark.style.width = `${Math.max(2, rect.width)}px`;
+      mark.style.height = `${Math.max(2, rect.height)}px`;
+      entry.overlay.append(mark);
+    }
+    if (rects.length) {
+      const bodyBox = body.getBoundingClientRect();
+      const pageBox = entry.page.getBoundingClientRect();
+      body.scrollTo({ top: body.scrollTop + pageBox.top - bodyBox.top + rects[0].top - 12, behavior: "smooth" });
+    }
+  })().catch(() => {
+    entry.page.classList.add("is-failed");
+  }).finally(() => {
+    entry.rendering = null;
+  });
+  return entry.rendering;
+}
+
+async function renderPdfInto(preview, body) {
+  const lib = await loadPdfjs();
+  if (chatCitation !== preview) return;
+  preview.pdfTask ??= lib.getDocument({
+    url: preview.url,
+    cMapUrl: "/vendor/pdfjs/cmaps/",
+    cMapPacked: true,
+    standardFontDataUrl: "/vendor/pdfjs/standard_fonts/",
+  });
+  const pdf = await preview.pdfTask.promise;
+  if (chatCitation !== preview) return;
+  preview.pdf = pdf;
+  const first = await pdf.getPage(1);
+  if (chatCitation !== preview || $("#chat-citation-file").getAttribute("aria-pressed") !== "true") return;
+  const base = first.getViewport({ scale: 1 });
+  const cited = Number(preview.data.page) || 0;
+  const pages = document.createElement("div");
+  pages.className = "pdf-pages";
+  const entries = [];
+  for (let number = 1; number <= pdf.numPages; number += 1) {
+    const page = document.createElement("div");
+    page.className = "pdf-page";
+    page.dataset.page = String(number);
+    page.style.aspectRatio = `${base.width} / ${base.height}`;
+    const canvas = document.createElement("canvas");
+    const overlay = document.createElement("div");
+    overlay.className = "pdf-highlights";
+    page.append(canvas, overlay);
+    pages.append(page);
+    entries.push({ number, page, canvas, overlay, rendered: false, rendering: null });
+  }
+  if (cited) entries[cited - 1]?.page.classList.add("is-cited");
+  body.replaceChildren(pages);
+  body.setAttribute("aria-busy", "false");
+
+  preview.observer?.disconnect();
+  const observer = new IntersectionObserver((records) => {
+    for (const record of records) {
+      if (!record.isIntersecting) continue;
+      const entry = entries[Number(record.target.dataset.page) - 1];
+      if (entry) void renderPdfPage(preview, entry, body);
+    }
+  }, { root: body, rootMargin: "320px 0px" });
+  preview.observer = observer;
+  entries.forEach((entry) => observer.observe(entry.page));
+  if (cited) entries[cited - 1]?.page.scrollIntoView({ block: "start" });
+}
+
+function showChatCitationText(preview, note = "") {
+  preview.observer?.disconnect();
+  preview.observer = null;
+  const body = $("#chat-citation-body");
+  const chunk = preview.data.chunks[0];
+  const ranges = sourceRanges(preview.data, { chunk_id: chunk?.id, quote: chunk?.text });
+  body.innerHTML = `${note ? `<p class="empty-block">${esc(note)}</p>` : ""}
+    <pre class="doc-source">${sourceHtml(preview.data.source.text, ranges) || "暂无可读文本"}</pre>`;
+  body.setAttribute("aria-busy", "false");
+  $("#chat-citation-file").setAttribute("aria-pressed", "false");
+  $("#chat-citation-text").setAttribute("aria-pressed", "true");
+  $("#source-highlight-target", body)?.scrollIntoView({ block: "center" });
+}
+
+async function showChatCitationFile(preview) {
+  const body = $("#chat-citation-body");
+  $("#chat-citation-file").setAttribute("aria-pressed", "true");
+  $("#chat-citation-text").setAttribute("aria-pressed", "false");
+  body.setAttribute("aria-busy", "true");
+  body.innerHTML = loadingLines();
+  try {
+    preview.file ??= (async () => {
+      const response = await fetch(`${API}${preview.path}&format=pdf`, {
+        headers: { Authorization: `Bearer ${state.token}` },
+        signal: preview.controller.signal,
+      });
+      if (!response.ok || response.headers.get("Content-Type")?.split(";")[0] !== "application/pdf") {
+        throw new Error("版式预览暂不可用，已显示引用文本。");
+      }
+      const blob = await response.blob();
+      preview.controller.signal.throwIfAborted();
+      preview.url = URL.createObjectURL(blob);
+    })();
+    await preview.file;
+    if (chatCitation !== preview || $("#chat-citation-file").getAttribute("aria-pressed") !== "true") return;
+    await renderPdfInto(preview, body);
+  } catch {
+    preview.file = null;
+    releasePdf(preview);
+    if (chatCitation === preview && $("#chat-citation-file").getAttribute("aria-pressed") === "true") {
+      showChatCitationText(preview, "版式预览暂不可用，已显示引用文本。");
+    }
+  }
+}
+
+async function openChatCitation(docId, versionId, chunkId) {
+  closeChatCitation();
+  const params = new URLSearchParams({ chunk_id: chunkId ?? "" });
+  const path = `/documents/${docId}/citation/${versionId}?${params}`;
+  const preview = chatCitation = { controller: new AbortController(), path };
+  const body = $("#chat-citation-body");
+  $("#chat-citation").hidden = false;
+  $("#chat-citation-title").textContent = "引用原文";
+  $("#chat-citation-meta").textContent = "";
+  $("#chat-citation-toolbar").hidden = true;
+  body.setAttribute("aria-busy", "true");
+  body.innerHTML = loadingLines();
+  try {
+    preview.data = await api(path, { signal: preview.controller.signal });
+    if (chatCitation !== preview) return;
+    const { title, version, page, file_type: fileType } = preview.data;
+    $("#chat-citation-title").textContent = title;
+    $("#chat-citation-meta").textContent = page ? `v${version} · 第 ${page} 页` : `v${version}`;
+    $("#chat-citation-toolbar").hidden = !fileType;
+    if (fileType) await showChatCitationFile(preview);
+    else showChatCitationText(preview);
+  } catch (error) {
+    if (chatCitation !== preview) return;
+    body.setAttribute("aria-busy", "false");
+    body.innerHTML = `<p class="empty-block">${esc(error.message)}</p>`;
+  }
+}
 
 function resetNativeChat() {
+  closeChatCitation();
   nativeChatGeneration += 1;
   nativeChatLoading = false;
   clearTimeout(nativeChatTimer);
@@ -1207,6 +1567,25 @@ async function loadChat() {
 }
 
 function setupChat() {
+  $("#chat-citation-close").addEventListener("click", closeChatCitation);
+  $("#chat-citation-file").addEventListener("click", () => {
+    if (chatCitation?.data?.file_type) void showChatCitationFile(chatCitation);
+  });
+  $("#chat-citation-text").addEventListener("click", () => {
+    if (chatCitation?.data) showChatCitationText(chatCitation);
+  });
+  window.addEventListener("message", (event) => {
+    const frame = $("#native-chat-frame");
+    if (state.page !== "chat" || frame.hidden || event.source !== frame.contentWindow ||
+        event.origin !== new URL(frame.src, location.href).origin) return;
+    if (event.data?.type === "knowweave:new-conversation") {
+      closeChatCitation();
+      return;
+    }
+    if (event.data?.type !== "knowweave:open-citation" || typeof event.data.path !== "string") return;
+    const citation = /^\/([\w-]{1,100})\/([\w-]{1,100})(?:\/([\w-]{1,100}))?$/.exec(event.data.path);
+    if (citation) void openChatCitation(citation[1], citation[2], citation[3]);
+  });
   $("#native-chat-retry").addEventListener("click", () => {
     resetNativeChat();
     return loadChat();
@@ -1423,11 +1802,14 @@ function askPayload(question, conversationId = null) {
   return payload;
 }
 
-async function runAsk() {
+async function runAsk(retryPayload = null) {
   const input = $("#question");
-  const question = input.value.trim();
+  const question = retryPayload?.question ?? input.value.trim();
   if (!question) { toast("问题不能为空"); return; }
   const button = $("#ask-btn");
+  if (button.disabled) return;
+  const token = state.token;
+  const payload = retryPayload ?? askPayload(question, state.conversationId);
   $(".ask-layout").classList.remove("is-empty");
   setBusy(button, true, "检索中");
   $("#ask-result").innerHTML = `<article class="answer answer-loading">${loadingLines()}</article>`;
@@ -1435,7 +1817,8 @@ async function runAsk() {
   $("#evidence-count").textContent = "";
   $("#evidence-body").innerHTML = loadingLines();
   try {
-    const result = await api("/ask", { method: "POST", body: askPayload(question, state.conversationId) });
+    const result = await api("/ask", { method: "POST", body: payload });
+    if (state.token !== token) return;
     state.lastAsk = result;
     state.conversationId = result.conversation_id;
     renderAsk(result, question);
@@ -1444,7 +1827,9 @@ async function runAsk() {
     loadConversations();
     loadDashboard();
   } catch (error) {
-    $("#ask-result").innerHTML = `<article class="answer"><div class="answer-error">${esc(error.message)}</div></article>`;
+    if (state.token !== token) return;
+    $("#ask-result").innerHTML = `<article class="answer"><div class="answer-error">${esc(error.message)}</div><button class="btn" id="retry-ask" type="button">重试这次提问</button></article>`;
+    $("#retry-ask").addEventListener("click", () => runAsk(payload));
     $("#evidence-body").innerHTML = `<div class="rail-empty">暂无证据</div>`;
     $(".ask-layout").classList.add("is-empty");
     toast(error.message);
@@ -2131,6 +2516,7 @@ async function loadReview() {
           </div>
           <h2 class="review-title">${esc(item.title)}</h2>
           <p class="review-reason">${esc(item.payload?.reason || "无")}</p>
+          ${item.payload?.model_error ? `<p class="review-reason">${esc(item.payload.model_error)}</p>` : ""}
           ${item.payload?.new_object !== undefined ? `<div class="conflict">
             <div class="conflict-cell">
               <span class="label">本次候选</span>
@@ -2146,7 +2532,7 @@ async function loadReview() {
         </div>
         <div class="review-actions">
           ${item.kind === 'parse_failure' ? `<button class="btn primary" data-review-job="${esc(item.payload?.job_id)}">修正文并重试</button>` : `
-          <button class="btn primary" data-review="${esc(item.id)}" data-action="accept_new">采纳本次</button>
+          <button class="btn primary" data-review="${esc(item.id)}" data-action="accept_new">${item.payload?.model_error ? "重试抽取并采纳" : "采纳本次"}</button>
           <button class="btn" data-review="${esc(item.id)}" data-action="reject_new">保留既有</button>
           <button class="btn" data-review="${esc(item.id)}" data-action="merge">合并证据</button>
           <button class="btn" data-review="${esc(item.id)}" data-action="dispute">维持争议</button>`}
@@ -2172,8 +2558,8 @@ async function resolveReview(reviewId, action, button) {
   const labels = { accept_new: "采纳中", reject_new: "保留中", merge: "合并中", dispute: "标记中" };
   setBusy(button, true, labels[action] || "处理中");
   try {
-    await api(`/review/${reviewId}/resolve`, { method: "POST", body: { action, note: "" } });
-    toast("审阅项已处理");
+    const result = await api(`/review/${reviewId}/resolve`, { method: "POST", body: { action, note: "" } });
+    toast(result.status === "queued" ? "已提交抽取，可在知识库查看进度" : "审阅项已处理");
     loadReview();
     loadDashboard();
   } catch (error) {
@@ -2426,6 +2812,7 @@ async function loadEvals() {
         <button class="btn" id="import-eval">导入用例</button><button class="btn primary" id="run-eval">运行评测</button>
       </div>
       <div id="eval-result"></div>
+      <div id="eval-failures"></div>
       <div class="table-wrap" style="margin-top:14px">
         <table class="table">
           <thead><tr><th scope="col">问题</th><th scope="col">期望文档</th><th scope="col">期望关键词</th><th scope="col">类型</th></tr></thead>
@@ -2439,7 +2826,8 @@ async function loadEvals() {
         </table>
       </div>
     </section>`;
-    $("#run-eval").addEventListener("click", runEvals);
+    $("#run-eval").addEventListener("click", () => runEvals());
+    void loadEvalFailures();
     $("#import-eval").addEventListener("click", async () => {
       const text = prompt("粘贴评测用例JSON数组（question、expected_docs、expected_keywords、should_refuse）：");
       if (!text) return;
@@ -2458,11 +2846,37 @@ async function loadEvals() {
   }
 }
 
-async function runEvals() {
-  const button = $("#run-eval");
+async function loadEvalFailures() {
+  const target = $("#eval-failures");
+  if (!target || !["owner", "admin"].includes(state.me?.role)) return;
+  try {
+    const { items } = await api("/evals/failures");
+    target.innerHTML = items.length ? `
+      <div class="toolbar"><strong>评测执行失败（${num(items.length)}）</strong>
+        <button class="btn sm" data-eval-retry="">重试全部失败项</button>
+      </div>
+      ${items.map(item => `<div class="job-card failed">
+        <strong>${esc(item.question)}</strong><p class="muted small">${esc(item.error)}</p>
+        <button class="text-btn" data-eval-retry="${esc(item.case_id)}">重试此题</button>
+      </div>`).join("")}` : "";
+    $$("[data-eval-retry]", target).forEach(button => button.addEventListener("click", () => {
+      const id = button.dataset.evalRetry;
+      void runEvals(id ? [id] : items.map(item => item.case_id), button);
+    }));
+  } catch (error) {
+    target.textContent = error.message;
+  }
+}
+
+let evalRunning = false;
+async function runEvals(caseIds, button = $("#run-eval")) {
+  if (evalRunning) return;
+  evalRunning = true;
+  const token = state.token;
   setBusy(button, true, "评测中");
   try {
-    const data = await api("/evals/run", { method: "POST" });
+    const data = await api("/evals/run", { method: "POST", body: caseIds ? { case_ids: caseIds } : {} });
+    if (state.token !== token || !$("#eval-result")) return;
     const metrics = data.metrics;
     $("#eval-result").innerHTML = `
       <div class="metrics" style="margin-top:2px">
@@ -2484,15 +2898,17 @@ async function runEvals() {
             <tr>
               <td>${esc(result.question)}</td>
               <td class="num">${Number(result.top_score ?? 0).toFixed(3)}</td>
-              <td>${result.refused ? "是" : "否"}</td>
-              <td>${result.pass ? `<span class="pill ok">通过</span>` : `<span class="pill warn">未通过</span>`}</td>
+              <td>${result.error ? "—" : result.refused ? "是" : "否"}</td>
+              <td>${result.error ? esc(result.error) : result.pass ? `<span class="pill ok">通过</span>` : `<span class="pill warn">未通过</span>`}</td>
             </tr>`).join("")}</tbody>
         </table>
       </div>`;
-    toast(`评测完成 · 通过率 ${pct(metrics.pass_rate)}`);
+    toast(`评测完成 · 通过率 ${pct(metrics.pass_rate)}${metrics.failed_cases ? ` · ${num(metrics.failed_cases)} 项执行失败` : ""}`);
+    await loadEvalFailures();
   } catch (error) {
-    toast(error.message);
+    if (state.token === token) toast(error.message);
   } finally {
+    evalRunning = false;
     setBusy(button, false);
   }
 }
@@ -2543,6 +2959,12 @@ async function boot() {
     state.me = null;
     state.stats = null;
     state.docs = [];
+    state.jobs = [];
+    jobStatusCache = null;
+    activeExtractions.clear();
+    stopJobPoll();
+    renderIngestJobs();
+    renderExtractionJobs({ items: [], can_retry: false });
     state.entities = [];
     state.activeEntity = null;
     state.conversationId = null;
@@ -2580,7 +3002,7 @@ async function boot() {
 
   $$("dialog").forEach((dialog) => {
     dialog.addEventListener("click", (event) => {
-      if (event.target === dialog) dialog.close();
+      if (event.target === dialog && !dialog.querySelector("[data-close]")?.disabled) dialog.close();
     });
   });
   $$("[data-close]").forEach((button) => {

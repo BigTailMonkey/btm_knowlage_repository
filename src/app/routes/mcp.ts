@@ -130,8 +130,16 @@ function error(id: string | number | null, code: number, message: string) {
   return { jsonrpc: '2.0', id, error: { code, message } }
 }
 
-function toolResult(payload: unknown) {
-  return { content: [{ type: 'text', text: JSON.stringify(payload) }], isError: false }
+function previewCitation(_key: string, value: unknown) {
+  if (!value || typeof value !== 'object' || !('doc_id' in value) || !('version_id' in value)) return value
+  const ids = [value.doc_id, value.version_id]
+  if ('chunk_id' in value && value.chunk_id != null) ids.push(value.chunk_id)
+  if (!ids.every((id) => typeof id === 'string' && /^[\w-]{1,100}$/.test(id))) return value
+  return { ...value, preview_url: `https://citation.knowweave.invalid/${ids.join('/')}` }
+}
+
+function toolResult(payload: unknown, native = false) {
+  return { content: [{ type: 'text', text: JSON.stringify(payload, native ? previewCitation : undefined) }], isError: false }
 }
 
 export async function mcpRoutes(app: FastifyInstance): Promise<void> {
@@ -197,10 +205,10 @@ export async function mcpRoutes(app: FastifyInstance): Promise<void> {
           summaries: retrieved.summaries ?? [],
           as_of: retrieved.asOf,
           stats: retrieved.stats,
-        }))
+        }, native))
       }
-      if (name === 'kb_graph') return result(id, toolResult(await queryKnowledgeGraph(principal, args)))
-      if (name === 'kb_query_facts') return result(id, toolResult(await queryStructuredFacts(principal, args)))
+      if (name === 'kb_graph') return result(id, toolResult(await queryKnowledgeGraph(principal, args), native))
+      if (name === 'kb_query_facts') return result(id, toolResult(await queryStructuredFacts(principal, args), native))
       if (name === 'kb_ask') {
         return result(id, toolResult(await ask(principal, {
           question: String(args.question ?? ''),
@@ -244,13 +252,14 @@ export async function mcpRoutes(app: FastifyInstance): Promise<void> {
           return { ...data, evidence }
         }))
         return result(id, toolResult({
+          ...(native && version ? { doc_id: docId, version_id: version.id } : {}),
           document,
           text: partial ? '' : version?.text ?? '',
           partial,
           version: version ? { id: version.id, version: version.version, parser: version.parser, created_at: version.created_at, meta: version.meta } : null,
           chunks: visibleChunks.map(({ acl_principals, ...chunk }) => chunk),
           facts: scopedFacts,
-        }))
+        }, native))
       }
       if (name === 'kb_entity_timeline') {
         const entityId = typeof args.entity_id === 'string' ? args.entity_id.trim() : ''

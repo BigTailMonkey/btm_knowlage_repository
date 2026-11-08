@@ -272,6 +272,7 @@ test('native graph follows directed, typed historical paths and returns the exac
   assert.deepEqual(graph.path.map((edge: { fact_id: string }) => edge.fact_id), ['ab', 'bc'])
   assert.deepEqual(graph.path.map((edge: { hop: number }) => edge.hop), [1, 2])
   assert.deepEqual(graph.path[1].evidence.map((evidence: { version_id: string }) => evidence.version_id), [old])
+  assert.equal(graph.path[1].evidence[0].preview_url, `https://citation.knowweave.invalid/relations/${old}/edge-2`)
   const original = await mcp('kb_get_document', { doc_id: 'relations', version_id: old }, true)
   assert.equal(original.version.id, old)
   assert.match(original.text, /Borealis depends on Cygnus/)

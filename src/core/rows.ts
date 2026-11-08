@@ -11,6 +11,7 @@ export interface DocumentRow {
   current_version: number
   quality_score: number
   enrichment_status: string
+  enrichment_error: string | null
   summary: string | null
   source_trust?: number
   is_core?: boolean

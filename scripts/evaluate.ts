@@ -16,15 +16,12 @@ settings.dataDir = directory
 settings.databaseUrl = ''
 settings.semanticEntities = false
 settings.rerankUrl = ''
-settings.dshHome = join(directory, 'runtime')
-settings.dshRuntimeCwd = join(directory, 'workspace')
 if (!live) {
   settings.rerankThreshold = 0.2
   const embedding = (text: string) => ({ dense: [], sparse: sparseVector(tokenize(text), 500), model: 'offline-lexical', dim: 0 })
   // An independent deterministic lexical baseline; no fixed "all vectors equal" test stub.
   embedder.embedMany = async (texts) => texts.map((text) => ({ ...embedding(text), dense: [1] }))
   embedder.embedQuery = async (text) => ({ ...embedding(text), dense: [0] })
-  harness.ask = async () => ({ text: '', tokensIn: 0, tokensOut: 0, latencyMs: 0, model: 'offline', provider: 'offline', error: 'offline baseline', ok: false })
 }
 await initSchema()
 await seedIfEmpty()
@@ -41,13 +38,13 @@ try {
     await ingestParsed(principal, parseMarkdown(`# ${source}\n\n${excerpts.join('\n\n')}`, source), { sourceType: 'md', uri: `repository:${source}` })
     process.stdout.write('.')
   }
-  const evaluation = await runEvaluation(principal, cases, 'answer', live ? (completed,total)=>process.stdout.write(`\ncompleted ${completed}/${total}`) : undefined)
+  const evaluation = await runEvaluation(principal, cases, live ? 'answer' : 'retrieval', live ? (completed,total)=>process.stdout.write(`\ncompleted ${completed}/${total}`) : undefined)
   const artifact = join(directory, 'evaluation.json')
   await writeFile(artifact, JSON.stringify({ corpus: '20 repository source excerpts; 50 explicit excerpt/citation questions', corpus_version: 2, live, ...evaluation }, null, 2))
   console.log('\n' + JSON.stringify({ ...evaluation.metrics, artifact, live, threshold: settings.rerankThreshold }))
   // Version 2 baseline is 100%; allow at most two percentage points regression.
   if (evaluation.metrics.pass_rate < 0.98 || evaluation.metrics.recall_at_10 < 0.85 || evaluation.metrics.context_precision < 0.75
-    || (evaluation.metrics.citation_accuracy ?? 0) < 0.98) process.exitCode = 1
+    || (live && (evaluation.metrics.citation_accuracy ?? 0) < 0.98)) process.exitCode = 1
   if (live && evaluation.metrics.model_successes < cases.length * 0.95) process.exitCode = 1
 } catch (error) {
   let message = error instanceof Error ? error.message : String(error)

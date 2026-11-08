@@ -18,15 +18,8 @@ timezone = "Asia/Shanghai"
 [model]
 provider = "volcengine-ark"
 model = "deepseek-v4.1-flash"
-harness_enabled = true
-dsh_repo = "~/projects/deepseek-harness"
-dsh_profile = "headless"
-dsh_command = "pnpm"
-dsh_timeout_seconds = 120
-# DSH 不可用时的直连备用通道
 api_key = ""
-base_url = "https://api.deepseek.com"
-fallback_model = "deepseek-chat"
+base_url = "https://ark.cn-beijing.volces.com/api/coding/v3"
 
 [embedding]
 # provider: "volcengine-ark"（多模态接口）或 "openai"（标准批量接口）

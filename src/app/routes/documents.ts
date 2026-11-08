@@ -1,4 +1,8 @@
 import { FastifyInstance } from 'fastify'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createConverter } from '@deepseek-ai/libreoffice-kit'
 
 import { authenticate, currentPrincipal } from '../server.js'
 import { query, queryOne } from '../../db/index.js'
@@ -6,7 +10,9 @@ import { chunkDict, documentDict, entityDict, factDict } from '../../core/serial
 import { ingestParsed, savedIngestJobs, retryIngestJob, submitIngest, tombstoneDocument } from '../../core/ingestion.js'
 import { parseBytes, parseTextContent } from '../../adapters/parsing/index.js'
 import { requireEditor, canRead } from '../../core/security.js'
-import { extractFactsForDocument } from '../../core/learning.js'
+import { isEntityName } from '../../core/learning.js'
+import { enrichmentTasks, processEnrichmentQueue, requestEnrichment } from '../../core/enrichment-queue.js'
+import { DISPLAYABLE_FACT } from '../../core/fact-visibility.js'
 import { reindexDocument } from '../../core/reindexing.js'
 import { evidenceWeight } from '../../core/source-policy.js'
 import type { ChunkRow, DocumentRow, EntityRow, FactRow, VersionRow } from '../../core/rows.js'
@@ -27,6 +33,38 @@ async function visibleDocument(principal: ReturnType<typeof currentPrincipal>, d
     throw Object.assign(new Error('文档不存在或无权访问'), { statusCode: 404 })
   }
   return document
+}
+
+let activeWordPreviews = 0
+
+async function renderWordPreview(data: Buffer, signal: AbortSignal): Promise<Buffer> {
+  if (activeWordPreviews >= 2) throw Object.assign(new Error('文档转换繁忙，请稍后重试'), { statusCode: 503 })
+  activeWordPreviews += 1
+  let directory: string | undefined
+  let converter: Awaited<ReturnType<typeof createConverter>> | undefined
+  try {
+    directory = await mkdtemp(join(tmpdir(), 'knowweave-preview-'))
+    const inputPath = join(directory, 'source.docx')
+    const outputPath = join(directory, 'preview.pdf')
+    await writeFile(inputPath, data, { mode: 0o600, signal })
+    converter = await createConverter({
+      timeoutMs: 30_000,
+      maxInputBytes: 30 * 1024 * 1024,
+      maxOutputBytes: 50 * 1024 * 1024,
+      fontMetadataCacheDirectory: false,
+    })
+    await converter.render({ inputPath, outputPath }, signal)
+    return await readFile(outputPath, { signal })
+  } catch {
+    throw Object.assign(new Error('Word 版式预览暂不可用'), { statusCode: 422 })
+  } finally {
+    try {
+      await converter?.dispose()
+    } finally {
+      activeWordPreviews -= 1
+      if (directory) await rm(directory, { recursive: true, force: true })
+    }
+  }
 }
 
 export async function documentRoutes(app: FastifyInstance): Promise<void> {
@@ -86,6 +124,31 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
     const stage = (request.body as { stage?: string } | undefined)?.stage ?? 'index'
     if (!['parse', 'index'].includes(stage)) throw Object.assign(new Error('stage 必须为 parse 或 index'), { statusCode: 400 })
     return retryIngestJob(principal, (request.params as { job_id: string }).job_id, stage as 'parse' | 'index', (request.body as { corrected_text?: string } | undefined)?.corrected_text)
+  })
+
+  app.get('/extractions', { preHandler: authenticate }, async (request) => {
+    const principal = currentPrincipal(request)
+    return {
+      items: await enrichmentTasks(principal),
+      can_retry: ['owner', 'admin', 'editor'].includes(principal.role),
+    }
+  })
+
+  app.post('/extractions/retry', { preHandler: authenticate }, async (request) => {
+    const principal = currentPrincipal(request)
+    requireEditor(principal)
+    const ids = (request.body as { document_ids?: unknown } | undefined)?.document_ids
+    if (ids !== undefined && (!Array.isArray(ids) || !ids.length || ids.some(id => typeof id !== 'string' || !id))) {
+      throw Object.assign(new Error('document_ids 必须为非空文档 ID 列表'), { statusCode: 400 })
+    }
+    const selected = ids ? new Set<string>(ids as string[]) : null
+    const tasks = await enrichmentTasks(principal)
+    let queued = 0
+    for (const task of tasks) {
+      if (task.status === 'failed' && (!selected || selected.has(task.id)) && await requestEnrichment(principal, task.id, 'failed')) queued++
+    }
+    if (queued) void processEnrichmentQueue().catch(app.log.error.bind(app.log))
+    return { queued }
   })
 
   app.get('/acl-options', { preHandler: authenticate }, async (request) => {
@@ -149,13 +212,25 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
        ORDER BY seq`,
       [document.id, selectedVersion.id],
     )
-    const evidence = await query<{ fact_id: string }>('SELECT fact_id FROM fact_evidence WHERE doc_id = $1', [document.id])
+    const sourcedFacts = await query<FactRow & { displayable: boolean }>(
+      `SELECT f.*, ${DISPLAYABLE_FACT} AS displayable FROM facts f
+       WHERE f.tenant_id = $1 AND EXISTS (
+         SELECT 1 FROM fact_evidence evidence WHERE evidence.fact_id = f.id AND evidence.doc_id = $2
+       )`,
+      [principal.tenantId, document.id],
+    )
     const facts = []
     const entityIds = new Set<string>()
-    for (const factId of new Set(evidence.map((row) => row.fact_id))) {
-      const fact = await queryOne<FactRow>('SELECT * FROM facts WHERE id = $1', [factId])
-      if (!fact || !canRead(principal, fact.acl_principals)) continue
-      facts.push(await factDict(fact))
+    let reviewOnlyFacts = 0
+    for (const fact of sourcedFacts) {
+      if (!canRead(principal, fact.acl_principals)) continue
+      if (!fact.displayable) {
+        if (fact.status === 'disputed') reviewOnlyFacts += 1
+        continue
+      }
+      const item = await factDict(fact)
+      if (!isEntityName(String(item.subject)) || (fact.object_id && !isEntityName(String(item.object)))) continue
+      facts.push(item)
       entityIds.add(fact.subject_id)
       if (fact.object_id) entityIds.add(fact.object_id)
     }
@@ -178,6 +253,66 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
       chunks: chunks.map((chunk) => ({ ...chunkDict(chunk, document), version_id: selectedVersion.id, bbox: chunk.bbox, spans: (selectedVersion.meta.chunk_spans as Record<string, unknown> | undefined)?.[chunk.id] ?? [] })),
       facts,
       entities,
+      review_only_facts: reviewOnlyFacts,
+    }
+  })
+
+  app.get('/:doc_id/citation/:version_id', { preHandler: authenticate }, async (request, reply) => {
+    const principal = currentPrincipal(request)
+    const { doc_id: docId, version_id: versionId } = request.params as { doc_id: string; version_id: string }
+    const { chunk_id: chunkId, format } = request.query as { chunk_id?: string; format?: string }
+    reply.header('Cache-Control', 'private, no-store')
+    const document = await visibleDocument(principal, docId)
+    const version = await queryOne<VersionRow>(
+      'SELECT * FROM document_versions WHERE id = $1 AND doc_id = $2 AND tenant_id = $3',
+      [versionId, document.id, principal.tenantId],
+    )
+    const unavailable = () => Object.assign(new Error('引用不存在或无权访问'), { statusCode: 404 })
+    if (!version || document.status !== 'active') throw unavailable()
+    const chunks = await query<Pick<ChunkRow, 'id' | 'text' | 'page' | 'acl_principals'>>(
+      'SELECT id, text, page, acl_principals FROM chunks WHERE version_id = $1 AND doc_id = $2 AND tenant_id = $3 AND is_parent = false ORDER BY seq',
+      [versionId, document.id, principal.tenantId],
+    )
+    const visibleChunks = chunks.filter((chunk) => canRead(principal, chunk.acl_principals))
+    const cited = visibleChunks.find((chunk) => chunk.id === chunkId)
+    if (chunkId && !cited) throw unavailable()
+    const partial = visibleChunks.length !== chunks.length
+    if (partial && !visibleChunks.length) throw unavailable()
+    const wantsPdf = format === 'pdf'
+    const upload = partial ? null : await queryOne<{ filename: string; data: string | null }>(
+      `SELECT payload #>> '{request,filename}' AS filename,
+              CASE WHEN $6::boolean THEN payload #>> '{request,data}' END AS data
+       FROM jobs WHERE tenant_id = $1 AND type = 'ingest' AND payload->>'source' = 'file'
+         AND payload->>'doc_id' = $2
+         AND (payload #>> '{request,filename}') ~* '\\.(pdf|docx)$'
+         AND coalesce(payload #>> '{request,data}', '') <> ''
+         AND (id = $5 OR (payload->>'version' = $3 AND input_hash = $4))
+       ORDER BY (id = $5) DESC NULLS LAST, created_at DESC LIMIT 1`,
+      [principal.tenantId, document.id, String(version.version), version.hash, version.meta.source_job_id ?? null, wantsPdf],
+    )
+    const fileType = upload?.filename.toLowerCase().endsWith('.pdf') ? 'pdf' : upload ? 'docx' : null
+    if (wantsPdf) {
+      if (!upload?.data) throw unavailable()
+      const bytes = Buffer.from(upload.data, 'base64')
+      if (fileType === 'pdf' && !bytes.subarray(0, 1024).includes('%PDF-')) throw unavailable()
+      const controller = new AbortController()
+      const abort = () => controller.abort()
+      reply.raw.once('close', abort)
+      try {
+        const pdf = fileType === 'docx' ? await renderWordPreview(bytes, controller.signal) : bytes
+        return reply.type('application/pdf').header('X-Content-Type-Options', 'nosniff').send(pdf)
+      } finally {
+        reply.raw.off('close', abort)
+      }
+    }
+    const spans = version.meta.chunk_spans as Record<string, unknown> | undefined
+    return {
+      title: document.title,
+      version: version.version,
+      page: cited?.page ?? null,
+      file_type: fileType,
+      source: { text: partial ? (cited ? cited.text : visibleChunks.map((chunk) => chunk.text).join('\n\n')) : version.text },
+      chunks: cited ? [{ id: cited.id, spans: partial ? [{ start: 0, end: cited.text.length }] : spans?.[cited.id] ?? [], text: cited.text }] : [],
     }
   })
 
@@ -185,15 +320,19 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
     const principal = currentPrincipal(request)
     requireEditor(principal)
     const { doc_id: docId } = request.params as { doc_id: string }
-    const document = await visibleDocument(principal, docId)
+    await visibleDocument(principal, docId)
     const scope = (request.body as { scope?: string } | undefined)?.scope ?? 'facts'
     if (!['facts','index','all'].includes(scope)) throw Object.assign(new Error('scope 必须为 facts、index 或 all'), { statusCode: 400 })
     if (scope !== 'facts') {
       const result = await reindexDocument(principal.tenantId, docId)
-      if (scope === 'all') await extractFactsForDocument(principal,docId)
+      if (scope === 'all') {
+        await requestEnrichment(principal, docId)
+        void processEnrichmentQueue().catch(app.log.error.bind(app.log))
+      }
       return result
     }
-    void extractFactsForDocument(principal, document.id).catch(() => undefined)
+    await requestEnrichment(principal, docId)
+    void processEnrichmentQueue().catch(app.log.error.bind(app.log))
     return { document_id: docId, status: 'queued', message: '已排入事实抽取队列' }
   })
 
@@ -207,7 +346,10 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
     const trust=payload.source_trust ?? document.source_trust ?? 0.5
     await query('UPDATE documents SET source_trust=$1,is_core=$2 WHERE id=$3', [trust,payload.is_core ?? document.is_core ?? false,document.id])
     await query('UPDATE fact_evidence SET weight=$1 WHERE doc_id=$2', [evidenceWeight({...document,source_trust:trust}),document.id])
-    if (payload.is_core || trust >= 0.8) await extractFactsForDocument(principal,document.id)
+    if (payload.is_core || trust >= 0.8) {
+      await requestEnrichment(principal, document.id)
+      void processEnrichmentQueue().catch(app.log.error.bind(app.log))
+    }
     return { document_id: document.id, source_trust: trust, is_core: payload.is_core ?? document.is_core ?? false }
   })
 

@@ -1,5 +1,5 @@
 import { tokenize } from '../adapters/embeddings/index.js'
-import { harness } from '../adapters/harness/index.js'
+import { completeStructured, modelUnavailable, requireModelText } from '../adapters/harness/index.js'
 
 const CITATION = /\[(\d+)\]/g
 
@@ -83,12 +83,17 @@ export function validateGrounding(answer: string, evidence: EvidenceText[]): Gro
 
 /** A separate entailment decision supplements deterministic citation/number checks. */
 export async function verifySemanticGrounding(answer: string, evidence: EvidenceText[]): Promise<boolean> {
+  const result = await completeStructured(JSON.stringify({ answer, evidence: evidence.map((row,index)=>({id:index+1,text:row.text})) }),
+    '逐句检查答案是否被所引编号的原文语义支持。仅有相同关键词不代表支持；检查主客体、因果、条件和否定。不使用常识补全。只输出JSON {"supported":boolean,"unsupported_sentences":[]}；任何事实句无支持则false。')
+  const text = requireModelText(result, '回答语义校验')
+  let decision: { supported?: unknown; unsupported_sentences?: unknown } | null
   try {
-    const result = await harness.complete(JSON.stringify({ answer, evidence: evidence.map((row,index)=>({id:index+1,text:row.text})) }),
-      '逐句检查答案是否被所引编号的原文语义支持。仅有相同关键词不代表支持；检查主客体、因果、条件和否定。不使用常识补全。只输出JSON {"supported":boolean,"unsupported_sentences":[]}；任何事实句无支持则false。', 800)
-    const json = /\{[\s\S]*\}/.exec(result.text)?.[0]
-    if (!result.ok || !json) return false
-    const decision = JSON.parse(json)
-    return decision.supported === true && Array.isArray(decision.unsupported_sentences) && decision.unsupported_sentences.length === 0
-  } catch { return false }
+    decision = JSON.parse(/\{[\s\S]*\}/.exec(text)?.[0] ?? 'null')
+  } catch {
+    throw modelUnavailable('回答语义校验', '模型返回了无效 JSON')
+  }
+  if (typeof decision?.supported !== 'boolean' || !Array.isArray(decision.unsupported_sentences)) {
+    throw modelUnavailable('回答语义校验', '模型未返回有效的核验结果')
+  }
+  return decision.supported && decision.unsupported_sentences.length === 0
 }

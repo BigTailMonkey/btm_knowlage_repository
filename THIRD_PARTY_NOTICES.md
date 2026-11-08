@@ -1,12 +1,14 @@
 # 第三方组件声明
 
-知织（KnoWeave）的智能体运行时与嵌入式对话能力使用 **DeepSeek Harness**，包括 `@deepseek-ai/dsh`、`@deepseek-ai/dsh-sdk-client` 及其相关组件。
+知织（KnoWeave）的嵌入式对话使用 **DeepSeek Harness**，包括 `@deepseek-ai/dsh` 及其相关组件。
 
 本项目对用户界面的名称、标识和展示文案进行了定制。底层组件的包名、模型标识与调用协议保留原值，以确保依赖解析、模型调用与用量计费正常工作。
 
 上游项目：<https://github.com/deepseek-ai/deepseek-harness>
 
 相关组件采用 MIT 许可证。其他第三方依赖遵循各自随附的许可证。
+
+文档版式预览使用 **PDF.js**（`pdfjs-dist`），采用 Apache-2.0 许可证，版权归 Mozilla Foundation 所有。其构建文件与字体/CMap 资源由主服务从本地依赖同源提供，不依赖外部 CDN。
 
 ## DeepSeek Harness — MIT License
 

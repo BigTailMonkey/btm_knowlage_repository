@@ -51,19 +51,25 @@ test('valid generated claims keep actual references and expose sentence coverage
   assert.equal((result.grounding as { citation_coverage: number }).citation_coverage, 1)
 })
 
-test('unsupported generated answers fall back to exact excerpts and real citations', async () => {
+test('unsupported generated answers are rejected without substituting excerpts', async () => {
   harness.ask = async () => generated('知织文件上限为999GB。[1]知织会公开所有上传内容。')
   const result = await ask(workspace.principal, { question: '知织文件大小上限是多少？' })
-  assert.equal(result.refused, false)
-  assert.ok(!String(result.answer).includes('999GB'))
-  assert.ok(!String(result.answer).includes('公开所有'))
-  assert.ok(String(result.answer).includes('30MB'))
-  assert.equal((result.grounding as { strategy: string }).strategy, 'extractive_fallback')
-  assert.ok((result.citations as unknown[]).length)
+  assert.equal(result.refused, true)
+  assert.match(String(result.answer), /未通过核验/)
+  assert.deepEqual(result.citations, [])
 })
 
-test('offline extractive fallback also persists citations for reopened conversations', async () => {
+test('model outage returns 503 without writing an answer or evidence gap', async () => {
   harness.ask = async () => ({ ...generated(''), ok: false, error: 'offline' })
+  const response = await app.inject({ method: 'POST', url: '/api/v1/ask', headers: workspace.headers, payload: { question: '知织支持什么？' } })
+  assert.equal(response.statusCode, 503)
+  assert.match(response.json().detail, /offline/)
+  assert.equal((await query('SELECT id FROM messages')).length, 0)
+  assert.equal((await query('SELECT id FROM gaps')).length, 0)
+  assert.equal((await queryOne<{ status: string }>("SELECT status FROM traces WHERE feature='ask'"))?.status, 'error')
+})
+
+test('successful generation persists citations for reopened conversations', async () => {
   const result = await ask(workspace.principal, { question: '知织支持什么？' })
   assert.equal(result.refused, false)
   assert.ok((result.citations as unknown[]).length)
@@ -72,12 +78,12 @@ test('offline extractive fallback also persists citations for reopened conversat
   assert.ok(messages.at(-1).citations[0].version_id)
 })
 
-test('compare returns a structured source table when generation has no verifiable citations', async () => {
+test('compare refuses when the model returns an unsupported conclusion', async () => {
   harness.ask = async () => generated('没有引用的对比结论。')
   const result = await ask(workspace.principal, { question: '比较知织和本地文档检索', mode: 'compare' })
-  assert.equal(result.refused, false)
-  assert.match(String(result.answer), /\| 来源 \| 原文依据 \|/)
-  assert.equal((result.grounding as { citation_coverage: number }).citation_coverage, 1)
+  assert.equal(result.refused, true)
+  assert.match(String(result.answer), /未通过核验/)
+  assert.deepEqual(result.citations, [])
 })
 
 test('remember commands write one personal memory and can be used in later questions', async () => {
@@ -134,11 +140,11 @@ test('quoted refusal text in source material is not itself a model refusal',asyn
   assert.equal((answer.citations as unknown[]).length,1)
 })
 
-test('extractive fallback prioritizes an explicitly quoted identifier across all retrieved hits',async()=>{
+test('even exact retrieval matches do not substitute for an ungrounded model answer',async()=>{
   await clearKnowledge()
   const doc=await ingestParsed(workspace.principal,parseText('src db schema index join settings rootDir。\n\nexport async function initSchema(): Promise<void> {','src/db/index.ts'),{sourceType:'text'})
   harness.ask=async()=>generated('没有有效引用的模型输出')
   const answer=await ask(workspace.principal,{question:'请摘录 `initSchema` 的已提供源码片段。',docIds:[String(doc.document_id)]})
-  assert.equal(answer.refused,false)
-  assert.match(String(answer.answer),/initSchema/)
+  assert.equal(answer.refused,true)
+  assert.deepEqual(answer.citations,[])
 })

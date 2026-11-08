@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from .answering import ask as ask_service
 from .db import get_db
+from .harness import ModelUnavailable
 from .models import (
     Chunk,
     Citation,
@@ -100,6 +101,8 @@ def ask(
             conversation_id=payload.conversation_id,
             doc_ids=payload.doc_ids,
         )
+    except ModelUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

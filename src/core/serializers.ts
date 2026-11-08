@@ -23,6 +23,7 @@ export async function documentDict(document: DocumentRow): Promise<Record<string
     acl_version: document.acl_version,
     quality: Number((document.quality_score ?? 0).toFixed(3)),
     enrichment_status: document.enrichment_status,
+    enrichment_error: document.enrichment_error,
     summary: document.summary,
     source_trust: document.source_trust ?? 0.5,
     is_core: document.is_core ?? false,

@@ -11,7 +11,7 @@ import type { Principal } from '../src/core/security.js'
 export async function testWorkspace() {
   const directory = await mkdtemp(join(tmpdir(), 'knowweave-node-test-'))
   Object.assign(settings, {
-    dataDir: directory, databaseUrl: '', harnessEnabled: false, modelApiKey: '',
+    dataDir: directory, databaseUrl: '', modelApiKey: '',
     embeddingApiKey: '', sidecarEnabled: false, reflectionEnabled: false,
     dshWebEnabled: false, seedDemo: true, semanticEntities: false, groundingVerifier: false, rerankUrl: '',
   })

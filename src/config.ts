@@ -17,8 +17,10 @@ function readConfig(): RawConfig {
   for (const path of CONFIG_CANDIDATES) {
     try {
       return parseToml(readFileSync(path, 'utf8')) as RawConfig
-    } catch {
-      continue
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new Error(`无法读取项目配置 ${path}`, { cause: error })
+      }
     }
   }
   return {}
@@ -58,6 +60,10 @@ const parsing = raw.parsing ?? {}
 
 const dataDir = resolvePath(storage.data_dir, join(ROOT_DIR, 'data'))
 const priceRows = (raw.prices ?? {}) as Record<string, Record<string, unknown>>
+const modelMaxTokens = model.max_tokens
+if (modelMaxTokens !== undefined && (typeof modelMaxTokens !== 'number' || !Number.isSafeInteger(modelMaxTokens) || modelMaxTokens <= 0)) {
+  throw new Error('[model].max_tokens 必须为正整数')
+}
 
 export const settings = {
   rootDir: ROOT_DIR,
@@ -70,21 +76,17 @@ export const settings = {
   serverHost: text(server.host, process.env.HOST ?? '0.0.0.0'),
   serverPort: num(process.env.PORT, num(server.port, 8730)),
 
-  harnessEnabled: bool(model.harness_enabled, true),
-  dshHome: resolvePath(dsh.home, join(ROOT_DIR, 'data', 'dsh-home')),
-  dshProfile: text(dsh.profile, 'sdk'),
   dshRuntimeCwd: resolvePath(dsh.workspace, join(ROOT_DIR, 'data', 'dsh-workspace')),
   dshWebEnabled: bool(dsh.web_enabled, true),
   dshWebAutoStart: bool(dsh.web_auto_start, true),
   dshWebSearchEnabled: bool(dsh.web_search_enabled, false),
   dshWebPort: num(dsh.web_port, 3081),
   dshWebHome: resolvePath(dsh.web_home, join(ROOT_DIR, 'data', 'dsh-web-home')),
-  modelProvider: text(model.provider, 'deepseek-official'),
-  model: text(model.model, 'deepseek-v4.1-flash'),
-  modelApiKey: text(model.api_key, ''),
-  modelBaseUrl: text(model.base_url, 'https://api.deepseek.com'),
-  modelMaxTokens: num(model.max_tokens, 4096),
-  fallbackModel: text(model.fallback_model, 'deepseek-chat'),
+  modelProvider: text(model.provider, 'openai-compatible').trim(),
+  model: text(model.model, '').trim(),
+  modelApiKey: text(model.api_key, '').trim(),
+  modelBaseUrl: text(model.base_url, '').trim(),
+  modelMaxTokens,
 
   embeddingProvider: text(embedding.provider, 'volcengine-ark'),
   embeddingModel: text(embedding.model, 'doubao-embedding-vision'),

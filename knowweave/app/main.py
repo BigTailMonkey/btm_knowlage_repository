@@ -1,6 +1,7 @@
 """FastAPI application factory and Web UI host."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 from contextlib import asynccontextmanager
@@ -18,6 +19,7 @@ from .api_mcp import router as mcp_router
 from .api_ops import router as ops_router
 from .config import WEB_DIR, settings
 from .embeddings import embedder
+from .harness import assert_model_ready
 from .learning import run_reflection
 from .security import Principal, get_principal
 
@@ -40,6 +42,7 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        await asyncio.to_thread(assert_model_ready)
         db.init_db(seed=settings.seed_demo)
         stop = threading.Event()
         thread = None

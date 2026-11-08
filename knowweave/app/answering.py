@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .embeddings import tokenize
-from .harness import HarnessResult, harness
+from .harness import harness, require_model_text
 from .models import (
     Budget,
     Citation,
@@ -109,34 +109,6 @@ def _retrieval_question(question: str, messages: list[Message]) -> str:
     if previous and (len(question) <= 12 or FOLLOW_UP.search(question)):
         return f"{previous} {question}"
     return question
-
-
-def _split_sentences(text: str) -> list[str]:
-    parts = re.split(r"(?<=[。！？!?；;])\s*|\n+", text)
-    return [part.strip() for part in parts if part.strip()]
-
-
-def _extractive_answer(question: str, hits: list[Hit]) -> str:
-    query_tokens = set(tokenize(question))
-    selected: list[str] = []
-    for index, hit in enumerate(hits[:4], start=1):
-        sentences = _split_sentences(hit.chunk.text)
-        scored = []
-        for sentence in sentences:
-            overlap = len(query_tokens & set(tokenize(sentence)))
-            scored.append((overlap, sentence))
-        scored.sort(key=lambda item: item[0], reverse=True)
-        for overlap, sentence in scored[:2]:
-            if len(sentence) < 8:
-                continue
-            if overlap == 0 and selected:
-                continue
-            selected.append(f"{sentence} [{index}]")
-        if len(selected) >= 5:
-            break
-    if not selected:
-        return ""
-    return "根据现有资料：" + "".join(selected)
 
 
 def _refusal(hits: list[Hit]) -> str:
@@ -262,7 +234,6 @@ def ask(
     if refused:
         answer = _refusal(hits)
         citations: list[dict] = []
-        usage_recorded = False
     else:
         evidence = _format_evidence(hits, facts, memories)
         history_block = f"{_history_context(history)}\n\n" if history else ""
@@ -273,7 +244,7 @@ def ask(
 回答模式：{mode}{f'；时间切片：{as_of}' if as_of else ''}
 
 请严格按规则回答。"""
-        generated = harness.complete(prompt, system=SYSTEM, max_tokens=900)
+        generated = harness.complete(prompt, system=SYSTEM)
         generate_span = recorder.add_span(
             "answer.generate",
             params={"model": generated.model, "provider": generated.provider, "mode": mode},
@@ -284,20 +255,19 @@ def ask(
                 "text_preview": generated.text[:400],
             },
             latency_ms=generated.latency_ms,
-            status="ok" if generated.ok else "degraded",
+            status="ok" if generated.ok else "error",
             input_value=prompt,
         )
         if generated.ok:
             recorder.record_usage(generated, "ask", "answer.generate", generate_span.id)
-        text = generated.text.strip()
+        if not generated.ok:
+            recorder.finish(db, answer="", status="error")
+            db.commit()
+        text = require_model_text(generated, "问答生成")
         is_refusal = any(marker in text for marker in REFUSAL_MARKERS)
         if is_refusal:
             answer = _refusal(hits)
             refused = True
-            citations = []
-        elif not text:
-            answer = _extractive_answer(retrieval_question, hits) or _refusal(hits)
-            refused = not answer.startswith("根据现有资料")
             citations = []
         else:
             answer = text
@@ -318,22 +288,10 @@ def ask(
                         "rerank": hit.rerank,
                     }
                 )
-            if not valid:
-                # Keep the answer but make the missing citation explicit.
-                citations = [
-                    {
-                        "index": position,
-                        "chunk_id": hit.chunk.id,
-                        "doc_id": hit.document.id,
-                        "doc_title": hit.document.title,
-                        "page": hit.chunk.page,
-                        "heading_path": hit.chunk.heading_path,
-                        "quote": hit.chunk.text[:420],
-                        "rerank": hit.rerank,
-                    }
-                    for position, hit in enumerate(hits[:3], start=1)
-                ]
-                answer += "\n\n（注：模型未逐句标注引用，以上依据按相关度附上。）"
+            if not valid or len(valid) != len(indices):
+                answer = "生成回答未通过核验：缺少有效的原文引用。"
+                refused = True
+                citations = []
         citation_span = recorder.add_span(
             "answer.citations",
             params={"evidence": len(hits)},

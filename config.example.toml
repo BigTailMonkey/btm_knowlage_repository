@@ -15,9 +15,7 @@ port = 8730
 timezone = "Asia/Shanghai"
 
 [dsh]
-# 智能体运行时：SDK + sdk 全量 profile；第三方组件见 THIRD_PARTY_NOTICES.md
-profile = "sdk"
-home = ".dsh"
+# 嵌入式对话的运行目录；第三方组件见 THIRD_PARTY_NOTICES.md
 workspace = "data/dsh-workspace"
 # AI 对话使用完整 DSH 原生界面（流式输出、工具、附件与会话管理）；研究台使用 /api/v1/ask
 web_enabled = true
@@ -28,12 +26,11 @@ web_port = 3081
 web_home = "data/dsh-web-home"
 
 [model]
+# 生成、抽取、校验和原生对话共用此处配置的 OpenAI 兼容接口。
 provider = "volcengine-ark"
 model = "deepseek-v4.1-flash"
-harness_enabled = true
 api_key = ""
 base_url = "https://ark.cn-beijing.volces.com/api/coding/v3"
-fallback_model = "deepseek-v4.1-flash"
 
 [embedding]
 provider = "volcengine-ark"

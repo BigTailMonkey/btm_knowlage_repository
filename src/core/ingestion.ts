@@ -8,8 +8,9 @@ import { parseBytes, ParsedDocument, parseHtml, parseTextContent } from '../adap
 import { chunkBlocks, MAX_TOKENS } from './chunking.js'
 import { newId } from './ids.js'
 import type { DocumentRow } from './rows.js'
-import { canRead, principalSet, Principal } from './security.js'
+import { canRead, Principal } from './security.js'
 import { TraceRecorder } from './tracing.js'
+import { enqueueEnrichment, processEnrichmentQueue, stopEnrichmentWorker } from './enrichment-queue.js'
 
 function sha256(data: Buffer | string): string {
   return createHash('sha256').update(data).digest('hex')
@@ -193,6 +194,7 @@ async function ingestParsedVersion(
   const jobId = options.jobId ?? newId('job')
   const meta = {
     ...parsed.meta,
+    ...(options.jobId ? { source_job_id: options.jobId } : {}),
     coordinate_system: 'normalized-text-utf16',
     chunk_spans: Object.fromEntries(chunks.map((chunk) => [chunk.id, chunk.sourceSpans])),
   }
@@ -212,7 +214,7 @@ async function ingestParsedVersion(
       await client.query(
         `UPDATE documents SET title = $1, source_type = $2, content_hash = $3, acl_principals = $4::jsonb,
            acl_version = $5, current_version = $6, quality_score = $7,
-           enrichment_status = 'pending', summary = $8, uri = $9, updated_at = now() WHERE id = $10`,
+           enrichment_status = 'pending', enrichment_error = NULL, summary = $8, uri = $9, updated_at = now() WHERE id = $10`,
         [parsed.title || latest.title, options.sourceType, contentHash, JSON.stringify(acl), aclVersion,
           versionNumber, parsed.quality, fullText.slice(0, 240), options.uri ?? latest.uri, documentId],
       )
@@ -255,6 +257,7 @@ async function ingestParsedVersion(
       )
     }
     if (options.jobId) {
+      await enqueueEnrichment(client, principal, documentId, versionNumber)
       await client.query(
         `UPDATE jobs SET input_hash = $1, payload = payload || $2::jsonb, updated_at = now() WHERE id = $3`,
         [contentHash, JSON.stringify({ doc_id: documentId, version: versionNumber, parser: parsed.parser }), jobId],
@@ -397,22 +400,6 @@ async function runIngestJob(
       progress: report,
       jobId,
     })
-    const docId = String(result.document_id)
-    const version = Number(result.version)
-    // A recovered ingest may find its version already indexed. Resume an
-    // unfinished extraction, but skip versions that have completed it.
-    const needsExtraction = !result.duplicate || Boolean(await queryOne<{ id: string }>(
-      `SELECT id FROM documents WHERE id=$1 AND tenant_id=$2 AND current_version=$3 AND status='active'
-       AND enrichment_status IN ('pending','running','deferred','failed')
-       AND acl_principals ?| $4::text[]`,
-      [docId, principal.tenantId, version, [...principalSet(principal)]],
-    ))
-    if (needsExtraction) {
-      report('抽取事实与实体', 98)
-      const { extractFactsForDocument } = await import('./learning.js')
-      // Extraction records its own failure state. The document remains searchable.
-      await extractFactsForDocument(principal, docId, version).catch(() => undefined)
-    }
     update({
       status: 'done',
       stage: '完成',
@@ -430,6 +417,7 @@ async function runIngestJob(
     )
     await query(`UPDATE review_queue SET status='resolved', resolution=$1::jsonb, resolved_at=now()
       WHERE tenant_id=$2 AND status='open' AND payload->>'job_id'=$3`, [JSON.stringify({ action: 'retry_succeeded', document_id: result.document_id }), principal.tenantId, jobId])
+    void processEnrichmentQueue().catch(console.error)
   } catch (error) {
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 300) || '入库失败'
     update({ status: 'failed', stage: '失败', error: message })
@@ -592,7 +580,12 @@ export function startIngestWorker(): void {
   queueStopping = false
   if (queueTimer) return
   void processIngestQueue().catch(() => undefined)
-  queueTimer = setInterval(() => { void processIngestQueue().catch(() => undefined) }, 2000)
+  const processEnrichment = () => { void processEnrichmentQueue().catch(console.error) }
+  processEnrichment()
+  queueTimer = setInterval(() => {
+    void processIngestQueue().catch(console.error)
+    processEnrichment()
+  }, 2000)
   queueTimer.unref()
 }
 
@@ -601,5 +594,6 @@ export async function stopIngestWorker(): Promise<void> {
   if (queueTimer) clearInterval(queueTimer)
   queueTimer = null
   await queueTask
+  await stopEnrichmentWorker()
   queueStopping = false
 }

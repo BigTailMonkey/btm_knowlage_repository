@@ -1,7 +1,7 @@
 import { settings } from '../config.js'
 import { query, queryOne } from '../db/index.js'
 import { tokenize } from '../adapters/embeddings/index.js'
-import { harness } from '../adapters/harness/index.js'
+import { completeStructured, harness, modelUnavailable, requireModelText } from '../adapters/harness/index.js'
 import { newId } from './ids.js'
 import type { ChunkRow, DocumentRow, EntityRow } from './rows.js'
 import { retrieve, RetrievalResult, Hit, normalizeAsOf } from './retrieval.js'
@@ -114,43 +114,6 @@ function retrievalQuestion(question: string, messages: MessageRow[]): string {
   return question
 }
 
-function splitSentences(text: string): string[] {
-  return text
-    .split(/(?<=[。！？!?；;])\s*|\n+/)
-    .map((part) => part.trim())
-    .filter(Boolean)
-}
-
-function extractiveAnswer(question: string, hits: Hit[], mode: string): string {
-  const queryTokens = new Set(tokenize(question))
-  const quoted = [...question.matchAll(/`([^`\n]{1,100})`/g)].map(match=>match[1]!.toLowerCase())
-  const selected: string[] = []
-  const candidates = hits.map((hit,index)=>{
-    const scored = splitSentences(hit.chunk.text).map((sentence) => {
-      let overlap = 0
-      for (const token of new Set(tokenize(sentence))) if (queryTokens.has(token)) overlap += 1
-      for (const literal of quoted) if (sentence.toLowerCase().includes(literal)) overlap += 20
-      return [overlap, sentence] as const
-    })
-    scored.sort((a, b) => b[0] - a[0])
-    return {hit,index,scored}
-  }).sort((a,b)=>(b.scored[0]?.[0] ?? 0)-(a.scored[0]?.[0] ?? 0))
-  for (const { hit,index,scored } of candidates.slice(0,4)) {
-    for (const [overlap, sentence] of scored.slice(0, 2)) {
-      if (sentence.length < 8) continue
-      if (overlap === 0 && selected.length) continue
-      const excerpt = sentence.replace(/\[(\d+)\]/g, '［$1］')
-      selected.push(mode === 'compare'
-        ? `| ${hit.document.title.replace(/\|/g, '／')} | ${excerpt.replace(/\|/g, '／')} [${index + 1}] |`
-        : `- ${excerpt} [${index + 1}]`)
-    }
-    if (selected.length >= 5) break
-  }
-  return selected.length
-    ? mode === 'compare' ? `| 来源 | 原文依据 |\n| --- | --- |\n${selected.join('\n')}` : `根据现有资料：\n${selected.join('\n')}`
-    : ''
-}
-
 function refusal(hits: Hit[]): string {
   if (!hits.length) return '现有资料不足以回答这个问题：知识库中没有检索到相关证据。建议先补充相关文档或调整关键词。'
   const clues = hits.slice(0, 3).map((hit) => `《${hit.document.title}》`).join('；')
@@ -202,18 +165,19 @@ function subqueries(question: string, mode: string): string[] {
 
 async function reflectQueries(question: string, hits: Hit[], tried: Set<string>, recorder: TraceRecorder, round: number): Promise<string[]> {
   const prompt = `将知识库问题改写成最多3条用于补充证据的检索语句。不要回答问题，不要重复已检索内容。只返回JSON：{"queries":["..."]}。\n问题：${question}\n已检索：${JSON.stringify([...tried])}\n已有线索：${hits.slice(0, 3).map((hit) => `${hit.document.title}: ${hit.chunk.text.slice(0, 200)}`).join('\n')}`
-  let queries: string[] = []
+  const result = await completeStructured(prompt, '你是知识库检索规划器，只改写查询，不生成事实。')
+  const text = requireModelText(result, '补充检索规划')
+  let parsed: { queries?: unknown } | null = null
   try {
-    const result = await harness.complete(prompt, '你是知识库检索规划器，只改写查询，不生成事实。', 600)
-    const json = /\{[\s\S]*\}/.exec(result.text)?.[0]
-    const parsed = json ? JSON.parse(json) as { queries?: unknown } : null
-    if (Array.isArray(parsed?.queries)) queries = parsed.queries.filter((value): value is string => typeof value === 'string').map((value) => value.trim()).filter((value) => value.length >= 2 && value.length <= 300)
-  } catch { /* A missing planning model must not prevent source-based answers. */ }
-  if (!queries.length) {
-    const terms = [...new Set(tokenize(question).filter((token) => token.length >= 2))].slice(0, 10)
-    if (terms.length) queries.push(terms.join(' '))
+    parsed = JSON.parse(/\{[\s\S]*\}/.exec(text)?.[0] ?? 'null')
+  } catch {
+    throw modelUnavailable('补充检索规划', '模型返回了无效 JSON')
   }
-  queries = [...new Set(queries)].filter((value) => !tried.has(value)).slice(0, 3)
+  if (!Array.isArray(parsed?.queries) || parsed.queries.some((value) => typeof value !== 'string')) {
+    throw modelUnavailable('补充检索规划', '模型未返回有效的检索语句列表')
+  }
+  const cleaned = parsed.queries.map((value: string) => value.trim()).filter((value: string) => value.length >= 2 && value.length <= 300)
+  const queries = [...new Set<string>(cleaned)].filter((value) => !tried.has(value)).slice(0, 3)
   recorder.addSpan({ stage: 'retrieve.reflect', params: { round }, output: { queries }, inputValue: prompt })
   return queries
 }
@@ -251,6 +215,17 @@ export async function ask(
   const asOf = normalizeAsOf(input.asOf ?? null)
   const recorder = new TraceRecorder(principal.tenantId, principal.userId, input.evaluation ? 'eval' : 'ask', question)
   recorder.addSpan({ stage: 'intent', params: { mode, as_of: asOf }, output: { question } })
+  const finishTrace = async (answer: string, status: string) => {
+    await recorder.finish(answer, status)
+    if (recorder.hasUsage) {
+      await query(
+        `UPDATE budgets SET used_amount = used_amount + $1, updated_at = now()
+         WHERE tenant_id = $2 AND scope = 'tenant'`,
+        [recorder.usageAmount, principal.tenantId],
+      )
+    }
+  }
+
 
   const conversation = input.conversationId
     ? await queryOne<ConversationRow>('SELECT id, tenant_id, user_id, title FROM conversations WHERE id = $1', [input.conversationId])
@@ -293,7 +268,13 @@ export async function ask(
     }
     }
     if (mode !== 'deep' || rounds >= 3 || [...merged.values()].some((hit) => hit.rerank >= threshold)) break
-    pendingQueries = await reflectQueries(expandedQuestion, [...merged.values()], tried, recorder, rounds)
+    try {
+      pendingQueries = await reflectQueries(expandedQuestion, [...merged.values()], tried, recorder, rounds)
+    } catch (error) {
+      recorder.addSpan({ stage: 'retrieve.reflect', params: { round: rounds }, status: 'error' })
+      await finishTrace('', 'error')
+      throw error
+    }
   }
 
   const hits = [...merged.values()].sort((a, b) => b.rerank - a.rerank).slice(0, topK)
@@ -338,12 +319,12 @@ ${evidence}
         text_preview: generated.text.slice(0, 400),
       },
       latencyMs: generated.latencyMs,
-      status: generated.ok ? 'ok' : 'degraded',
+      status: generated.ok && generated.text.trim() ? 'ok' : 'error',
       inputValue: prompt,
     })
     if (generated.ok) recorder.recordUsage(generated, 'ask', 'answer.generate', span.id)
-
-    const text = generated.ok ? generated.text.trim() : ''
+    if (!generated.ok || !generated.text.trim()) await finishTrace('', 'error')
+    const text = requireModelText(generated, '问答生成')
     const isRefusal = REFUSAL_PREFIX.test(text)
     if (isRefusal) {
       answer = refusal(hits)
@@ -351,18 +332,23 @@ ${evidence}
     } else {
       grounding = validateGrounding(text, hits.map((hit) => ({ text: hit.chunk.text })))
       if (grounding.valid && settings.groundingVerifier) {
-        const supported = await verifySemanticGrounding(text, hits.map((hit) => ({ text: hit.chunk.text })))
-        recorder.addSpan({ stage: 'answer.verify', output: { supported }, inputValue: text })
-        if (!supported) grounding = { ...grounding, valid: false, reason: '独立语义校验未确认全部事实句' }
+        try {
+          const supported = await verifySemanticGrounding(text, hits.map((hit) => ({ text: hit.chunk.text })))
+          recorder.addSpan({ stage: 'answer.verify', output: { supported }, inputValue: text })
+          if (!supported) grounding = { ...grounding, valid: false, reason: '独立语义校验未确认全部事实句' }
+        } catch (error) {
+          recorder.addSpan({ stage: 'answer.verify', status: 'error' })
+          await finishTrace('', 'error')
+          throw error
+        }
       }
-      answer = text
-      if (!grounding.valid || (mode === 'compare' && !/^\s*\|.+\|\s*\n\s*\|[-\s|:]+\|/m.test(answer))) {
-        answerStrategy = 'extractive_fallback'
-        answer = extractiveAnswer(expandedQuestion, hits, mode)
-        grounding = validateGrounding(answer, hits.map((hit) => ({ text: hit.chunk.text })))
+      if (mode === 'compare' && !/^\s*\|.+\|\s*\n\s*\|[-\s|:]+\|/m.test(text)) {
+        grounding = { ...grounding, valid: false, reason: grounding.reason ?? '生成回答未提供要求的对比表格' }
       }
-      if (!grounding.valid) {
-        answer = refusal(hits)
+      if (grounding.valid) {
+        answer = text
+      } else {
+        answer = '生成回答未通过核验。' + (grounding.reason ? `原因：${grounding.reason}。` : '')
         refused = true
       }
       const indices = new Set(
@@ -372,6 +358,7 @@ ${evidence}
     }
   }
 
+  if (refused) answerStrategy = 'refused'
   const score = memoryText ? 1 : confidence(answer, hits, refused)
   if (refused && !input.evaluation) await upsertGap(principal, question)
 
@@ -410,8 +397,8 @@ ${evidence}
     const { shouldEnrich } = await import('./source-policy.js')
     const state = await queryOne<{ enrichment_status: string }>('SELECT enrichment_status FROM documents WHERE id=$1', [docId])
     if (state?.enrichment_status === 'deferred' && await shouldEnrich(docId)) {
-      const { extractFactsForDocument } = await import('./learning.js')
-      void extractFactsForDocument(principal,docId).catch(() => undefined)
+      const { processEnrichmentQueue, requestEnrichment } = await import('./enrichment-queue.js')
+      if (await requestEnrichment(principal, docId, 'deferred')) void processEnrichmentQueue().catch(console.error)
     }
   }
 
@@ -430,20 +417,12 @@ ${evidence}
     retrieval_rounds: rounds,
     answer_strategy: answerStrategy,
   }
-  await recorder.finish(answer, refused ? 'refused' : 'ok')
-  if (!input.evaluation && (refused || answerStrategy === 'extractive_fallback')) {
+  await finishTrace(answer, refused ? 'refused' : 'ok')
+  if (!input.evaluation && refused) {
     const existingCase = await queryOne<{ id: string }>('SELECT id FROM eval_cases WHERE tenant_id=$1 AND question=$2 LIMIT 1', [principal.tenantId, question])
     if (!existingCase) await query(`INSERT INTO eval_cases(id,tenant_id,question,expected_docs,expected_keywords,should_refuse,source)
       VALUES($1,$2,$3,$4::jsonb,'[]'::jsonb,$5,$6)`, [newId('ec'), principal.tenantId, question, JSON.stringify([...new Set(hits.map(hit=>hit.document.title))]), refused, `failure-candidate:${recorder.traceId}`])
   }
-  if (recorder.hasUsage) {
-    await query(
-      `UPDATE budgets SET used_amount = used_amount + $1, updated_at = now()
-       WHERE tenant_id = $2 AND scope = 'tenant'`,
-      [recorder.usageAmount, principal.tenantId],
-    )
-  }
-
   return {
     answer,
     refused,
@@ -477,7 +456,7 @@ ${evidence}
       sentences: grounding.sentences,
       supported_sentences: grounding.supported,
       strategy: answerStrategy,
-      note: answerStrategy === 'extractive_fallback' ? '生成回答未通过证据核对，已返回带引用的原文摘录。' : '逐句核对引用编号、数字与文字证据。',
+      note: grounding.reason ?? '逐句核对引用编号、数字与文字证据。',
     },
   }
 }

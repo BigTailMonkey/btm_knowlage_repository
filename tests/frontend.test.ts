@@ -101,6 +101,29 @@ test('identity reset ignores an earlier in-flight native runtime response', asyn
   assert.equal(page.element('#native-chat-frame').hidden, true);
 });
 
+test('library exposes model failures and sends the chosen single or bulk retry', async () => {
+  const page = frontend(url => url.endsWith('/extractions/retry') ? { queued: 1 }
+    : url.endsWith('/extractions') ? { can_retry: true, items: [
+      { id: 'doc-a', title: '失败文档', version: 2, status: 'failed', error: '模型 HTTP 401' },
+      { id: 'doc-b', title: '后续文档', version: 1, status: 'running', error: null },
+    ] } : { items: [] })
+  const box = page.element('#extraction-jobs')
+  const single = page.element('single-retry')
+  const bulk = page.element('bulk-retry')
+  single.dataset.extractionRetry = 'doc-a'
+  bulk.dataset.extractionRetry = ''
+  box.querySelectorAll = (selector: string) => selector === '[data-extraction-retry]' ? [single, bulk] : []
+
+  await page.run('state.page = "library"; loadIngestJobs()')
+  assert.equal(box.hidden, false)
+  assert.match(box.innerHTML, /模型 HTTP 401/)
+  assert.match(box.innerHTML, /后续文档 · v1[\s\S]*抽取中/)
+  await single.handlers.click()
+  await bulk.handlers.click()
+  assert.deepEqual(page.calls.filter(call => call.url.endsWith('/extractions/retry'))
+    .map(call => JSON.parse(String(call.options.body))), [{ document_ids: ['doc-a'] }, {}])
+})
+
 test('source highlighting uses UTF-16 offsets, merges overlap, and escapes document HTML', () => {
   const page = frontend()
   const source = '标题😀\n证据 <img src=x onerror=alert(1)> & 结尾'
@@ -166,7 +189,17 @@ test('document updates send doc_id in text, URL and multipart requests and clear
   const url = page.calls.find(call => call.url.endsWith('/documents/url'))!
   assert.equal(JSON.parse(String(url.options.body)).doc_id, 'existing')
 
-  page.run('openIngest({id: "existing", title: "Existing title", source_type: "pdf"}); state.file = {name: "new.pdf"}')
+  page.run('openIngest({id: "existing", title: "Existing title", source_type: "pdf"})')
+  const input = page.element('#file-input')
+  assert.equal(input.multiple, false)
+  page.element('#file-drop').handlers.drop({
+    preventDefault() {},
+    dataTransfer: { files: [{ name: 'a.pdf' }, { name: 'b.pdf' }] },
+  })
+  assert.equal(page.run('state.ingestFiles.length'), 0)
+  assert.match(page.element('#file-submit-status').textContent, /请选择一份文件/)
+  input.files = [{ name: 'new.pdf', size: 10 }]
+  input.handlers.change()
   await page.element('#ingest-file-form').handlers.submit(event)
   const file = page.calls.find(call => call.url.endsWith('/documents/upload'))!
   const fields = (file.options.body as Form).fields
@@ -178,4 +211,52 @@ test('document updates send doc_id in text, URL and multipart requests and clear
   page.element('#ingest-dialog').close()
   assert.equal(page.run('state.ingestDocumentId'), null)
   assert.equal(page.element('#ingest-title').textContent, '添加文档')
+  assert.equal(input.multiple, true)
+})
+
+test('batch file ingestion queues each file with shared permissions and retries only failed submissions', async () => {
+  let failOnce = true
+  const page = frontend((url, options) => {
+    if (url.endsWith('/acl-options')) return { groups: ['team'] }
+    const file = (options.body as Form).fields.find(([key]) => key === 'file')?.[1] as { name: string }
+    if (file.name === '<retry>.txt' && failOnce) {
+      failOnce = false
+      throw new Error('<temporary failure>')
+    }
+    return { job_id: file.name, title: file.name, status: 'pending' }
+  })
+  page.run('setupIngest(); openIngest(); aclPickerState.set($("#file-acl"), { selected: new Set(["group:team"]) })')
+  assert.equal(page.element('#file-input').multiple, true)
+  const names = ['first.md', '<retry>.txt', 'last.pdf']
+  const event = { preventDefault() {} }
+  page.element('#file-drop').handlers.drop({
+    ...event,
+    dataTransfer: { files: names.map(name => ({ name, size: 10 })) },
+  })
+  assert.equal(page.element('#file-title-field').hidden, true)
+  assert.match(page.element('#ingest-files').innerHTML, /first\.md.*&lt;retry&gt;\.txt.*last\.pdf/)
+
+  const submit = page.element('#ingest-file-form').handlers.submit
+  const uploads = () => page.calls.filter(call => call.url.endsWith('/documents/upload'))
+  const initial = submit(event)
+  await submit(event)
+  await initial
+  assert.equal(uploads().length, 3)
+  for (const [index, call] of uploads().entries()) {
+    assert.deepEqual((call.options.body as Form).fields, [
+      ['acl', 'group:team'],
+      ['file', { name: names[index], size: 10 }],
+    ])
+  }
+  assert.equal(page.run('state.jobs.length'), 2)
+  assert.equal(page.element('#ingest-dialog').open, true)
+  assert.equal(page.element('#file-submit-status').textContent, '已提交 2 份，1 份提交失败。')
+  assert.match(page.element('#ingest-files').innerHTML, /&lt;retry&gt;\.txt.*&lt;temporary failure&gt;/)
+  assert.doesNotMatch(page.element('#ingest-files').innerHTML, /first\.md|last\.pdf/)
+
+  await submit(event)
+  assert.equal(uploads().length, 4)
+  assert.deepEqual((uploads()[3]!.options.body as Form).fields, (uploads()[1]!.options.body as Form).fields)
+  assert.equal(page.run('state.jobs.length'), 3)
+  assert.equal(page.element('#ingest-dialog').open, false)
 })

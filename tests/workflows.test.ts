@@ -4,9 +4,10 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { testWorkspace, clearKnowledge } from './helpers.js'
-import { query } from '../src/db/index.js'
+import { query, queryOne } from '../src/db/index.js'
 import { createServer } from '../src/app/server.js'
 import { ingestParsed, stopIngestWorker } from '../src/core/ingestion.js'
+import { processEnrichmentQueue } from '../src/core/enrichment-queue.js'
 import { parseText } from '../src/adapters/parsing/index.js'
 import { runDailyReflection } from '../src/core/scheduling.js'
 import { syncDirectory } from '../src/core/directory-sync.js'
@@ -60,7 +61,7 @@ test('semantic verifier requires complete positive structured decisions and fail
   harness.complete=async()=>result('{"supported":true,"unsupported_sentences":["claim"]}')
   assert.equal(await verifySemanticGrounding('claim[1]',[{text:'source'}]),false)
   harness.complete=async()=>{throw new Error('offline')}
-  assert.equal(await verifySemanticGrounding('claim[1]',[{text:'source'}]),false)
+  await assert.rejects(verifySemanticGrounding('claim[1]',[{text:'source'}]), /offline/)
 })
 
 test('evaluation imports expected outcomes, runs actual answering, and does not create user conversations',async()=>{
@@ -79,6 +80,29 @@ test('evaluation imports expected outcomes, runs actual answering, and does not 
   assert.equal((await query('SELECT id FROM memory_items')).length,0)
 })
 
+test('evaluation continues after a model failure and retries only requested cases', async () => {
+  await ingestParsed(workspace.principal, parseText('知织支持检索和引用。', 'Knowledge fixture'), { sourceType: 'text' })
+  const request = (method: 'GET' | 'POST', path: string, payload?: object) =>
+    app.inject({ method, url: '/api/v1' + path, headers: workspace.headers, payload })
+  const cases = ['知织支持什么检索？', '知织支持什么引用？'].map(question => ({
+    question, expected_docs: ['Knowledge fixture'], expected_keywords: ['引用'], should_refuse: false,
+  }))
+  assert.equal((await request('POST', '/evals/cases', { cases })).statusCode, 200)
+  harness.ask = async (_session, prompt) => prompt.includes(cases[0]!.question)
+    ? { ...result(''), ok: false, error: 'HTTP 503' } : result('知织支持检索和引用。[1]')
+  const run = (await request('POST', '/evals/run', {})).json()
+  assert.equal(run.metrics.failed_cases, 1)
+  assert.equal(run.results.filter((item: { pass: boolean }) => item.pass).length, 1)
+  const failures = (await request('GET', '/evals/failures')).json().items
+  assert.equal(failures.length, 1)
+  assert.match(failures[0].error, /HTTP 503/)
+  harness.ask = async () => result('知织支持检索和引用。[1]')
+  const retried = (await request('POST', '/evals/run', { case_ids: [failures[0].case_id] })).json()
+  assert.equal(retried.metrics.cases, 1)
+  assert.equal(retried.metrics.pass_rate, 1)
+  assert.deepEqual((await request('GET', '/evals/failures')).json().items, [])
+})
+
 test('automatic failure candidates need explicit approval before entering the golden evaluation',async()=>{
   await app.inject({method:'POST',url:'/api/v1/ask',headers:workspace.headers,payload:{question:'missing knowledge'}})
   const cases=(await app.inject({method:'GET',url:'/api/v1/evals/cases',headers:workspace.headers})).json().items
@@ -94,8 +118,18 @@ test('memory promotion preserves the full source and creates no unsupported acti
   const text='知织支持知识检索。'+'经过审阅的原始记忆内容。'.repeat(60)
   const memory=await app.inject({method:'POST',url:'/api/v1/memory',headers:workspace.headers,payload:{text}})
   const promotion=await app.inject({method:'POST',url:`/api/v1/memory/${memory.json().id}/promote`,headers:workspace.headers})
+  harness.complete=async()=>({...result(''),ok:false,error:'HTTP 503'})
   const resolved=await app.inject({method:'POST',url:`/api/v1/review/${promotion.json().review_id}/resolve`,headers:workspace.headers,payload:{action:'accept_new'}})
   assert.equal(resolved.statusCode,200)
+  assert.equal(resolved.json().status,'queued')
+  await processEnrichmentQueue()
+  const reviewId=promotion.json().review_id
+  assert.match(String((await queryOne<{payload:{model_error:string}}>('SELECT payload FROM review_queue WHERE id=$1',[reviewId]))?.payload.model_error), /HTTP 503/)
+  harness.complete=async()=>result('[]')
+  const retry=await app.inject({method:'POST',url:'/api/v1/documents/extractions/retry',headers:workspace.headers,payload:{}})
+  assert.equal(retry.json().queued,1)
+  await processEnrichmentQueue()
+  assert.equal((await queryOne<{status:string}>('SELECT status FROM review_queue WHERE id=$1',[reviewId]))?.status,'resolved')
   const versions=await query<{text:string}>('SELECT text FROM document_versions')
   assert.ok(versions.some(version=>version.text.includes(text)))
   assert.equal((await query("SELECT id FROM facts WHERE predicate='记录' AND status='active'")).length,0)
