@@ -27,6 +27,8 @@ export async function documentDict(document: DocumentRow): Promise<Record<string
     summary: document.summary,
     source_trust: document.source_trust ?? 0.5,
     is_core: document.is_core ?? false,
+    deleted_at: document.deleted_at ?? null,
+    deleted_by: document.deleted_by ?? null,
     chunks: Number(count?.count ?? 0),
     created_at: iso(document.created_at),
     updated_at: iso(document.updated_at),

@@ -15,8 +15,23 @@ export interface DocumentRow {
   summary: string | null
   source_trust?: number
   is_core?: boolean
+  deleted_at?: string | null
+  deleted_by?: string | null
   created_at: string
   updated_at: string
+}
+
+export interface BlockRow {
+  id: string
+  version_id: string
+  doc_id: string
+  parent_id: string | null
+  type: string
+  page: number | null
+  bbox: number[] | null
+  order_index: number
+  heading_path: string[]
+  text: string
 }
 
 export interface VersionRow {

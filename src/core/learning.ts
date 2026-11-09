@@ -1,4 +1,4 @@
-import { query, queryOne } from '../db/index.js'
+import { query, queryOne, transaction } from '../db/index.js'
 import { completeStructured, modelUnavailable, requireModelText } from '../adapters/harness/index.js'
 import { estimateTokens } from './chunking.js'
 import { newId, todayLocal } from './ids.js'
@@ -9,6 +9,7 @@ import { evidenceWeight } from './source-policy.js'
 import { resolveSemanticEntity } from './entity-resolution.js'
 import { consolidateKnowledge } from './consolidation.js'
 import { MIN_FACT_CONFIDENCE } from './fact-visibility.js'
+import { notifyReviewQueueChanged } from './review-events.js'
 
 const EXTRACT_SYSTEM = `你是 KnoWeave 的事实抽取器。只抽取原文明确陈述、可被引用验证的断言。
 输出一个 JSON 数组，不要输出任何解释或 Markdown。每项字段：
@@ -37,6 +38,22 @@ interface Candidate {
 
 export function normalizeName(name: string): string {
   return (name ?? '').trim().toLowerCase().replace(/[\s\u3000·•\-_/]+/g, '')
+}
+
+/** 把主谓宾拼成一句能直接读的话，去掉中文与数字之间因分词留下的空格。 */
+export function factSentence(subject: string, predicate: string, object?: string | null): string {
+  const tidy = (value: unknown): string => String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .replace(/(?<=[\u4e00-\u9fa5])\s+(?=[\u4e00-\u9fa5])/g, '')
+    .replace(/(?<=\d)\s+(?=[\u4e00-\u9fa5])/g, '')
+    .replace(/(?<=[\u4e00-\u9fa5])\s+(?=\d)/g, '')
+    .trim()
+  const glue = (left: string, right: string): string => {
+    if (!left) return right
+    if (!right) return left
+    return /[A-Za-z0-9]$/.test(left) && /^[A-Za-z0-9]/.test(right) ? `${left} ${right}` : `${left}${right}`
+  }
+  return glue(glue(tidy(subject), tidy(predicate)), tidy(object))
 }
 
 export function parseDate(value: unknown): string | null {
@@ -109,6 +126,66 @@ export async function getOrCreateEntity(
     [newId('ali'), id, name.trim(), normalized],
   )
   return (await queryOne<EntityRow>('SELECT * FROM entities WHERE id = $1', [id]))!
+}
+
+/**
+ * 删除实体：以它为主语的事实连同证据一并物理删除；仅把它当宾语的事实保留，
+ * 宾语降级为文本；相关待审项关闭，汇总缓存失效以便重新生成。
+ */
+export async function deleteEntity(principal: Principal, entityId: string): Promise<Record<string, unknown>> {
+  const entity = await queryOne<EntityRow>('SELECT * FROM entities WHERE id = $1', [entityId])
+  if (!entity || entity.tenant_id !== principal.tenantId || entity.status === 'retracted'
+    || !canRead(principal, entity.acl_principals)) {
+    throw Object.assign(new Error('实体不存在或无权删除'), { statusCode: 404 })
+  }
+  let factsRemoved = 0
+  let factsUnlinked = 0
+  let reviewsClosed = 0
+  await transaction(async (client) => {
+    const subjectFacts = await client.query<{ id: string }>(
+      'SELECT id FROM facts WHERE tenant_id = $1 AND subject_id = $2',
+      [principal.tenantId, entity.id],
+    )
+    const removedIds = subjectFacts.map((row) => row.id)
+    factsRemoved = removedIds.length
+    if (removedIds.length) {
+      await client.query('DELETE FROM fact_evidence WHERE fact_id = ANY($1::text[])', [removedIds])
+      await client.query('DELETE FROM facts WHERE id = ANY($1::text[])', [removedIds])
+    }
+    const unlinked = await client.query<{ id: string }>(
+      `UPDATE facts SET object_id = NULL, object_literal = COALESCE(object_literal, $1)
+       WHERE tenant_id = $2 AND object_id = $3 RETURNING id`,
+      [entity.canonical_name, principal.tenantId, entity.id],
+    )
+    factsUnlinked = unlinked.length
+    const closed = await client.query<{ id: string }>(
+      `UPDATE review_queue SET status = 'resolved', resolution = $1::jsonb, resolved_at = now()
+       WHERE tenant_id = $2 AND status = 'open'
+         AND (payload->>'new_fact_id' = ANY($3::text[])
+              OR payload->>'subject' = $4
+              OR payload->'old_fact_ids' ?| $3::text[])
+       RETURNING id`,
+      [
+        JSON.stringify({ action: 'entity_deleted', by: principal.userId, entity: entity.canonical_name }),
+        principal.tenantId,
+        removedIds,
+        entity.canonical_name,
+      ],
+    )
+    reviewsClosed = closed.length
+    await client.query('DELETE FROM entity_aliases WHERE entity_id = $1', [entity.id])
+    await client.query('DELETE FROM entities WHERE id = $1', [entity.id])
+    await client.query('DELETE FROM knowledge_summaries WHERE tenant_id = $1', [principal.tenantId])
+  })
+  if (reviewsClosed) notifyReviewQueueChanged(principal.tenantId)
+  return {
+    id: entity.id,
+    name: entity.canonical_name,
+    facts_removed: factsRemoved,
+    facts_unlinked: factsUnlinked,
+    reviews_closed: reviewsClosed,
+    status: 'deleted',
+  }
 }
 
 const EXTRACTION_BATCH_CHARS = 7000
@@ -317,15 +394,18 @@ async function queueFactReview(
     old_fact_ids: conflicting.map((old) => old.id), old_objects: oldObjects,
     quote: candidate.quote, doc_id: document.id, reason,
   })
+  const kind = conflicting.length ? 'fact_conflict' : 'fact_validation'
+  const title = factSentence(subject.canonical_name, candidate.predicate, candidate.objectName || candidate.objectLiteral)
   if (existing) {
-    await query('UPDATE review_queue SET payload = $1::jsonb, kind = $2 WHERE id = $3', [payload, conflicting.length ? 'fact_conflict' : 'fact_validation', existing.id])
+    await query('UPDATE review_queue SET payload = $1::jsonb, kind = $2, title = $3 WHERE id = $4', [payload, kind, title, existing.id])
     return
   }
   await query(
     `INSERT INTO review_queue (id, tenant_id, kind, title, payload, status)
      VALUES ($1, $2, $3, $4, $5::jsonb, 'open')`,
-    [newId('rev'), principal.tenantId, conflicting.length ? 'fact_conflict' : 'fact_validation', `${subject.canonical_name} · ${candidate.predicate}`, payload],
+    [newId('rev'), principal.tenantId, kind, title, payload],
   )
+  notifyReviewQueueChanged(principal.tenantId)
 }
 
 async function mergeOrArbitrate(principal: Principal, document: DocumentRow, candidate: Candidate): Promise<string> {
@@ -412,13 +492,14 @@ async function mergeOrArbitrate(principal: Principal, document: DocumentRow, can
        WHERE tenant_id = $2 AND status = 'open' AND payload->>'new_fact_id' = $3`,
       [JSON.stringify({ action: 'corroborated', by: 'system', sources: sources.length }), principal.tenantId, fact.id],
     )
+    notifyReviewQueueChanged(principal.tenantId)
     return canSupersede ? 'superseded' : sameObject ? 'merged' : 'created'
   }
   const reason = conflicting.length
-    ? '同一主语与谓词出现不同宾语，且有效期重叠；进入人工审阅。'
+    ? '同一件事在文档里有不同说法，请判断以哪一条为准。'
     : fact.confidence < MIN_FACT_CONFIDENCE
-      ? '候选置信度低于0.7；需人工验证后生效。'
-      : '当前只有单份文档支持；需独立来源佐证或人工审阅后生效。'
+      ? '抽取把握不足，需要你确认后再进知识库。'
+      : '这条信息目前只在一份文档里出现，还没有其他来源印证。'
   await queueFactReview(principal, subject, fact, candidate, document, conflicting, reason)
   return 'disputed'
 }
@@ -551,6 +632,7 @@ export async function resolveReview(
     `UPDATE review_queue SET status = 'resolved', resolution = $1::jsonb, resolved_at = now() WHERE id = $2`,
     [JSON.stringify({ action, note, by: principal.userId }), reviewId],
   )
+  notifyReviewQueueChanged(principal.tenantId)
   await consolidateKnowledge(principal.tenantId)
   return { review_id: reviewId, action, status: 'resolved' }
 }
@@ -610,22 +692,31 @@ export async function runReflection(tenantId: string): Promise<Record<string, un
         if (!reviewed.has(right.id)) {
           const subject = await queryOne<EntityRow>('SELECT canonical_name FROM entities WHERE id = $1', [left.subject_id])
           const [subjectId, predicate] = key.split('|')
+          const objectName = async (fact: FactRow): Promise<string | null> => fact.object_id
+            ? ((await queryOne<EntityRow>('SELECT canonical_name FROM entities WHERE id = $1', [fact.object_id]))?.canonical_name ?? null)
+            : fact.object_literal
+          const subjectName = subject?.canonical_name ?? subjectId!
+          const rightObject = await objectName(right)
+          const leftObject = await objectName(left)
           await query(
             `INSERT INTO review_queue (id, tenant_id, kind, title, payload, status)
              VALUES ($1, $2, 'fact_conflict', $3, $4::jsonb, 'open')`,
             [
               newId('rev'),
               tenantId,
-              `${subject?.canonical_name ?? subjectId} · ${predicate}`,
+              factSentence(subjectName, predicate!, rightObject),
               JSON.stringify({
-                subject: subject?.canonical_name ?? subjectId,
+                subject: subjectName,
                 predicate,
+                new_object: rightObject,
+                old_objects: [leftObject],
                 new_fact_id: right.id,
                 old_fact_ids: [left.id],
-                reason: '夜间反思扫描发现有效期重叠的冲突断言。',
+                reason: '知识库里同一件事存在两个互相矛盾的说法，请判断以哪一条为准。',
               }),
             ],
           )
+          notifyReviewQueueChanged(tenantId)
         }
       }
     }

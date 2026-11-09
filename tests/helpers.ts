@@ -7,11 +7,13 @@ import { closePool, initSchema, query, seedIfEmpty } from '../src/db/index.js'
 import { embedder, sparseVector, tokenize, type Embedding } from '../src/adapters/embeddings/index.js'
 import { harness } from '../src/adapters/harness/index.js'
 import type { Principal } from '../src/core/security.js'
+import { createTempDatabase } from './temp-database.js'
 
 export async function testWorkspace() {
   const directory = await mkdtemp(join(tmpdir(), 'knowweave-node-test-'))
+  const database = await createTempDatabase('knowweave_test')
   Object.assign(settings, {
-    dataDir: directory, databaseUrl: '', modelApiKey: '',
+    dataDir: directory, databaseUrl: database.url, modelApiKey: '',
     embeddingApiKey: '', sidecarEnabled: false, reflectionEnabled: false,
     dshWebEnabled: false, seedDemo: true, semanticEntities: false, groundingVerifier: false, rerankUrl: '',
   })
@@ -33,7 +35,11 @@ export async function testWorkspace() {
   return {
     principal,
     headers: { authorization: 'Bearer owner-token' },
-    async close() { await closePool(); await rm(directory, { recursive: true, force: true }) },
+    async close() {
+      await closePool()
+      await database.drop()
+      await rm(directory, { recursive: true, force: true })
+    },
   }
 }
 

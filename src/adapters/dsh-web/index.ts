@@ -77,6 +77,77 @@ let shuttingDown = false
 let restartAttempts = 0
 let restartTimer: NodeJS.Timeout | null = null
 
+function baseDshWebUrl(): string {
+  return `http://127.0.0.1:${settings.dshWebPort}/`
+}
+
+function runtimePath(): string {
+  return join(settings.dshWebHome, 'knowweave-runtime.json')
+}
+
+function persistRuntime(): void {
+  if (!startupUrl) return
+  try {
+    writeFileSync(runtimePath(), JSON.stringify({ url: startupUrl }), { mode: 0o600 })
+  } catch {
+    // 持久化只用于主服务重载后接管，写入失败不影响当前对话。
+  }
+}
+
+function savedRuntimeUrl(): string | null {
+  try {
+    const saved = JSON.parse(readFileSync(runtimePath(), 'utf8')) as { url?: unknown }
+    if (typeof saved.url !== 'string') return null
+    const url = new URL(saved.url)
+    const base = new URL(baseDshWebUrl())
+    return url.origin === base.origin && url.pathname === base.pathname ? url.href : null
+  } catch {
+    return null
+  }
+}
+
+function markReady(url: string): void {
+  startupUrl = url
+  ready = true
+  lastError = null
+  restartAttempts = 0
+  persistRuntime()
+}
+
+async function probeDshWeb(url: string): Promise<number | null> {
+  try {
+    const response = await fetch(url, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(1500),
+      headers: { 'cache-control': 'no-store' },
+    })
+    await response.body?.cancel()
+    return response.status
+  } catch {
+    return null
+  }
+}
+
+/** 主服务重载后优先接管仍存活的 DSH，避免重复启动造成端口冲突。 */
+async function adoptExistingDshWeb(): Promise<boolean> {
+  const baseUrl = baseDshWebUrl()
+  const candidates = [...new Set([startupUrl, savedRuntimeUrl(), baseUrl].filter((url): url is string => Boolean(url)))]
+  for (const candidate of candidates) {
+    const status = await probeDshWeb(candidate)
+    // DSH 的有效启动令牌会换取 303；无令牌或失效令牌会返回 401。
+    // 后一种情况把原地址交给浏览器，沿用该来源已有的登录 Cookie。
+    if (status === 303) {
+      markReady(candidate)
+      return true
+    }
+    if (status === 401) {
+      markReady(baseUrl)
+      return true
+    }
+  }
+  return false
+}
+
 function dshBin(): string {
   return join(settings.rootDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 }
@@ -217,17 +288,15 @@ function scheduleRestart(): void {
 
 function capture(line: string): void {
   const match = /dsh web:\s*(http[^\s]+)/.exec(line)
-  if (match) {
-    startupUrl = match[1]!.trim()
-    ready = true
-    lastError = null
-    restartAttempts = 0
-  }
+  if (match) markReady(match[1]!.trim())
   const failure = /startup failed|error:|Error:/.exec(line)
-  if (failure && !startupUrl) lastError = line.trim().slice(0, 300)
+  if (failure) lastError = line.trim().slice(0, 300)
 }
 
 async function spawnAndWait(): Promise<void> {
+  ready = false
+  startupUrl = null
+  lastError = null
   if (!existsSync(dshBin())) {
     lastError = '找不到对话服务运行时，请先安装项目依赖'
     return
@@ -266,8 +335,10 @@ async function spawnAndWait(): Promise<void> {
     child = null
     managed = false
     ready = false
+    startupUrl = null
     if (!expected) {
-      lastError = `对话服务退出（code=${code ?? '-'} signal=${signal ?? '-'}）`
+      const exitMessage = `对话服务退出（code=${code ?? '-'} signal=${signal ?? '-'}）`
+      lastError = lastError ? `${lastError}；${exitMessage}` : exitMessage
       scheduleRestart()
     }
   })
@@ -297,9 +368,12 @@ export function ensureDshWeb(principal?: Principal): Promise<void> {
   if (principal) bindKnowledgeIdentity(principal)
   // A native knowledge session starts only after an authenticated user opens it.
   if (!knowledgeToken) return Promise.resolve()
-  if (ready) return Promise.resolve()
+  if (ready && managed) return Promise.resolve()
   if (starting) return starting
-  starting = spawnAndWait().finally(() => {
+  starting = (async () => {
+    if (await adoptExistingDshWeb()) return
+    await spawnAndWait()
+  })().finally(() => {
     starting = null
   })
   return starting
@@ -326,6 +400,8 @@ export async function startDshWeb(): Promise<void> {
 
 export async function stopDshWeb(): Promise<void> {
   shuttingDown = true
+  ready = false
+  startupUrl = null
   if (restartTimer) {
     clearTimeout(restartTimer)
     restartTimer = null

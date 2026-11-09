@@ -23,3 +23,4 @@ knowweave/config.toml
 # Node 主服务本地配置含密钥，不提交
 config.toml
 /.openidea/
+/.workbuddy/

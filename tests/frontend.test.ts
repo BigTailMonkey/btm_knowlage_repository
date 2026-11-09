@@ -10,9 +10,16 @@ class Form {
   append(key: string, value: unknown) { this.fields.push([key, value]) }
 }
 
-function frontend(respond: (url: string, options: Record<string, unknown>) => unknown = () => ({ items: [], groups: [] })) {
+function frontend(respond: (url: string, options: Record<string, unknown>) => unknown = () => ({ items: [], groups: [] }), site: { hostname?: string; port?: string } = {}) {
   const nodes = new Map<string, any>()
   const calls: Array<{ url: string; options: Record<string, unknown> }> = []
+  const listeners = new Map<string, Array<(...args: any[]) => any>>()
+  const listen = (target: string) => (type: string, callback: (...args: any[]) => any) => {
+    const key = `${target}:${type}`
+    listeners.set(key, [...(listeners.get(key) ?? []), callback])
+  }
+  const hostname = site.hostname ?? '127.0.0.1'
+  const port = site.port ?? '8730'
   function element(selector: string): any {
     if (!nodes.has(selector)) {
       const handlers: Record<string, (...args: any[]) => any> = {}
@@ -37,11 +44,19 @@ function frontend(respond: (url: string, options: Record<string, unknown>) => un
   const context = vm.createContext({
     console,
     FormData: Form,
-    document: { querySelector: element, querySelectorAll: () => [], addEventListener() {}, body: { dataset: {} } },
+    URL,
+    URLSearchParams,
+    document: {
+      querySelector: element, querySelectorAll: () => [],
+      addEventListener: listen('document'), visibilityState: 'visible', hidden: false,
+      body: { dataset: {} },
+    },
     localStorage: { getItem: () => null, setItem() {} },
-    location: { hash: '' },
-    window: { addEventListener() {} },
+    location: { hash: '', hostname, port, href: `http://${hostname}:${port}/`, origin: `http://${hostname}:${port}` },
+    window: { addEventListener: listen('window'), parent: { postMessage() {} } },
+    navigator: { onLine: true },
     setTimeout: () => 1, clearTimeout() {},
+    setInterval: () => 1, clearInterval() {},
     fetch: async (url: string, options = {}) => {
       calls.push({ url, options })
       const payload = await respond(url, options)
@@ -49,7 +64,10 @@ function frontend(respond: (url: string, options: Record<string, unknown>) => un
     },
   })
   vm.runInContext(appSource, context)
-  return { context, nodes, calls, element, run: (code: string) => vm.runInContext(code, context) }
+  const dispatch = (target: string, type: string, event: unknown) => {
+    for (const callback of listeners.get(`${target}:${type}`) ?? []) callback(event)
+  }
+  return { context, nodes, calls, element, dispatch, run: (code: string) => vm.runInContext(code, context) }
 }
 
 test('default chat mounts the complete native DSH UI and keeps it alive across navigation', async () => {
@@ -99,6 +117,86 @@ test('identity reset ignores an earlier in-flight native runtime response', asyn
   await loading;
   assert.equal(page.element('#native-chat-frame').src, undefined);
   assert.equal(page.element('#native-chat-frame').hidden, true);
+});
+
+test('native chat heartbeat marks the surface alive', async () => {
+  const page = frontend(() => ({ enabled: true, ready: true, url: 'http://127.0.0.1:3081/?token=t' }));
+  page.run('setupChat()');
+  await page.run('loadChat()');
+  const frame = page.element('#native-chat-frame');
+  frame.contentWindow = { sentinel: true };
+  page.run('nativeChat.beatAt = 0; nativeChat.graceUntil = 0');
+  page.dispatch('window', 'message', { source: {}, origin: 'http://127.0.0.1:3081', data: { type: 'knowweave:heartbeat' } });
+  assert.equal(page.run('nativeChat.beatAt'), 0, 'ignores a heartbeat from another window');
+  page.dispatch('window', 'message', { source: frame.contentWindow, origin: 'http://127.0.0.1:3081', data: { type: 'knowweave:heartbeat' } });
+  assert.equal(page.run('nativeChat.beatAt > 0'), true);
+  assert.equal(page.run('nativeChat.watcher !== null'), true, 'watchdog runs while the frame is mounted');
+});
+
+test('silent native chat remounts on the restarted runtime URL', async () => {
+  let runtimeUrl = 'http://127.0.0.1:3081/?token=old';
+  const page = frontend(() => ({ enabled: true, ready: true, url: runtimeUrl }));
+  await page.run('loadChat()');
+  // A restarted DSH re-issues its launch token; reloading the stale URL would stay 401.
+  runtimeUrl = 'http://127.0.0.1:3081/?token=new';
+  page.run('nativeChat.graceUntil = 0; nativeChat.beatAt = 0');
+  await page.run('checkNativeChatHealth()');
+  assert.equal(page.element('#native-chat-frame').src, 'http://127.0.0.1:3081/?token=old', 'one miss is not enough');
+  await page.run('checkNativeChatHealth()');
+  assert.equal(page.element('#native-chat-frame').src, 'http://127.0.0.1:3081/?token=new');
+  assert.equal(page.element('#native-chat-frame').hidden, false);
+  assert.equal(page.run('nativeChat.reloads'), 0, 'a restarted process remounts without spending the reload');
+  assert.equal(page.element('#native-chat-status').hidden, true);
+});
+
+test('a live but unusable native chat reloads once and then defers to the user', async () => {
+  const page = frontend(() => ({ enabled: true, ready: true, url: 'http://127.0.0.1:3081/?token=t' }));
+  await page.run('loadChat()');
+  page.run('nativeChat.graceUntil = 0; nativeChat.beatAt = 0; nativeChat.misses = 1');
+  await page.run('checkNativeChatHealth()');
+  assert.equal(page.run('nativeChat.reloads'), 1, 'the same URL gets one reload');
+  assert.equal(page.element('#native-chat-frame').hidden, false);
+  page.run('nativeChat.graceUntil = 0; nativeChat.beatAt = 0; nativeChat.misses = 1');
+  await page.run('checkNativeChatHealth()');
+  assert.match(page.element('#native-chat-message').textContent, /没有响应/);
+  assert.equal(page.element('#native-chat-frame').hidden, true);
+  assert.equal(page.element('#native-chat-retry').hidden, false);
+});
+
+test('silent native chat surfaces the service error with a retry entry', async () => {
+  let runtime: Record<string, unknown> = { enabled: true, ready: true, url: 'http://127.0.0.1:3081/?token=old' };
+  const page = frontend(() => runtime);
+  await page.run('loadChat()');
+  runtime = { enabled: true, ready: false, lastError: '对话服务退出（code=1 signal=-）' };
+  page.run('nativeChat.graceUntil = 0; nativeChat.beatAt = 0; nativeChat.misses = 1');
+  await page.run('checkNativeChatHealth()');
+  assert.equal(page.element('#native-chat-frame').hidden, true);
+  assert.equal(page.element('#native-chat-message').textContent, '对话服务退出（code=1 signal=-）');
+  assert.equal(page.element('#native-chat-retry').hidden, false);
+});
+
+test('returning to the chat page keeps the session and delays the judgement', async () => {
+  const page = frontend(() => ({ enabled: true, ready: true, url: 'http://127.0.0.1:3081/?token=t' }));
+  await page.run('loadChat()');
+  page.run('nativeChat.graceUntil = 0');
+  await page.run('loadPage("chat")');
+  assert.equal(page.calls.length, 1, 'no reload when returning to the chat page');
+  assert.equal(page.run('nativeChat.graceUntil > Date.now()'), true, 'hidden iframe timers were throttled');
+});
+
+test('native chat refuses a page host that cannot share the login cookie', async () => {
+  const page = frontend(() => ({ enabled: true, ready: true, url: 'http://127.0.0.1:3081/?token=t' }), { hostname: '192.168.1.5' });
+  await page.run('loadChat()');
+  assert.equal(page.calls.length, 0, 'no probe for a surface that can never authenticate');
+  assert.equal(page.element('#native-chat-frame').src, undefined);
+  assert.match(page.element('#native-chat-message').textContent, /本机地址/);
+  assert.equal(page.element('#native-chat-retry').hidden, false);
+});
+
+test('localhost pages load the iframe on the same site so the Strict cookie is sent', async () => {
+  const page = frontend(() => ({ enabled: true, ready: true, url: 'http://127.0.0.1:3081/?token=t' }), { hostname: 'localhost' });
+  await page.run('loadChat()');
+  assert.equal(page.element('#native-chat-frame').src, 'http://localhost:3081/?token=t');
 });
 
 test('library exposes model failures and sends the chosen single or bulk retry', async () => {
@@ -259,4 +357,39 @@ test('batch file ingestion queues each file with shared permissions and retries 
   assert.deepEqual((uploads()[3]!.options.body as Form).fields, (uploads()[1]!.options.body as Form).fields)
   assert.equal(page.run('state.jobs.length'), 3)
   assert.equal(page.element('#ingest-dialog').open, false)
+})
+
+test('trash dialog lists documents and can restore or permanently delete them', async () => {
+  let items = [{ id: 'doc-1', title: '回收样例', source_type: 'text', version: 1, chunks: 0, deleted_at: '2026-11-01T02:00:00Z', expires_at: '2026-12-01T02:00:00Z', acl_label: '全员可见' }]
+  const page = frontend(url => {
+    if (url === '/api/v1/documents/trash') return { items, retention_days: 30, can_manage: true }
+    if (url === '/api/v1/documents/doc-1/restore') { items = []; return { status: 'active', message: '文档已恢复，检索索引与事实抽取已重新排队' } }
+    if (url === '/api/v1/documents/doc-1/permanent') { items = []; return { status: 'purged', removed_facts: 2 } }
+    return { items: [] }
+  })
+  const restore = page.element('restore-btn')
+  const purge = page.element('purge-btn')
+  restore.dataset.trashRestore = 'doc-1'
+  purge.dataset.trashPurge = 'doc-1'
+  purge.dataset.trashTitle = '回收样例'
+  page.context.document.querySelectorAll = (selector: string) => selector === '#trash-list [data-trash-restore]'
+    ? [restore]
+    : selector === '#trash-list [data-trash-purge]' ? [purge] : []
+
+  await page.run('openTrash()')
+  assert.equal(page.element('#trash-dialog').open, true)
+  assert.match(page.element('#trash-note').textContent, /超过 30 天的文档会被自动彻底删除/)
+  const list = page.element('#trash-list')
+  assert.match(list.innerHTML, /回收样例/)
+  assert.match(list.innerHTML, /v1 · 移入于/)
+  assert.match(list.innerHTML, /自动清除/)
+
+  await restore.handlers.click()
+  assert.deepEqual(page.calls.filter(call => call.options.method === 'POST').map(call => call.url), ['/api/v1/documents/doc-1/restore'])
+  assert.equal(page.element('#trash-list').innerHTML, '<div class="empty-block">回收站为空</div>')
+
+  page.context.confirm = () => true
+  page.context.document.querySelectorAll = (selector: string) => selector === '#trash-list [data-trash-purge]' ? [purge] : []
+  await purge.handlers.click()
+  assert.deepEqual(page.calls.filter(call => call.options.method === 'DELETE').map(call => call.url), ['/api/v1/documents/doc-1/permanent'])
 })

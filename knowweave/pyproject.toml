@@ -2,10 +2,11 @@
 requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
+# 这里只声明解析边车（sidecar/）需要的 Python 依赖，不再包含任何可安装包。
 [project]
 name = "knowweave"
 version = "0.1.0"
-description = "KnoWeave / 知织 —— 以事实为中心的个人 AI 知识库"
+description = "KnoWeave / 知织 —— 解析边车的 Python 依赖环境"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115.0",
@@ -20,20 +21,11 @@ dependencies = [
   "sqlalchemy>=2.0.36",
 ]
 
-[dependency-groups]
-dev = [
-  "pytest>=8.3.0",
-]
-
 [project.optional-dependencies]
 parsing = ["docling>=2"]
 ocr = ["pymupdf>=1.24", "pytesseract>=0.3", "Pillow>=10", "rapidocr>=3,<4", "onnxruntime>=1.19"]
 asr = ["faster-whisper>=1"]
 models = ["FlagEmbedding>=1.3", "sentence-transformers>=4"]
 
-[tool.setuptools.packages.find]
-include = ["app*"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-q"
+[tool.setuptools]
+packages = []

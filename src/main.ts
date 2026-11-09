@@ -1,14 +1,13 @@
 import { mkdirSync } from 'node:fs'
 
 import { settings } from './config.js'
-import { closePool, initSchema, seedIfEmpty, query } from './db/index.js'
+import { closePool, initSchema, seedIfEmpty } from './db/index.js'
 import { assertModelReady, harness } from './adapters/harness/index.js'
 import { startDshWeb, stopDshWeb } from './adapters/dsh-web/index.js'
 import { startSidecar, stopSidecar } from './adapters/sidecar/index.js'
-import { runReflection } from './core/learning.js'
 import { createServer } from './app/server.js'
 import { startIngestWorker, stopIngestWorker } from './core/ingestion.js'
-import { runDailyReflection } from './core/scheduling.js'
+import { runDailyReflection, runIntervalMaintenance } from './core/scheduling.js'
 
 async function main(): Promise<void> {
   await assertModelReady()
@@ -35,7 +34,7 @@ async function main(): Promise<void> {
   if (settings.reflectionEnabled) {
     const reflect = () => settings.reflectionRunAt
       ? runDailyReflection()
-      : query<{ id: string }>('SELECT id FROM tenants').then(async (tenants) => { for (const tenant of tenants) await runReflection(tenant.id) })
+      : runIntervalMaintenance()
     void reflect().catch((error) => app.log.error(error as Error))
     timer = setInterval(() => { void reflect().catch((error) => app.log.error(error as Error)) }, settings.reflectionRunAt ? 60_000 : settings.reflectionIntervalSeconds * 1000)
     timer.unref()

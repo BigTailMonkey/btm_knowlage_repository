@@ -3,6 +3,8 @@
 检查日期：2026-11-06（Asia/Shanghai）。检查对象：当前工作区，包含上一轮页面品牌定制。
 
 > 这是修复前的审计快照。后续知识库与问答修复、当前接口和仍待实现的规划见 [当前实现说明](/Users/houdawei111519/projects/btm_knowlage_repository/docs/current-implementation.md)。权限、计费、预算相关发现按用户要求暂缓，本表保留原始复现结果供追踪。
+>
+> 2026-11-08 补充：旧的 Python 服务 `knowweave/app/` 与其测试 `knowweave/tests/` 已删除，Python 环境现只承载解析边车 `sidecar/`。下文中指向这两个目录的链接与相关结论已失效。
 
 ## 修复追踪 · 2026-11-07
 

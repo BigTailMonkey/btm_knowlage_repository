@@ -71,13 +71,32 @@ const TRACE_STATUS = {
 
 const REVIEW_KIND = {
   fact_conflict: "事实冲突",
+  fact_validation: "事实待核",
   acl_conflict: "权限冲突",
   low_quality: "低质量",
   duplicate: "重复文档",
+  parse_failure: "解析失败",
+  memory_promotion: "记忆晋升",
 };
 
 function plain(value) {
   return String(value ?? "").replace(/[#*_`>]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/** 把主谓宾拼成一句能直接读的话，去掉中文与数字之间因分词留下的空格。 */
+function factSentence(subject, predicate, object) {
+  const tidy = (value) => String(value ?? "")
+    .replace(/\s+/g, " ")
+    .replace(/(?<=[\u4e00-\u9fa5])\s+(?=[\u4e00-\u9fa5])/g, "")
+    .replace(/(?<=\d)\s+(?=[\u4e00-\u9fa5])/g, "")
+    .replace(/(?<=[\u4e00-\u9fa5])\s+(?=\d)/g, "")
+    .trim();
+  const glue = (left, right) => {
+    if (!left) return right;
+    if (!right) return left;
+    return /[A-Za-z0-9]$/.test(left) && /^[A-Za-z0-9]/.test(right) ? `${left} ${right}` : `${left}${right}`;
+  };
+  return glue(glue(tidy(subject), tidy(predicate)), tidy(object));
 }
 
 function plainLines(value) {
@@ -223,7 +242,7 @@ function showPage(page) {
 }
 
 function loadPage(page) {
-  if (page === "chat") loadChat();
+  if (page === "chat") resumeNativeChat();
   if (page === "dashboard") loadDashboard();
   if (page === "library") { loadDocs(); loadIngestJobs(); }
   if (page === "ask") loadAsk();
@@ -351,9 +370,11 @@ function renderStats() {
 
 
   const reviews = Number(stats.reviews_open || 0);
-  const badge = $("#nav-review-count");
-  badge.textContent = reviews;
-  badge.hidden = reviews === 0;
+  applyReviewCount(reviews);
+
+  const trashed = Number(stats.documents_trashed || 0);
+  const trashButton = $("#open-trash");
+  if (trashButton && !trashButton.dataset.label) trashButton.textContent = `回收站${trashed ? ` (${num(trashed)})` : ""}`;
 
   const budget = stats.budget || {};
   const used = Number(budget.used || 0);
@@ -629,6 +650,80 @@ function renderDocs() {
   });
 }
 
+/* ============ 回收站 ============ */
+async function openTrash() {
+  const dialog = $("#trash-dialog");
+  $("#trash-list").innerHTML = `<div class="empty-block">加载中</div>`;
+  if (typeof dialog.showModal === "function" && !dialog.open) dialog.showModal();
+  await loadTrash();
+}
+
+async function loadTrash() {
+  try {
+    renderTrash(await api("/documents/trash"));
+  } catch (error) {
+    $("#trash-list").innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
+  }
+}
+
+function renderTrash(data) {
+  const retention = Number(data.retention_days || 0);
+  $("#trash-note").textContent = retention > 0
+    ? `回收站只保留文档本体（原文与版本），检索索引、事实与实体已清理，恢复时重新生成；超过 ${retention} 天的文档会被自动彻底删除。`
+    : "回收站只保留文档本体（原文与版本），检索索引、事实与实体已清理，恢复时重新生成；当前未设置自动清除，需要手动彻底删除。";
+  const items = data.items || [];
+  if (!items.length) {
+    $("#trash-list").innerHTML = `<div class="empty-block">回收站为空</div>`;
+    return;
+  }
+  $("#trash-list").innerHTML = items.map((doc) => `
+    <div class="trash-row">
+      <div class="trash-main">
+        <strong>${esc(doc.title)}</strong>
+        <span class="trash-meta">${esc(SOURCE_LABEL[doc.source_type] || doc.source_type)} · v${esc(doc.version)} · 移入于 ${esc(shortDate(doc.deleted_at))}${doc.expires_at ? ` · ${esc(shortDate(doc.expires_at))} 自动清除` : ""}</span>
+      </div>
+      ${data.can_manage ? `<div class="trash-actions">
+        <button class="btn" type="button" data-trash-restore="${esc(doc.id)}">恢复</button>
+        <button class="btn danger" type="button" data-trash-purge="${esc(doc.id)}" data-trash-title="${esc(doc.title)}">彻底删除</button>
+      </div>` : ""}
+    </div>`).join("");
+  $$("#trash-list [data-trash-restore]").forEach((button) => {
+    button.addEventListener("click", () => restoreTrashedDocument(button.dataset.trashRestore, button));
+  });
+  $$("#trash-list [data-trash-purge]").forEach((button) => {
+    button.addEventListener("click", () => purgeTrashedDocument(button.dataset.trashPurge, button.dataset.trashTitle, button));
+  });
+}
+
+async function restoreTrashedDocument(docId, button) {
+  setBusy(button, true, "恢复中");
+  try {
+    const result = await api(`/documents/${docId}/restore`, { method: "POST" });
+    toast(result.message || "文档已恢复");
+    await loadTrash();
+    loadDocs();
+    loadDashboard();
+  } catch (error) {
+    toast(error.message);
+    setBusy(button, false);
+  }
+}
+
+async function purgeTrashedDocument(docId, title, button) {
+  if (!confirm(`彻底删除《${title}》？原始文件、版本、检索索引与派生事实都会被永久清除，无法恢复。`)) return;
+  setBusy(button, true, "删除中");
+  try {
+    const result = await api(`/documents/${docId}/permanent`, { method: "DELETE" });
+    toast(`已彻底删除（移除 ${num(result.removed_facts)} 条事实）`);
+    await loadTrash();
+    loadDocs();
+    loadDashboard();
+  } catch (error) {
+    toast(error.message);
+    setBusy(button, false);
+  }
+}
+
 function citationNumber(citation, position = 0) {
   const index = Number(citation?.index ?? citation?.rank);
   return Number.isInteger(index) && index > 0 ? index : position + 1;
@@ -788,11 +883,11 @@ async function openDoc(docId, citation = null) {
 
 async function handleDocAction(action, docId, button) {
   if (action === "delete") {
-    if (!confirm("确认移入回收站？")) return;
+    if (!confirm("确认移入回收站？可在回收站中恢复。")) return;
     setBusy(button, true, "删除中");
     try {
       await api(`/documents/${docId}`, { method: "DELETE" });
-      toast("文档已移入回收站");
+      toast("文档已移入回收站，可到回收站恢复");
       $("#doc-dialog").close();
       loadDocs();
       loadDashboard();
@@ -1094,6 +1189,7 @@ function setupIngest() {
   });
 
   $("#open-ingest").addEventListener("click", () => openIngest());
+  $("#open-trash").addEventListener("click", () => openTrash());
   const dialog = $("#ingest-dialog");
   const closeButton = $("[data-close]", dialog);
   const tabs = $("#ingest-tabs");
@@ -1271,9 +1367,17 @@ function chatWhen(value) {
 
 // The complete DSH application owns sessions, streaming, tools and composer state.
 // Keep the iframe mounted when navigating so an active turn is never interrupted.
+const NATIVE_CHAT_BEAT_MS = 4000; // 与 branding/bootstrap.js 的心跳间隔一致
+const NATIVE_CHAT_SILENT_MS = 12000; // 连续丢失心跳即判定画面失效
+const NATIVE_CHAT_BOOT_MS = 20000; // 首次挂载、对话服务重启后的启动宽限
+const NATIVE_CHAT_RESUME_MS = 15000; // 切回对话页、标签页重新可见后的宽限
+const NATIVE_CHAT_WATCH_MS = 4000;
+const NATIVE_CHAT_MISSES = 2; // 沉默需要连续两次判定：一次可能只是主线程卡顿
 let nativeChatTimer = null;
 let nativeChatLoading = false;
 let nativeChatGeneration = 0;
+// 外壳看不到 iframe 里的 WebSocket：画面是否还活着只能靠心跳和 /dsh-web 状态判断。
+const nativeChat = { url: null, beatAt: 0, graceUntil: 0, misses: 0, reloads: 0, watcher: null, recovering: false };
 let chatCitation = null;
 
 function releasePdf(preview) {
@@ -1526,10 +1630,83 @@ function resetNativeChat() {
   nativeChatGeneration += 1;
   nativeChatLoading = false;
   clearTimeout(nativeChatTimer);
+  stopNativeChatWatch();
+  nativeChat.url = null;
+  nativeChat.beatAt = 0;
+  nativeChat.graceUntil = 0;
+  nativeChat.misses = 0;
+  nativeChat.reloads = 0;
   const frame = $("#native-chat-frame");
   frame.removeAttribute("src");
   frame.hidden = true;
   $("#native-chat-status").hidden = false;
+}
+
+function loopbackHost(host) {
+  return host === "127.0.0.1" || host === "localhost";
+}
+
+// 对话服务的登录 Cookie 是 SameSite=Strict，只有同主机名（同站）的 iframe 才会带上它。
+function nativeChatEntryUrl(runtimeUrl) {
+  const url = new URL(runtimeUrl, location.href);
+  if (loopbackHost(url.hostname) && loopbackHost(location.hostname)) url.hostname = location.hostname;
+  return url.href;
+}
+
+// 非本机地址打开的页面与对话服务必然跨站，挂一个只会 401 的空白页没有意义。
+function nativeChatBlockedReason() {
+  if (loopbackHost(location.hostname)) return null;
+  const port = location.port || "8730";
+  return `原生对话界面只能在本机地址打开：当前页面来自 ${location.hostname}，与对话服务不同站，登录状态无法传递。`
+    + `请改用 http://127.0.0.1:${port}/ 或 http://localhost:${port}/ 打开。`;
+}
+
+function noteNativeChatBeat() {
+  nativeChat.beatAt = Date.now();
+  nativeChat.graceUntil = 0;
+  nativeChat.misses = 0;
+  nativeChat.reloads = 0;
+}
+
+function startNativeChatWatch() {
+  if (nativeChat.watcher !== null) return;
+  nativeChat.watcher = setInterval(() => { checkNativeChatHealth(); }, NATIVE_CHAT_WATCH_MS);
+}
+
+function stopNativeChatWatch() {
+  if (nativeChat.watcher === null) return;
+  clearInterval(nativeChat.watcher);
+  nativeChat.watcher = null;
+}
+
+// 用新的入口地址重新挂载：进程重启后会换发启动令牌，沿用旧地址只会拿到 401。
+function mountNativeChat(url, graceMs) {
+  const frame = $("#native-chat-frame");
+  nativeChat.url = url;
+  nativeChat.beatAt = 0;
+  nativeChat.graceUntil = Date.now() + graceMs;
+  nativeChat.misses = 0;
+  frame.removeAttribute("src");
+  frame.src = url;
+  frame.hidden = false;
+  $("#native-chat-status").hidden = true;
+  $("#native-chat-retry").hidden = true;
+  startNativeChatWatch();
+}
+
+function stopNativeChat(message) {
+  stopNativeChatWatch();
+  const frame = $("#native-chat-frame");
+  frame.removeAttribute("src");
+  frame.hidden = true;
+  nativeChat.url = null;
+  nativeChat.beatAt = 0;
+  nativeChat.graceUntil = 0;
+  nativeChat.misses = 0;
+  nativeChat.reloads = 0;
+  $("#native-chat-message").textContent = message;
+  $("#native-chat-status").hidden = false;
+  $("#native-chat-retry").hidden = false;
 }
 
 async function loadChat() {
@@ -1545,13 +1722,13 @@ async function loadChat() {
   retry.hidden = true;
   message.textContent = "正在准备对话…";
   try {
+    const blocked = nativeChatBlockedReason();
+    if (blocked !== null) throw new Error(blocked);
     const runtime = await api("/dsh-web");
     if (generation !== nativeChatGeneration) return;
     if (!runtime.enabled) throw new Error("AI 对话未启用，请在配置中开启 dsh.web_enabled。");
     if (runtime.ready && runtime.url) {
-      frame.src = runtime.url;
-      frame.hidden = false;
-      status.hidden = true;
+      mountNativeChat(nativeChatEntryUrl(runtime.url), NATIVE_CHAT_BOOT_MS);
     } else if (runtime.lastError) {
       throw new Error(runtime.lastError);
     } else {
@@ -1566,6 +1743,61 @@ async function loadChat() {
   }
 }
 
+// 心跳沉默只说明画面死了；原因和可用的新地址都要回到服务端确认。
+async function recoverNativeChat() {
+  if (nativeChat.recovering) return;
+  const generation = nativeChatGeneration;
+  nativeChat.recovering = true;
+  try {
+    const runtime = await api("/dsh-web");
+    if (generation !== nativeChatGeneration) return;
+    if (!runtime.enabled) throw new Error("AI 对话未启用，请在配置中开启 dsh.web_enabled。");
+    if (!runtime.ready || !runtime.url) {
+      stopNativeChat(runtime.lastError || "对话服务正在重启…");
+      return;
+    }
+    const url = nativeChatEntryUrl(runtime.url);
+    // 进程重启会换发入口地址：旧画面已经随进程消失，用新地址重载即可恢复。
+    if (url !== nativeChat.url) {
+      mountNativeChat(url, NATIVE_CHAT_BOOT_MS);
+      return;
+    }
+    // 服务端认为它活着，可这个画面已经加载或认证失败：只给一次重载机会，再没响应就交给用户。
+    if (nativeChat.reloads >= 1) {
+      stopNativeChat("对话界面没有响应，请点重试；仍然失败请重启主服务。");
+      return;
+    }
+    nativeChat.reloads += 1;
+    mountNativeChat(url, NATIVE_CHAT_BOOT_MS);
+  } catch (error) {
+    if (generation !== nativeChatGeneration) return;
+    stopNativeChat(error.message);
+  } finally {
+    nativeChat.recovering = false;
+  }
+}
+
+async function checkNativeChatHealth() {
+  if (!nativeChat.url || $("#native-chat-frame").getAttribute("src") === null) return;
+  // 后台标签页和非对话页里的 iframe 计时器会被浏览器节流，此时不作判断。
+  if (state.page !== "chat" || document.visibilityState !== "visible") return;
+  const now = Date.now();
+  if (now < nativeChat.graceUntil) return;
+  if (now - nativeChat.beatAt < NATIVE_CHAT_SILENT_MS) {
+    nativeChat.misses = 0;
+    return;
+  }
+  nativeChat.misses += 1;
+  if (nativeChat.misses < NATIVE_CHAT_MISSES) return;
+  await recoverNativeChat();
+}
+
+function resumeNativeChat() {
+  // 隐藏的 iframe 计时器被节流过，回到对话页先给一个宽限窗口再判定心跳。
+  if (nativeChat.url) nativeChat.graceUntil = Date.now() + NATIVE_CHAT_RESUME_MS;
+  loadChat();
+}
+
 function setupChat() {
   $("#chat-citation-close").addEventListener("click", closeChatCitation);
   $("#chat-citation-file").addEventListener("click", () => {
@@ -1578,6 +1810,10 @@ function setupChat() {
     const frame = $("#native-chat-frame");
     if (state.page !== "chat" || frame.hidden || event.source !== frame.contentWindow ||
         event.origin !== new URL(frame.src, location.href).origin) return;
+    if (event.data?.type === "knowweave:heartbeat") {
+      noteNativeChatBeat();
+      return;
+    }
     if (event.data?.type === "knowweave:new-conversation") {
       closeChatCitation();
       return;
@@ -1589,6 +1825,11 @@ function setupChat() {
   $("#native-chat-retry").addEventListener("click", () => {
     resetNativeChat();
     return loadChat();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && nativeChat.url) {
+      nativeChat.graceUntil = Date.now() + NATIVE_CHAT_RESUME_MS;
+    }
   });
 }
 
@@ -1751,12 +1992,53 @@ function cleanAnswer(text, refused) {
 
 function linkifyCitations(text, refused) {
   const safe = esc(cleanAnswer(text, refused));
-  return safe.replace(/\[(\d{1,2})\]/g, (match, number) => `<button type="button" class="cite" data-cite="${number}" aria-label="证据 ${number}">${number}</button>`);
+  return safe.replace(/[ \t]*\[(\d{1,2})\]/g, (match, number) => `<button type="button" class="cite" data-cite="${number}" aria-label="证据 ${number}">${number}</button>`);
 }
 
 function answerHtml(text, refused) {
   const linked = linkifyCitations(text, refused);
-  return linked.split(/\n{2,}/).map((block) => `<p>${block.replace(/\n/g, "<br>")}</p>`).join("");
+  return renderMarkdown(linked);
+}
+
+// 模型输出带轻度 markdown：只处理粗体、行内代码、小标题、列表与分隔线。
+function renderMarkdown(text) {
+  const inline = (value) => value
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  const lines = String(text).split("\n");
+  const out = [];
+  let list = null;
+  let paragraph = [];
+  const flushList = () => {
+    if (!list) return;
+    out.push(`<${list.tag}>${list.items.join("")}</${list.tag}>`);
+    list = null;
+  };
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    out.push(`<p>${paragraph.join("<br>")}</p>`);
+    paragraph = [];
+  };
+  const flush = () => { flushParagraph(); flushList(); };
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) { flush(); continue; }
+    const heading = line.match(/^#{2,4}\s+(.+)$/);
+    if (heading) { flush(); out.push(`<h3>${inline(heading[1])}</h3>`); continue; }
+    if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(line)) { flush(); out.push("<hr>"); continue; }
+    const bullet = line.match(/^(?:[-*·]\s+|\d+[.)]\s+)(.+)$/);
+    if (bullet) {
+      flushParagraph();
+      const tag = /^\d/.test(line) ? "ol" : "ul";
+      if (!list || list.tag !== tag) { flushList(); list = { tag, items: [] }; }
+      list.items.push(`<li>${inline(bullet[1])}</li>`);
+      continue;
+    }
+    flushList();
+    paragraph.push(inline(line));
+  }
+  flush();
+  return out.join("");
 }
 
 function setupAsk() {
@@ -1768,6 +2050,7 @@ function setupAsk() {
         item.classList.toggle("active", active);
         item.setAttribute("aria-pressed", active ? "true" : "false");
       });
+      updateModeHint();
     });
   });
   $("#ask-form").addEventListener("submit", (event) => {
@@ -1778,6 +2061,13 @@ function setupAsk() {
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") runAsk();
   });
   $("#question").addEventListener("input", resizeAskInput);
+  $("#ask-result").addEventListener("click", (event) => {
+    const sample = event.target.closest("[data-sample]");
+    if (!sample) return;
+    fillAsk(sample.dataset.sample);
+    runAsk();
+  });
+  updateModeHint();
   resizeAskInput();
 }
 
@@ -1839,12 +2129,70 @@ async function runAsk(retryPayload = null) {
 }
 
 function askEmptyHtml() {
-  const stats = state.stats || {};
-  const documents = Number(stats.documents || 0);
-  const scope = documents
-    ? `可检索 ${num(documents)} 份文档 · ${num(stats.chunks || 0)} 个检索单元 · ${num(stats.entities || 0)} 个实体 · ${num(stats.facts_active || 0)} 条事实`
-    : "";
-  return scope ? `<div class="ask-empty"><div class="ask-empty-intro"><div class="ask-scope">${esc(scope)}</div></div></div>` : "";
+  const samples = askSamples();
+  return `<div class="ask-empty">
+    <div class="ask-empty-lead">
+      <span class="ask-empty-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M3 9c4.5 0 4.5-5 9-5s4.5 5 9 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <path d="M3 15c4.5 0 4.5 5 9 5s4.5-5 9-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <h2>从一条具体问题开始</h2>
+      <p>问题问得越具体，召回的片段越准。系统只使用通过阈值筛选的原文作答，证据不足时会直接说明。</p>
+      <div class="ask-samples">
+        <span class="ask-samples-label">试着问</span>
+        ${samples.map((question) => `<button class="ask-sample" type="button" data-sample="${esc(question)}">${esc(question)}</button>`).join("")}
+      </div>
+    </div>
+    <div class="ask-empty-steps">
+      <div class="ask-step"><span>1</span><div><b>召回</b><p>混合检索从全部文档中取候选片段</p></div></div>
+      <div class="ask-step"><span>2</span><div><b>重排与阈值</b><p>低分片段被淘汰，不进入生成上下文</p></div></div>
+      <div class="ask-step"><span>3</span><div><b>成文与引用</b><p>答案逐句标注编号，可回到原文定位</p></div></div>
+    </div>
+  </div>`;
+}
+
+function askSamples() {
+  const titles = (state.stats?.recent_documents || []).slice(0, 2).map((doc) => shortTitle(doc.title));
+  const samples = titles.map((title) => `《${title}》里有哪些硬性要求？`);
+  samples.push("这几份文档之间有没有互相矛盾的说法？");
+  while (samples.length < 3) samples.push("最近入库的文档主要讲了什么？");
+  return samples.slice(0, 3);
+}
+
+function shortTitle(title) {
+  const text = String(title || "")
+    .split(/[_—·|(（]/)[0]
+    .replace(/\s+/g, " ")
+    .trim() || "未命名文档";
+  return text.length > 16 ? `${text.slice(0, 16)}…` : text;
+}
+
+function renderScope(stats) {
+  const write = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = num(Number(value) || 0);
+  };
+  write("scope-docs", stats?.documents);
+  write("scope-chunks", stats?.chunks);
+  write("scope-entities", stats?.entities);
+  write("scope-facts", stats?.facts_active);
+}
+
+function updateModeHint() {
+  const hint = $("#mode-hint");
+  if (!hint) return;
+  const mode = state.meta?.modes?.find((item) => item.id === state.mode);
+  hint.textContent = mode?.description || "";
+}
+
+function fillAsk(question) {
+  const input = $("#question");
+  if (!input) return;
+  input.value = question;
+  resizeAskInput();
+  input.focus();
 }
 
 function renderAsk(result, question = $("#question").value.trim() || "检索结果") {
@@ -1858,14 +2206,16 @@ function renderAsk(result, question = $("#question").value.trim() || "检索结�
       <header class="answer-head">
         <h2 class="answer-question" title="${esc(question)}">${esc(question)}</h2>
         <div class="answer-meta">
-          <span>${esc(modeName)}</span>
           <span class="pill ${refused ? "warn" : "ok"}">${refused ? "证据不足" : "已回答"}</span>
-          ${confidence ? `<span>置信度 ${confidence}%</span>` : ""}
-          ${result.latency_ms ? `<span>${latencyLabel(result.latency_ms)}</span>` : ""}
+          <span class="meta-sep" aria-hidden="true"></span>
+          <span>${esc(modeName)}</span>
+          ${confidence ? `<span class="meta-sep" aria-hidden="true"></span><span>置信度 ${confidence}%</span>` : ""}
+          ${result.latency_ms ? `<span class="meta-sep" aria-hidden="true"></span><span>${latencyLabel(result.latency_ms)}</span>` : ""}
         </div>
       </header>
       <div class="answer-body">${answerHtml(result.answer, refused)}</div>
       <footer class="answer-foot">
+        <span class="answer-source">${result.evidence?.length ? `基于 ${num(result.evidence.length)} 条证据` : "无引用片段"}</span>
         <div class="answer-actions">
           <button class="text-btn" type="button" data-feedback="1">有帮助</button>
           <button class="text-btn" type="button" data-feedback="-1">需改进</button>
@@ -1982,6 +2332,8 @@ async function sendFeedback(messageId, value) {
 
 async function loadAsk() {
   loadConversations();
+  updateModeHint();
+  if (state.stats) renderScope(state.stats);
   if ($("#ask-result .answer")) return;
   $(".ask-layout").classList.add("is-empty");
   $("#ask-result").innerHTML = askEmptyHtml();
@@ -1990,6 +2342,7 @@ async function loadAsk() {
   } catch (_) {
     return;
   }
+  renderScope(state.stats);
   if (!$("#ask-result .answer")) $("#ask-result").innerHTML = askEmptyHtml();
 }
 
@@ -2631,6 +2984,62 @@ window.addEventListener("resize", () => {
   graphResizeTimer = window.setTimeout(() => drawGraph(state.activeEntity), 180);
 });
 
+/* ============ 实时通道 ============ */
+let realtimeSocket = null;
+let realtimeRetry = 0;
+let realtimeTimer = 0;
+
+function applyReviewCount(value) {
+  const count = Math.max(0, Number(value) || 0);
+  state.stats = Object.assign({}, state.stats || {}, { reviews_open: count });
+  const badge = $("#nav-review-count");
+  if (badge) {
+    badge.textContent = count;
+    badge.hidden = count === 0;
+    badge.title = count ? `${count} 个待审项` : "";
+  }
+  const stat = $("#stat-reviews");
+  if (stat) stat.textContent = num(count);
+}
+
+function connectRealtime() {
+  if (realtimeSocket && realtimeSocket.readyState <= 1) return;
+  window.clearTimeout(realtimeTimer);
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  let socket;
+  try {
+    socket = new WebSocket(`${scheme}://${location.host}${API}/realtime?token=${encodeURIComponent(state.token)}`);
+  } catch (_) {
+    scheduleRealtimeRetry();
+    return;
+  }
+  realtimeSocket = socket;
+  socket.addEventListener("open", () => { realtimeRetry = 0; });
+  socket.addEventListener("message", (event) => {
+    let message;
+    try { message = JSON.parse(event.data); } catch (_) { return; }
+    if (message && message.type === "review_count") applyReviewCount(message.count);
+  });
+  socket.addEventListener("close", () => {
+    if (realtimeSocket === socket) realtimeSocket = null;
+    scheduleRealtimeRetry();
+  });
+  socket.addEventListener("error", () => socket.close());
+}
+
+function scheduleRealtimeRetry() {
+  if (document.hidden) return; // 页面不可见时不重连，回到前台再连
+  const delay = Math.min(30000, 1000 * 2 ** realtimeRetry) + Math.random() * 400;
+  realtimeRetry = Math.min(realtimeRetry + 1, 5);
+  window.clearTimeout(realtimeTimer);
+  realtimeTimer = window.setTimeout(connectRealtime, delay);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  connectRealtime();
+});
+
 /* ============ Review ============ */
 async function loadReview() {
   const target = $("#review-list");
@@ -2641,39 +3050,67 @@ async function loadReview() {
       target.innerHTML = `<div class="empty-block">暂无待审项</div>`;
       return;
     }
-    target.innerHTML = data.items.map((item) => `
+    target.innerHTML = data.items.map((item) => {
+      const payload = item.payload || {};
+      const isFact = Boolean(payload.subject && payload.predicate);
+      const current = isFact ? factSentence(payload.subject, payload.predicate, payload.new_object) : "";
+      const existing = isFact
+        ? (payload.old_objects || []).filter(Boolean).map((value) => factSentence(payload.subject, payload.predicate, value))
+        : [];
+      const source = item.source || null;
+      const heading = (source?.heading || []).filter((line) => line && line !== "正文").join(" / ");
+      const where = [
+        source?.title ? `《${source.title}》` : "",
+        source?.page ? `第 ${source.page} 页` : "",
+        heading || (!source?.page && source?.seq ? `第 ${source.seq} 段` : ""),
+      ].filter(Boolean).join(" · ");
+      const quote = payload.quote ? plain(payload.quote) : "";
+      const quoteLine = quote
+        ? `<div class="conflict-quote">原文${where ? `（${esc(where)}）` : ""}：${esc(quote)}</div>`
+        : "";
+      const facts = isFact ? `<div class="conflict">
+            <div class="conflict-cell">
+              <span class="label">本次提取到的信息</span>
+              <div class="conflict-value">${esc(current)}</div>
+              ${quoteLine}
+            </div>
+            <div class="conflict-cell">
+              <span class="label">知识库中已有信息</span>
+              <div class="conflict-value">${existing.length ? existing.map((line) => esc(line)).join("<br>") : "没有"}</div>
+            </div>
+          </div>` : `<h2 class="review-title">${esc(item.title)}</h2>`;
+      const actions = item.kind === "parse_failure"
+        ? `<button class="btn primary" data-review-job="${esc(payload.job_id)}">修正文并重试</button>`
+        : existing.length
+          ? `<button class="btn primary" data-review="${esc(item.id)}" data-action="accept_new">用这条新的</button>
+             <button class="btn" data-review="${esc(item.id)}" data-action="reject_new">保留知识库里的</button>
+             <button class="btn" data-review="${esc(item.id)}" data-action="merge">两条都留下</button>
+             <button class="btn" data-review="${esc(item.id)}" data-action="dispute">标记为存疑</button>
+             <button class="btn" data-consult="${esc(item.id)}">存疑</button>`
+          : `<button class="btn primary" data-review="${esc(item.id)}" data-action="accept_new">${payload.model_error ? "重试抽取并采纳" : "采纳并入库"}</button>
+             <button class="btn" data-review="${esc(item.id)}" data-action="reject_new">丢弃</button>
+             <button class="btn" data-consult="${esc(item.id)}">存疑</button>`;
+      return `
       <article class="review-card">
         <div>
           <div class="review-head">
             <span class="pill warn">${esc(REVIEW_KIND[item.kind] || item.kind)}</span>
             <span>${shortDate(item.created_at)}</span>
+            ${payload.reason ? `<span class="review-reason">${esc(payload.reason)}</span>` : ""}
           </div>
-          <h2 class="review-title">${esc(item.title)}</h2>
-          <p class="review-reason">${esc(item.payload?.reason || "无")}</p>
-          ${item.payload?.model_error ? `<p class="review-reason">${esc(item.payload.model_error)}</p>` : ""}
-          ${item.payload?.new_object !== undefined ? `<div class="conflict">
-            <div class="conflict-cell">
-              <span class="label">本次候选</span>
-              <div class="conflict-value">${esc(item.payload.new_object || "无")}</div>
-              <div class="conflict-quote">${esc(plain(item.payload.quote) || "")}</div>
-            </div>
-            <div class="conflict-cell">
-              <span class="label">既有事实</span>
-              <div class="conflict-value">${esc((item.payload.old_objects || []).join(" / ") || "无")}</div>
-            </div>
-          </div>` : ""}
-          ${item.payload?.text ? `<div class="quote-block" style="margin-top:12px">${esc(plainLines(item.payload.text))}</div>` : ""}
+          ${facts}
+          ${payload.model_error ? `<p class="review-reason">${esc(payload.model_error)}</p>` : ""}
+          ${payload.text && !isFact ? `<div class="quote-block" style="margin-top:12px">${esc(plainLines(payload.text))}</div>` : ""}
         </div>
-        <div class="review-actions">
-          ${item.kind === 'parse_failure' ? `<button class="btn primary" data-review-job="${esc(item.payload?.job_id)}">修正文并重试</button>` : `
-          <button class="btn primary" data-review="${esc(item.id)}" data-action="accept_new">${item.payload?.model_error ? "重试抽取并采纳" : "采纳本次"}</button>
-          <button class="btn" data-review="${esc(item.id)}" data-action="reject_new">保留既有</button>
-          <button class="btn" data-review="${esc(item.id)}" data-action="merge">合并证据</button>
-          <button class="btn" data-review="${esc(item.id)}" data-action="dispute">维持争议</button>`}
-        </div>
-      </article>`).join("");
+        <div class="review-actions">${actions}</div>
+      </article>`;
+    }).join("");
     $$("[data-review]").forEach((button) => {
       button.addEventListener("click", () => resolveReview(button.dataset.review, button.dataset.action, button));
+    });
+    $$("[data-consult]").forEach((button) => {
+      const item = data.items.find((entry) => entry.id === button.dataset.consult);
+      if (item) button.addEventListener("click", () => openConsult(item));
     });
     $$("[data-review-job]").forEach(button => button.addEventListener('click',async()=>{
       const corrected_text=prompt('输入人工核对后的文档正文：');
@@ -2701,6 +3138,307 @@ async function resolveReview(reviewId, action, button) {
   } finally {
     setBusy(button, false);
   }
+}
+
+/* 存疑核查：对话式审阅助手，流式输出并展示模型的思考过程。 */
+let consultState = null;
+
+const CONSULT_SUGGESTIONS = [
+  "这条信息和原文有出入吗？",
+  "适合直接入库吗？",
+  "知识库里有没有相关记录？",
+];
+
+function clockTime() {
+  const now = new Date();
+  return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+}
+
+function consultAvatar(role) {
+  const avatar = document.createElement("div");
+  avatar.className = "consult-avatar";
+  avatar.textContent = role === "user" ? "我" : "AI";
+  return avatar;
+}
+
+function appendConsultMessage(role, text) {
+  const log = $("#consult-log");
+  if (!log) return null;
+  const row = document.createElement("div");
+  row.className = `consult-msg consult-msg-${role}`;
+  const main = document.createElement("div");
+  main.className = "consult-main";
+  const meta = document.createElement("div");
+  meta.className = "consult-meta";
+  const name = document.createElement("span");
+  name.className = "consult-name";
+  name.textContent = role === "user" ? "我" : "审阅助手";
+  const time = document.createElement("time");
+  time.textContent = clockTime();
+  if (role === "user") meta.append(time, name);
+  else meta.append(name, time);
+  const bubble = document.createElement("div");
+  bubble.className = "consult-bubble";
+  const body = document.createElement("div");
+  body.className = "consult-body";
+  body.textContent = text;
+  bubble.append(body);
+  main.append(meta, bubble);
+  row.append(...(role === "user" ? [main, consultAvatar(role)] : [consultAvatar(role), main]));
+  log.append(row);
+  return { row, bubble, body };
+}
+
+function createConsultThink() {
+  const think = document.createElement("details");
+  think.className = "consult-think";
+  think.open = true;
+  const summary = document.createElement("summary");
+  const label = document.createElement("span");
+  label.textContent = "正在思考";
+  const dots = document.createElement("span");
+  dots.className = "think-dots";
+  dots.innerHTML = "<i></i><i></i><i></i>";
+  summary.append(label, dots);
+  const body = document.createElement("div");
+  body.className = "consult-think-body";
+  think.append(summary, body);
+  return { think, label, dots, body };
+}
+
+function renderConsultSuggestions(show) {
+  const wrap = $("#consult-suggest");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  if (!show) return;
+  for (const text of CONSULT_SUGGESTIONS) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "consult-chip";
+    chip.textContent = text;
+    chip.addEventListener("click", () => void sendConsult(text));
+    wrap.append(chip);
+  }
+}
+
+function setConsultBusy(busy) {
+  const send = $("#consult-send");
+  if (!send) return;
+  send.dataset.mode = busy ? "stop" : "send";
+  send.textContent = busy ? "停止" : "发送";
+}
+
+function consultNearBottom(log) {
+  return log.scrollHeight - log.scrollTop - log.clientHeight < 140;
+}
+
+function openConsult(item) {
+  const dialog = $("#consult-dialog");
+  if (!dialog) return;
+  consultState = { item, history: [], busy: false, abort: null };
+  const subject = $("#consult-subject");
+  if (subject) {
+    subject.textContent = item.title || "";
+    subject.title = item.title || "";
+  }
+  const log = $("#consult-log");
+  if (log) log.innerHTML = "";
+  const input = $("#consult-input");
+  if (input) {
+    input.value = "";
+    input.style.height = "auto";
+  }
+  setConsultBusy(false);
+  renderConsultSuggestions(true);
+  if (typeof dialog.showModal === "function" && !dialog.open) dialog.showModal();
+  else dialog.open = true;
+  input?.focus();
+  void sendConsult("", { auto: true });
+}
+
+async function streamConsult(path, payload, onEvent, signal) {
+  const response = await fetch(`${API}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.token}` },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  if (!response.ok) {
+    let message = `请求失败（${response.status}）`;
+    try {
+      const data = await response.json();
+      message = data.detail || data.message || message;
+    } catch {}
+    throw new Error(message);
+  }
+  if (!response.body) throw new Error("当前浏览器不支持流式响应");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let index = buffer.indexOf("\n\n");
+    while (index >= 0) {
+      const chunk = buffer.slice(0, index);
+      buffer = buffer.slice(index + 2);
+      for (const line of chunk.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        try {
+          onEvent(JSON.parse(line.slice(5).trim()));
+        } catch {}
+      }
+      index = buffer.indexOf("\n\n");
+    }
+  }
+}
+
+async function sendConsult(question, options = {}) {
+  const session = consultState;
+  if (!session || session.busy) return;
+  const log = $("#consult-log");
+  if (!log) return;
+  const auto = options.auto === true;
+  session.busy = true;
+  setConsultBusy(true);
+  renderConsultSuggestions(false);
+
+  if (auto) {
+    const note = document.createElement("div");
+    note.className = "consult-note";
+    note.textContent = "已根据这条待审信息自动发起核对";
+    log.append(note);
+  } else {
+    appendConsultMessage("user", question);
+  }
+
+  const ai = appendConsultMessage("ai", "");
+  if (!ai) {
+    session.busy = false;
+    setConsultBusy(false);
+    return;
+  }
+  const think = createConsultThink();
+  ai.bubble.prepend(think.think);
+  ai.body.innerHTML = `<span class="consult-wait">正在核对这条信息</span>`;
+  log.scrollTop = log.scrollHeight;
+
+  const startedAt = Date.now();
+  let reasoning = "";
+  let answer = "";
+  let errorText = "";
+  let folded = false;
+  const controller = new AbortController();
+  session.abort = controller;
+
+  const paint = () => {
+    const keep = consultNearBottom(log);
+    if (reasoning) {
+      think.think.hidden = false;
+      think.body.textContent = reasoning;
+      if (!answer) ai.body.innerHTML = "";
+    }
+    if (answer) {
+      ai.body.innerHTML = renderMarkdown(esc(answer));
+      const caret = document.createElement("span");
+      caret.className = "consult-caret";
+      ai.body.append(caret);
+      if (!folded) {
+        think.think.open = false;
+        folded = true;
+      }
+    }
+    if (keep) log.scrollTop = log.scrollHeight;
+  };
+  const timer = window.setInterval(paint, 80);
+
+  try {
+    await streamConsult(
+      `/review/${encodeURIComponent(session.item.id)}/consult/stream`,
+      { question, history: session.history },
+      (event) => {
+        if (event.type === "reasoning") reasoning += event.text || "";
+        else if (event.type === "content") answer += event.text || "";
+        else if (event.type === "error") errorText = event.message || "生成失败";
+      },
+      controller.signal,
+    );
+    paint();
+    if (errorText) throw new Error(errorText);
+    if (!answer.trim()) throw new Error("模型没有返回正文");
+    ai.body.innerHTML = renderMarkdown(esc(answer));
+    if (reasoning) {
+      const seconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+      think.label.textContent = `思考过程 · ${seconds} 秒`;
+      think.dots.remove();
+      think.think.open = false;
+    } else {
+      think.think.remove();
+    }
+    session.history.push({ role: "user", content: question || "请分析这条待审信息" });
+    session.history.push({ role: "assistant", content: answer });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      if (reasoning) {
+        const seconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+        think.label.textContent = `思考过程 · ${seconds} 秒`;
+        think.dots.remove();
+        think.think.open = false;
+      } else {
+        think.think.remove();
+      }
+      const partial = answer.trim() ? renderMarkdown(esc(answer)) : "";
+      ai.body.innerHTML = `${partial}<span class="consult-abort">已停止生成</span>`;
+    } else {
+      think.think.remove();
+      ai.body.innerHTML = `<span class="consult-error">${esc(error?.message || "生成失败")}</span>`;
+    }
+  } finally {
+    window.clearInterval(timer);
+    session.busy = false;
+    session.abort = null;
+    setConsultBusy(false);
+    renderConsultSuggestions(true);
+    log.scrollTop = log.scrollHeight;
+  }
+}
+
+function setupReviewConsult() {
+  const dialog = $("#consult-dialog");
+  const form = $("#consult-form");
+  const input = $("#consult-input");
+  if (!form || !input) return;
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const send = $("#consult-send");
+    if (send?.dataset.mode === "stop") {
+      consultState?.abort?.abort();
+      return;
+    }
+    const question = input.value.trim();
+    if (!question) return;
+    input.value = "";
+    input.style.height = "auto";
+    void sendConsult(question);
+  });
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+    event.preventDefault();
+    form.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+  });
+
+  input.addEventListener("input", () => {
+    input.style.height = "auto";
+    input.style.height = `${Math.min(120, input.scrollHeight)}px`;
+  });
+
+  dialog?.addEventListener("close", () => {
+    consultState?.abort?.abort();
+    consultState = null;
+  });
 }
 
 /* ============ Ops ============ */
@@ -3171,12 +3909,14 @@ async function boot() {
   setupAsk();
   setupChat();
   setupTour();
+  setupReviewConsult();
   setupOps();
 
   const initial = (location.hash || "#chat").replace("#", "");
   await refreshShell();
   await loadMetaAndHealth();
   showPage(PAGE_META[initial] ? initial : "chat");
+  connectRealtime();
   if (!localStorage.getItem(tourKey())) openTour();
 }
 

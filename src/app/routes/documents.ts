@@ -5,15 +5,17 @@ import { join } from 'node:path'
 import { createConverter } from '@deepseek-ai/libreoffice-kit'
 
 import { authenticate, currentPrincipal } from '../server.js'
+import { settings } from '../../config.js'
 import { query, queryOne } from '../../db/index.js'
 import { chunkDict, documentDict, entityDict, factDict } from '../../core/serializers.js'
-import { ingestParsed, savedIngestJobs, retryIngestJob, submitIngest, tombstoneDocument } from '../../core/ingestion.js'
+import { ingestParsed, savedIngestJobs, retryIngestJob, submitIngest } from '../../core/ingestion.js'
 import { parseBytes, parseTextContent } from '../../adapters/parsing/index.js'
 import { requireEditor, canRead } from '../../core/security.js'
 import { isEntityName } from '../../core/learning.js'
 import { enrichmentTasks, processEnrichmentQueue, requestEnrichment } from '../../core/enrichment-queue.js'
 import { DISPLAYABLE_FACT } from '../../core/fact-visibility.js'
 import { reindexDocument } from '../../core/reindexing.js'
+import { purgeDocument, restoreDocument, trashDocument, trashDocuments } from '../../core/trash.js'
 import { evidenceWeight } from '../../core/source-policy.js'
 import type { ChunkRow, DocumentRow, EntityRow, FactRow, VersionRow } from '../../core/rows.js'
 
@@ -160,6 +162,15 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
     const groups = new Set<string>()
     for (const user of users) for (const group of user.groups ?? []) groups.add(group)
     return { groups: [...groups].sort() }
+  })
+
+  app.get('/trash', { preHandler: authenticate }, async (request) => {
+    const principal = currentPrincipal(request)
+    return {
+      items: await trashDocuments(principal),
+      retention_days: settings.trashRetentionDays,
+      can_manage: ['owner', 'admin', 'editor'].includes(principal.role),
+    }
   })
 
   app.get('/', { preHandler: authenticate }, async (request) => {
@@ -358,7 +369,23 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
     requireEditor(principal)
     const { doc_id: docId } = request.params as { doc_id: string }
     const document = await visibleDocument(principal, docId)
-    return tombstoneDocument(principal, document.id)
+    return trashDocument(principal, document.id)
+  })
+
+  app.post('/:doc_id/restore', { preHandler: authenticate }, async (request) => {
+    const principal = currentPrincipal(request)
+    requireEditor(principal)
+    const { doc_id: docId } = request.params as { doc_id: string }
+    const result = await restoreDocument(principal, docId)
+    void processEnrichmentQueue().catch(app.log.error.bind(app.log))
+    return result
+  })
+
+  app.delete('/:doc_id/permanent', { preHandler: authenticate }, async (request) => {
+    const principal = currentPrincipal(request)
+    requireEditor(principal)
+    const { doc_id: docId } = request.params as { doc_id: string }
+    return purgeDocument(principal, docId)
   })
 }
 

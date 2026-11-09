@@ -9,6 +9,7 @@ import { documentRoutes } from './documents.js'
 import { learnRoutes } from './learn.js'
 import { mcpRoutes } from './mcp.js'
 import { opsRoutes } from './ops.js'
+import { realtimeRoutes } from './realtime.js'
 
 export async function apiRoutes(app: FastifyInstance): Promise<void> {
   app.get('/health', async () => ({
@@ -50,8 +51,8 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
   }))
 
   app.get('/dsh-web', { preHandler: authenticate }, async (request) => {
-    // Bind synchronously before exposing an existing native session URL.
-    void ensureDshWeb(currentPrincipal(request))
+    // 等待本次接管或启动完成，避免重试立即读到上一次的错误状态。
+    await ensureDshWeb(currentPrincipal(request))
     return dshWebStatus()
   })
 
@@ -59,5 +60,6 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
   await app.register(documentRoutes, { prefix: '/documents' })
   await app.register(learnRoutes)
   await app.register(opsRoutes)
+  await app.register(realtimeRoutes)
   await app.register(mcpRoutes)
 }

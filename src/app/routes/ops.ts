@@ -21,6 +21,7 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
       return Number(row?.count ?? 0)
     }
     const documents = await counts(`SELECT count(*)::text AS count FROM documents WHERE tenant_id = $1 AND status = 'active'`, [tenant])
+    const trashed = await counts(`SELECT count(*)::text AS count FROM documents WHERE tenant_id = $1 AND status = 'tombstoned'`, [tenant])
     const chunks = await counts(`SELECT count(*)::text AS count FROM chunks WHERE tenant_id = $1 AND is_parent = false`, [tenant])
     const entities = await counts(
       `SELECT count(*)::text AS count FROM entities e
@@ -56,6 +57,7 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
     const spend = Number(spendRow?.total ?? 0)
     return {
       documents,
+      documents_trashed: trashed,
       chunks,
       entities,
       facts_active: activeFacts,

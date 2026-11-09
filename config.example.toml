@@ -3,7 +3,7 @@
 data_dir = "data"
 
 [database]
-# 留空则使用 data 下的 PGlite（PostgreSQL 兼容嵌入式实现）；生产环境填写 postgresql://...
+# PostgreSQL 连接地址（必填），例如 postgresql://user:password@127.0.0.1:5432/dbname
 url = ""
 seed = true
 
@@ -44,6 +44,14 @@ Instruction: Compress the text into one dense vector for semantic retrieval.
 Query:"""
 batch_size = 32
 timeout_seconds = 30
+# 429（限流）/ 5xx / 超时与网络故障自动重试
+# 共重试 retry_max_retries 次（不含首次）：间隔在 retry_base_ms → retry_max_ms 之间等比均匀铺开
+# 默认 10 次：5s、7.4s、11.1s、16.5s、24.6s、36.6s、54.5s、81.2s、120.9s、180s，累计约 9 分钟
+retry_max_retries = 10
+retry_base_ms = 5000
+retry_max_ms = 180000
+# 抖动：开启后每次等待取 50%~100% 随机（只会缩短，不会超过封顶），多分片并发时可避免同时重试
+retry_jitter = false
 
 [sidecar]
 url = "http://127.0.0.1:8732"
@@ -76,6 +84,11 @@ enabled = true
 # 按工作区时区每日运行，重启后补跑；空字符串改为 interval_seconds 间隔
 run_at = "03:00"
 interval_seconds = 21600
+
+[trash]
+# 移入回收站的文档保留天数；到期由每日维护彻底删除，原始文件与派生内容一并清除
+# 0 表示不自动清除，只能手动彻底删除
+retention_days = 30
 
 [tenant]
 default_id = "tn_knowweave"

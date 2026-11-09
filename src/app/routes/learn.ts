@@ -3,14 +3,116 @@ import { FastifyInstance } from 'fastify'
 import { authenticate, currentPrincipal } from '../server.js'
 import { query, queryOne } from '../../db/index.js'
 import { entityDict, factDict } from '../../core/serializers.js'
-import { isEntityName, resolveReview, runReflection } from '../../core/learning.js'
+import { factSentence, isEntityName, deleteEntity, resolveReview, runReflection } from '../../core/learning.js'
 import { processEnrichmentQueue, requestEnrichment } from '../../core/enrichment-queue.js'
 import { DISPLAYABLE_FACT, ENTITY_HAS_DISPLAYABLE_FACT } from '../../core/fact-visibility.js'
 import { ingestParsed } from '../../core/ingestion.js'
 import { parseTextContent } from '../../adapters/parsing/index.js'
-import { canRead, requireAdmin } from '../../core/security.js'
+import { harness, requireModelText } from '../../adapters/harness/index.js'
+import { canRead, requireAdmin, requireEditor, type Principal } from '../../core/security.js'
 import { newId } from '../../core/ids.js'
+import { notifyReviewQueueChanged } from '../../core/review-events.js'
 import type { DocumentRow, EntityRow, FactRow } from '../../core/rows.js'
+
+const REVIEW_CONSULT_SYSTEM = `你是 KnoWeave（知织）知识库的审阅助手，正在和用户一对一对话。用户在人工审阅一条从文档里自动抽取的信息，需要你帮他判断这条信息该不该入库。
+
+第一次核对时，先用一句话给出判断，开头必须是「可以采纳」「需要核对」「建议存疑」其中之一；再用一到两句话说明依据，说清抽取结果与原文有没有出入、有没有丢掉地区、时间、人群、统计口径等限定条件、和知识库里已有记录有没有矛盾。某方面没问题就用半句带过。
+用户追问时，直接回答他问的那件事，不要重复整段判断，也不要重新罗列已经说过的内容。
+
+只依据给出的材料作答，不要引入材料之外的背景，不要编造数字、文件名或来源。材料不足就直接说缺什么。
+用自然段落说话，不要用 Markdown 标题、加粗和列表符号。首次核对控制在 200 字以内，追问控制在 120 字以内。`
+
+function consultInput(body: unknown): { question: string; history: Array<{ role?: string; content?: string }> } {
+  const input = (body ?? {}) as { question?: string; history?: Array<{ role?: string; content?: string }> }
+  return {
+    question: String(input.question ?? '').trim().slice(0, 500),
+    history: (input.history ?? []).slice(-8),
+  }
+}
+
+/** 把待审项、原文、出处和库内记录拼成模型能直接判断的材料。 */
+async function reviewConsultPrompt(
+  principal: Principal,
+  reviewId: string,
+  question: string,
+  history: Array<{ role?: string; content?: string }>,
+): Promise<string> {
+  const review = await queryOne<{ id: string; tenant_id: string; title: string; payload: Record<string, unknown> }>(
+    'SELECT id, tenant_id, title, payload FROM review_queue WHERE id = $1',
+    [reviewId],
+  )
+  if (!review || review.tenant_id !== principal.tenantId) {
+    throw Object.assign(new Error('审阅项不存在'), { statusCode: 404 })
+  }
+  const payload = (review.payload ?? {}) as {
+    subject?: string
+    predicate?: string
+    new_object?: string | null
+    old_objects?: unknown[]
+    quote?: string
+    reason?: string
+    new_fact_id?: string
+    model_error?: string
+  }
+  const subject = String(payload.subject ?? '').trim()
+  const predicate = String(payload.predicate ?? '').trim()
+  const statement = subject && predicate ? factSentence(subject, predicate, payload.new_object) : review.title
+  const existing = (payload.old_objects ?? [])
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean)
+    .map((value) => factSentence(subject, predicate, value))
+
+  const factId = String(payload.new_fact_id ?? '')
+  let sourceLine = ''
+  let related: string[] = []
+  if (factId) {
+    const fact = await queryOne<{ subject_id: string }>(
+      'SELECT subject_id FROM facts WHERE id = $1 AND tenant_id = $2',
+      [factId, principal.tenantId],
+    )
+    if (fact) {
+      const rows = await query<{ predicate: string; object_literal: string | null; object_name: string | null; status: string }>(
+        `SELECT f.predicate, f.object_literal, e.canonical_name AS object_name, f.status
+         FROM facts f LEFT JOIN entities e ON e.id = f.object_id
+         WHERE f.tenant_id = $1 AND f.subject_id = $2 AND f.id <> $3 AND f.status <> 'retracted'
+         ORDER BY f.recorded_at DESC LIMIT 10`,
+        [principal.tenantId, fact.subject_id, factId],
+      )
+      related = rows.map((row) => `${row.predicate}：${row.object_name ?? row.object_literal ?? '（空）'}${row.status === 'disputed' ? '（存疑）' : ''}`)
+    }
+    const source = await queryOne<{ title: string; page: number | null; heading: string[] | null; seq: number | null }>(
+      `SELECT d.title, c.page, c.heading_path AS heading, c.seq
+       FROM fact_evidence fe
+       JOIN chunks c ON c.id = fe.chunk_id
+       JOIN documents d ON d.id = fe.doc_id
+       WHERE fe.fact_id = $1 ORDER BY fe.weight DESC LIMIT 1`,
+      [factId],
+    )
+    if (source) {
+      const heading = (source.heading ?? []).filter((line) => line && line !== '正文').join(' / ')
+      sourceLine = [
+        source.title ? `《${source.title}》` : '',
+        source.page ? `第 ${source.page} 页` : heading || (source.seq ? `第 ${source.seq} 段` : ''),
+      ].filter(Boolean).join(' · ')
+    }
+  }
+
+  const materials = [
+    `待审信息：${statement}`,
+    payload.quote ? `文档原文：${String(payload.quote).slice(0, 800)}` : '',
+    sourceLine ? `原文出处：${sourceLine}` : '',
+    existing.length ? `知识库中同一事项已有的记录：${existing.join('；')}` : '知识库中同一事项没有其他记录。',
+    related.length ? `知识库中关于该对象的其他记录：\n${related.join('\n')}` : '',
+    payload.reason ? `系统给出的待审原因：${payload.reason}` : '',
+    payload.model_error ? `抽取时的失败信息：${payload.model_error}` : '',
+  ].filter(Boolean)
+  const turns = history.map((turn) => `${turn.role === 'assistant' ? '助手' : '用户'}：${String(turn.content ?? '').slice(0, 800)}`)
+  return [
+    materials.join('\n'),
+    turns.length ? `此前的对话：\n${turns.join('\n')}` : '',
+    question ? `用户追问：${question}` : '请按要求分析这条待审信息。',
+  ].filter(Boolean).join('\n\n')
+}
 
 export async function learnRoutes(app: FastifyInstance): Promise<void> {
   app.get('/entities', { preHandler: authenticate }, async (request) => {
@@ -80,6 +182,13 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
       }
     }
     return { entity: entityDict(entity), facts: items, documents, aliases: [] }
+  })
+
+  app.delete('/entities/:entity_id', { preHandler: authenticate }, async (request) => {
+    const principal = currentPrincipal(request)
+    requireEditor(principal)
+    const { entity_id: entityId } = request.params as { entity_id: string }
+    return deleteEntity(principal, entityId)
   })
 
   app.get('/facts', { preHandler: authenticate }, async (request) => {
@@ -172,18 +281,44 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
       created_at: string
     }>(
       `SELECT id, kind, title, payload, status, created_at FROM review_queue
-       WHERE tenant_id = $1 AND status = $2 ORDER BY created_at DESC`,
+       WHERE tenant_id = $1 AND status = $2 ORDER BY created_at ASC, id ASC`,
       [principal.tenantId, status],
     )
+    const factIds = items
+      .map((item) => String((item.payload as { new_fact_id?: string } | null)?.new_fact_id ?? ''))
+      .filter(Boolean)
+    const sources = new Map<string, { title: string; page: number | null; heading: string[] | null; seq: number | null }>()
+    if (factIds.length) {
+      const rows = await query<{ fact_id: string; doc_title: string; page: number | null; heading_path: string[] | null; seq: number | null }>(
+        `SELECT fe.fact_id, d.title AS doc_title, c.page, c.heading_path, c.seq
+         FROM fact_evidence fe
+         JOIN chunks c ON c.id = fe.chunk_id
+         JOIN documents d ON d.id = fe.doc_id
+         WHERE fe.fact_id = ANY($1::text[])
+         ORDER BY fe.weight DESC`,
+        [factIds],
+      )
+      for (const row of rows) {
+        if (sources.has(row.fact_id)) continue
+        sources.set(row.fact_id, { title: row.doc_title, page: row.page, heading: row.heading_path, seq: row.seq })
+      }
+    }
     return {
-      items: items.map((item) => ({
-        id: item.id,
-        kind: item.kind,
-        title: item.title,
-        payload: item.payload,
-        status: item.status,
-        created_at: item.created_at,
-      })),
+      items: items.map((item) => {
+        const payload = (item.payload ?? {}) as { subject?: string; predicate?: string; new_object?: string | null; new_fact_id?: string }
+        const title = payload.subject && payload.predicate
+          ? factSentence(payload.subject, payload.predicate, payload.new_object)
+          : item.title
+        return {
+          id: item.id,
+          kind: item.kind,
+          title,
+          payload: item.payload,
+          source: sources.get(String(payload.new_fact_id ?? '')) ?? null,
+          status: item.status,
+          created_at: item.created_at,
+        }
+      }),
     }
   })
 
@@ -216,9 +351,46 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
         `UPDATE review_queue SET status = 'resolved', resolution = $1::jsonb, resolved_at = now() WHERE id = $2`,
         [JSON.stringify({ action: payload.action, note: payload.note ?? '' }), reviewId],
       )
+      notifyReviewQueueChanged(principal.tenantId)
       return { review_id: reviewId, status: 'resolved' }
     }
     return resolveReview(principal, reviewId, payload.action, payload.note ?? '')
+  })
+
+  app.post('/review/:review_id/consult', { preHandler: authenticate }, async (request) => {
+    const principal = currentPrincipal(request)
+    const { review_id: reviewId } = request.params as { review_id: string }
+    const { question, history } = consultInput(request.body)
+    const prompt = await reviewConsultPrompt(principal, reviewId, question, history)
+    const result = await harness.complete(prompt, REVIEW_CONSULT_SYSTEM)
+    return { review_id: reviewId, answer: requireModelText(result, '审阅辅助查询') }
+  })
+
+  app.post('/review/:review_id/consult/stream', { preHandler: authenticate }, async (request, reply) => {
+    const principal = currentPrincipal(request)
+    const { review_id: reviewId } = request.params as { review_id: string }
+    const { question, history } = consultInput(request.body)
+    const prompt = await reviewConsultPrompt(principal, reviewId, question, history)
+    reply.hijack()
+    reply.raw.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+    })
+    const send = (event: Record<string, unknown>): void => {
+      reply.raw.write(`data: ${JSON.stringify(event)}\n\n`)
+    }
+    try {
+      for await (const chunk of harness.streamChat(prompt, REVIEW_CONSULT_SYSTEM)) {
+        if (chunk.reasoning) send({ type: 'reasoning', text: chunk.reasoning })
+        if (chunk.text) send({ type: 'content', text: chunk.text })
+      }
+      send({ type: 'done' })
+    } catch (error) {
+      send({ type: 'error', message: error instanceof Error ? error.message : String(error) })
+    } finally {
+      reply.raw.end()
+    }
   })
 
   app.get('/memory', { preHandler: authenticate }, async (request) => {
@@ -285,7 +457,7 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
       [
         reviewId,
         principal.tenantId,
-        `记忆晋升：${memory.text.slice(0, 48)}`,
+        `这条记忆请求升级为知识事实：${memory.text.slice(0, 48)}`,
         JSON.stringify({
           memory_id: memory.id,
           text: memory.text,
@@ -293,6 +465,7 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
         }),
       ],
     )
+    notifyReviewQueueChanged(principal.tenantId)
     return { review_id: reviewId, status: 'pending_review' }
   })
 

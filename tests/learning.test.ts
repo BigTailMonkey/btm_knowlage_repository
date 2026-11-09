@@ -4,7 +4,7 @@ import { after, before, beforeEach, test } from 'node:test'
 import { query, queryOne } from '../src/db/index.js'
 import { harness } from '../src/adapters/harness/index.js'
 import { extractFactsForDocument, parseDate, resolveReview } from '../src/core/learning.js'
-import { tombstoneDocument } from '../src/core/ingestion.js'
+import { trashDocument } from '../src/core/trash.js'
 import { clearKnowledge, testWorkspace } from './helpers.js'
 
 let workspace: Awaited<ReturnType<typeof testWorkspace>>
@@ -94,10 +94,11 @@ test('single-source and low-confidence candidates await review with exact eviden
   const fact = await queryOne<{ id: string; status: string; confidence: number }>('SELECT id, status, confidence FROM facts')
   assert.equal(fact?.status, 'disputed')
   assert.equal(fact?.confidence, 0.2)
-  const reviews = await query<{ kind: string; payload: { reason: string } }>('SELECT kind, payload FROM review_queue WHERE status = $1', ['open'])
+  const reviews = await query<{ kind: string; title: string; payload: { reason: string } }>('SELECT kind, title, payload FROM review_queue WHERE status = $1', ['open'])
   assert.equal(reviews.length, 1)
   assert.equal(reviews[0]?.kind, 'fact_validation')
-  assert.match(reviews[0]!.payload.reason, /置信度/)
+  assert.match(reviews[0]!.payload.reason, /把握不足/)
+  assert.doesNotMatch(reviews[0]!.title, /的「/)
   const evidence = await queryOne<{ quote: string; span: { start: number; end: number } }>('SELECT quote, span FROM fact_evidence')
   assert.equal(evidence?.quote, quote)
   assert.deepEqual(evidence?.span, { start: 7, end: 7 + quote.length })
@@ -111,7 +112,7 @@ test('a high-confidence single source still needs review; repeated extraction is
   assert.equal((await query('SELECT id FROM fact_evidence')).length, 1)
   const reviews = await query<{ payload: { reason: string } }>('SELECT payload FROM review_queue WHERE status = $1', ['open'])
   assert.equal(reviews.length, 1)
-  assert.match(reviews[0]!.payload.reason, /单份文档/)
+  assert.match(reviews[0]!.payload.reason, /只在一份文档/)
   assert.equal((await queryOne<{ status: string }>('SELECT status FROM facts'))?.status, 'disputed')
 })
 
@@ -219,7 +220,7 @@ test('reviewed single-source facts retract with deleted evidence and cannot be r
   const review = await queryOne<{ id: string }>("SELECT id FROM review_queue WHERE status = 'open'")
   await resolveReview(workspace.principal, review!.id, 'accept_new')
   assert.equal((await queryOne<{ status: string }>('SELECT status FROM facts'))?.status, 'active')
-  await tombstoneDocument(workspace.principal, doc)
+  await trashDocument(workspace.principal, doc)
   assert.equal((await queryOne<{ status: string }>('SELECT status FROM facts'))?.status, 'retracted')
   assert.equal((await query('SELECT id FROM fact_evidence')).length, 0)
   await query("UPDATE review_queue SET status = 'open' WHERE id = $1", [review!.id])

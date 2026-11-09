@@ -19,83 +19,41 @@ let driverPromise: Promise<Driver> | null = null
 
 async function createDriver(): Promise<Driver> {
   const url = settings.databaseUrl
-  if (url.startsWith('postgres://') || url.startsWith('postgresql://')) {
-    const { Pool } = await import('pg')
-    const pool = new Pool({ connectionString: url, max: 20 })
-    return {
-      async query(text, params) {
-        return pool.query(text, params)
-      },
-      async exec(text) {
-        await pool.query(text)
-      },
-      async transaction(fn) {
-        const client = await pool.connect()
-        try {
-          await client.query('BEGIN')
-          const result = await fn({
-            async query(text, params = []) {
-              return (await client.query(text, params)).rows as never
-            },
-          })
-          await client.query('COMMIT')
-          return result
-        } catch (error) {
-          await client.query('ROLLBACK')
-          throw error
-        } finally {
-          client.release()
-        }
-      },
-      async close() {
-        await pool.end()
-      },
-    }
+  if (!url) throw new Error('未配置 [database].url，请填写 PostgreSQL 连接地址')
+  if (!url.startsWith('postgres://') && !url.startsWith('postgresql://')) {
+    throw new Error('[database].url 仅支持 PostgreSQL 连接地址（postgres:// 或 postgresql://）')
   }
-
-  // 本地零依赖运行：PGlite 是 PostgreSQL 的嵌入式实现，同一份 schema 与 SQL。
-  const { PGlite } = await import('@electric-sql/pglite')
-  const pglite = new PGlite(join(settings.dataDir, 'pglite'))
-  await pglite.waitReady
-  // A PGlite instance owns one connection. Keep transactions exclusive while
-  // allowing their client queries to run directly inside the queued operation.
-  let pending: Promise<void> = Promise.resolve()
-  const serialize = <T>(operation: () => Promise<T>): Promise<T> => {
-    const result = pending.then(operation)
-    pending = result.then(() => undefined, () => undefined)
-    return result
-  }
-  const client: DbClient = {
-    async query<T = Record<string, unknown>>(text: string, params: unknown[] = []) {
-      const result = await pglite.query<T>(text, params as unknown[])
-      return result.rows
-    },
-  }
+  const pg = await import('pg')
+  // DATE 保持原始 YYYY-MM-DD 字符串，避免本地时区 Date 回写后偏移一天。
+  pg.types.setTypeParser(pg.types.builtins.DATE, (value) => value)
+  const pool = new pg.Pool({ connectionString: url, max: 20 })
   return {
     async query(text, params) {
-      return serialize(async () => {
-        const result = await pglite.query(text, params as unknown[])
-        return { rows: result.rows }
-      })
+      return pool.query(text, params)
     },
     async exec(text) {
-      await serialize(() => pglite.exec(text).then(() => undefined))
+      await pool.query(text)
     },
     async transaction(fn) {
-      return serialize(async () => {
-        await pglite.query('BEGIN')
-        try {
-          const result = await fn(client)
-          await pglite.query('COMMIT')
-          return result
-        } catch (error) {
-          await pglite.query('ROLLBACK')
-          throw error
-        }
-      })
+      const client = await pool.connect()
+      try {
+        await client.query('BEGIN')
+        const result = await fn({
+          async query(text, params = []) {
+            return (await client.query(text, params)).rows as never
+          },
+        })
+        await client.query('COMMIT')
+        return result
+      } catch (error) {
+        await client.query('ROLLBACK')
+        throw error
+      } finally {
+        client.release()
+      }
     },
     async close() {
-      await serialize(() => pglite.close())
+      await pool.end()
     },
   }
 }

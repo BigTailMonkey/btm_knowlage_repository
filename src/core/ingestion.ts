@@ -5,12 +5,14 @@ import { query, queryOne, transaction } from '../db/index.js'
 import { embedder } from '../adapters/embeddings/index.js'
 import type { Embedding } from '../adapters/embeddings/index.js'
 import { parseBytes, ParsedDocument, parseHtml, parseTextContent } from '../adapters/parsing/index.js'
-import { chunkBlocks, MAX_TOKENS } from './chunking.js'
+import { chunkBlocks, MAX_TOKENS, type ChunkDraft, type ParsedBlock } from './chunking.js'
 import { newId } from './ids.js'
 import type { DocumentRow } from './rows.js'
 import { canRead, Principal } from './security.js'
 import { TraceRecorder } from './tracing.js'
 import { enqueueEnrichment, processEnrichmentQueue, stopEnrichmentWorker } from './enrichment-queue.js'
+import { notifyReviewQueueChanged } from './review-events.js'
+import type { DbClient } from '../db/index.js'
 
 function sha256(data: Buffer | string): string {
   return createHash('sha256').update(data).digest('hex')
@@ -19,6 +21,50 @@ function sha256(data: Buffer | string): string {
 function resolveAcl(acl?: string[] | null): string[] {
   const cleaned = (acl ?? []).map((value) => value.trim()).filter(Boolean)
   return cleaned.length ? cleaned : ['tenant:public']
+}
+
+/** 写入解析结构块。恢复回收站文档时复用同一写入路径。 */
+export async function insertBlockRows(
+  client: DbClient, docId: string, versionId: string, blocks: ParsedBlock[],
+): Promise<void> {
+  for (const block of blocks) {
+    await client.query(
+      `INSERT INTO blocks (id, version_id, doc_id, type, page, bbox, order_index, heading_path, text)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb, $9)`,
+      [newId('bl'), versionId, docId, block.type, block.page,
+        block.bbox ? JSON.stringify(block.bbox) : null, block.order, JSON.stringify(block.headingPath), block.text],
+    )
+  }
+}
+
+/** 写入检索单元。恢复回收站文档重新切分后同样走这里，保证列语义一致。 */
+export async function insertChunkRows(
+  client: DbClient, options: {
+    tenantId: string
+    docId: string
+    versionId: string
+    chunks: ChunkDraft[]
+    embeddings: Map<string, Embedding>
+    acl: string[]
+    aclVersion: number
+  },
+): Promise<void> {
+  const { tenantId, docId, versionId, chunks, embeddings, acl, aclVersion } = options
+  for (const chunk of chunks) {
+    const vector = embeddings.get(chunk.id)
+    await client.query(
+      `INSERT INTO chunks
+         (id, version_id, doc_id, tenant_id, seq, heading_path, page, bbox, block_type, text,
+          token_count, parent_id, is_parent, acl_principals, acl_version, dense, sparse,
+          embedding_model, embedding_dim, weight)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb, $9, $10, $11, $12, $13,
+               $14::jsonb, $15, $16::jsonb, $17::jsonb, $18, $19, 1.0)`,
+      [chunk.id, versionId, docId, tenantId, chunk.seq, JSON.stringify(chunk.headingPath),
+        chunk.page, chunk.bbox ? JSON.stringify(chunk.bbox) : null, chunk.blockType, chunk.text,
+        chunk.tokenCount, chunk.parentId, chunk.isParent, JSON.stringify(acl), aclVersion,
+        JSON.stringify(vector?.dense ?? []), JSON.stringify(vector?.sparse ?? {}), vector?.model ?? '', vector?.dim ?? 0],
+    )
+  }
 }
 
 interface JobRecord {
@@ -205,7 +251,7 @@ async function ingestParsedVersion(
       `SELECT * FROM documents WHERE id = $1 AND tenant_id = $2 AND status = 'active' FOR UPDATE`,
       [documentId, principal.tenantId],
     ))[0] : null
-    if (existing && !latest) throw new Error('目标文档已被删除，不能更新版本')
+    if (existing && !latest) throw new Error('目标文档已在回收站，请先恢复后再更新版本')
     versionNumber = latest ? latest.current_version + 1 : 1
     // Updating content does not implicitly change an existing document's ACL.
     const acl = options.acl == null && latest ? latest.acl_principals : resolveAcl(options.acl)
@@ -233,29 +279,10 @@ async function ingestParsedVersion(
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
       [versionId, documentId, principal.tenantId, versionNumber, contentHash, parsed.parser, fullText, JSON.stringify(meta)],
     )
-    for (const block of parsed.blocks) {
-      await client.query(
-        `INSERT INTO blocks (id, version_id, doc_id, type, page, bbox, order_index, heading_path, text)
-         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb, $9)`,
-        [newId('bl'), versionId, documentId, block.type, block.page,
-          block.bbox ? JSON.stringify(block.bbox) : null, block.order, JSON.stringify(block.headingPath), block.text],
-      )
-    }
-    for (const chunk of chunks) {
-      const vector = embeddings.get(chunk.id)
-      await client.query(
-        `INSERT INTO chunks
-           (id, version_id, doc_id, tenant_id, seq, heading_path, page, bbox, block_type, text,
-            token_count, parent_id, is_parent, acl_principals, acl_version, dense, sparse,
-            embedding_model, embedding_dim, weight)
-         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb, $9, $10, $11, $12, $13,
-                 $14::jsonb, $15, $16::jsonb, $17::jsonb, $18, $19, 1.0)`,
-        [chunk.id, versionId, documentId, principal.tenantId, chunk.seq, JSON.stringify(chunk.headingPath),
-          chunk.page, chunk.bbox ? JSON.stringify(chunk.bbox) : null, chunk.blockType, chunk.text,
-          chunk.tokenCount, chunk.parentId, chunk.isParent, JSON.stringify(acl), aclVersion,
-          JSON.stringify(vector?.dense ?? []), JSON.stringify(vector?.sparse ?? {}), vector?.model ?? '', vector?.dim ?? 0],
-      )
-    }
+    await insertBlockRows(client, documentId, versionId, parsed.blocks)
+    await insertChunkRows(client, {
+      tenantId: principal.tenantId, docId: documentId, versionId, chunks, embeddings, acl, aclVersion,
+    })
     if (options.jobId) {
       await enqueueEnrichment(client, principal, documentId, versionNumber)
       await client.query(
@@ -417,6 +444,7 @@ async function runIngestJob(
     )
     await query(`UPDATE review_queue SET status='resolved', resolution=$1::jsonb, resolved_at=now()
       WHERE tenant_id=$2 AND status='open' AND payload->>'job_id'=$3`, [JSON.stringify({ action: 'retry_succeeded', document_id: result.document_id }), principal.tenantId, jobId])
+    notifyReviewQueueChanged(principal.tenantId)
     void processEnrichmentQueue().catch(console.error)
   } catch (error) {
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 300) || '入库失败'
@@ -428,6 +456,7 @@ async function runIngestJob(
     const review = await queryOne<{ id: string }>("SELECT id FROM review_queue WHERE tenant_id=$1 AND status='open' AND payload->>'job_id'=$2", [principal.tenantId, jobId])
     if (!review) await query(`INSERT INTO review_queue(id,tenant_id,kind,title,payload) VALUES($1,$2,'parse_failure',$3,$4::jsonb)`,
       [newId('rev'), principal.tenantId, options.title || options.filename || options.url || '文档解析失败', JSON.stringify({ job_id: jobId, reason: message })])
+    notifyReviewQueueChanged(principal.tenantId)
   }
 }
 
@@ -445,38 +474,6 @@ async function fetchUrl(url: string, title: string | null): Promise<{ parsed: Pa
     return { parsed: await parseBytes(url, buffer, title), sourceType: 'pdf' }
   }
   return { parsed: parseHtml(await response.text(), title || url), sourceType: 'web' }
-}
-
-export async function tombstoneDocument(principal: Principal, docId: string): Promise<Record<string, unknown>> {
-  const document = await queryOne<DocumentRow>('SELECT * FROM documents WHERE id = $1', [docId])
-  if (!document || document.tenant_id !== principal.tenantId) throw new Error('文档不存在')
-  const affected = new Set<string>()
-  await transaction(async (client) => {
-    await client.query('DELETE FROM knowledge_summaries WHERE tenant_id=$1', [principal.tenantId])
-    await client.query(`UPDATE documents SET status = 'tombstoned', updated_at = now() WHERE id = $1`, [docId])
-    const facts = await client.query<{ id: string }>(
-      `SELECT id FROM facts WHERE tenant_id = $1 AND
-         (source_doc_id = $2 OR id IN (SELECT fact_id FROM fact_evidence WHERE doc_id = $2))`,
-      [principal.tenantId, docId],
-    )
-    for (const fact of facts) affected.add(fact.id)
-    await client.query('DELETE FROM fact_evidence WHERE doc_id = $1', [docId])
-    for (const factId of affected) {
-      const remaining = (await client.query<{ count: string }>(
-        'SELECT count(*)::text AS count FROM fact_evidence WHERE fact_id = $1',
-        [factId],
-      ))[0]
-      if (!remaining || Number(remaining.count) === 0) {
-        await client.query(`UPDATE facts SET status = 'retracted' WHERE id = $1`, [factId])
-      }
-    }
-  })
-  await query(
-    `INSERT INTO jobs (id, tenant_id, type, status, payload)
-     VALUES ($1, $2, 'tombstone', 'done', $3::jsonb)`,
-    [newId('job'), principal.tenantId, JSON.stringify({ doc_id: docId, affected_facts: [...affected] })],
-  )
-  return { document_id: docId, affected_facts: affected.size, status: 'tombstoned' }
 }
 
 export const ingestionConfig = { dataDir: settings.dataDir }

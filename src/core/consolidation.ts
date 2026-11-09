@@ -4,6 +4,7 @@ import { newId } from './ids.js'
 import { tokenize } from '../adapters/embeddings/index.js'
 import { settings } from '../config.js'
 import { todayLocal } from './ids.js'
+import { notifyReviewQueueChanged } from './review-events.js'
 
 interface SupportedFact { id: string; subject_id: string; object_id: string | null; subject: string; predicate: string; object: string; acl_principals: string[]; chunk_ids: string[]; quotes: string[] }
 
@@ -53,9 +54,16 @@ export async function consolidateKnowledge(tenant: string): Promise<Record<strin
         VALUES($1,$2,$3,$4,$5::jsonb,$6,$7::jsonb,$8)`, [newId('sum'), tenant, summary.kind, summary.subject, summary.acl, body, JSON.stringify(ids), createHash('sha256').update(body).digest('hex')])
     }
   })
-  const orphaned = await query(`UPDATE facts SET status='retracted' WHERE tenant_id=$1 AND status='active'
+  const orphaned = await query<{ id: string }>(`UPDATE facts SET status='retracted' WHERE tenant_id=$1 AND status='active'
     AND NOT EXISTS(SELECT 1 FROM fact_evidence e JOIN chunks c ON c.id=e.chunk_id JOIN documents d ON d.id=c.doc_id
       JOIN document_versions v ON v.id=c.version_id WHERE e.fact_id=facts.id AND d.status='active' AND v.version=d.current_version) RETURNING id`, [tenant])
+  // 失去有效出处的事实不能再被采纳，同时关闭对应的待审项，避免队列里留下永远无法处理的项目。
+  if (orphaned.length) {
+    await query(`UPDATE review_queue SET status='resolved', resolution=$1::jsonb, resolved_at=now()
+      WHERE tenant_id=$2 AND status='open' AND (payload->>'new_fact_id' = ANY($3::text[]) OR payload->'old_fact_ids' ?| $3::text[])`,
+    [JSON.stringify({ action: 'evidence_retracted', by: 'system' }), tenant, orphaned.map((row) => row.id)])
+    notifyReviewQueueChanged(tenant)
+  }
   const decayed = await query(`UPDATE fact_evidence SET weight=greatest(0.1,weight*0.95),last_decay_at=now()
     WHERE fact_id IN(SELECT id FROM facts WHERE tenant_id=$1) AND last_used_at<now()-interval '30 days'
       AND (last_decay_at IS NULL OR last_decay_at<now()-interval '30 days') RETURNING id`, [tenant])

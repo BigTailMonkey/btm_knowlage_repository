@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import cors from '@fastify/cors'
 import multipart from '@fastify/multipart'
 import fastifyStatic from '@fastify/static'
+import websocket from '@fastify/websocket'
 import Fastify, { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 
 import { settings } from '../config.js'
@@ -51,6 +52,7 @@ export async function createServer(): Promise<FastifyInstance> {
 
   await app.register(cors, { origin: true, credentials: false })
   await app.register(multipart, { limits: { fileSize: 30 * 1024 * 1024 } })
+  await app.register(websocket, { options: { maxPayload: 4096 } })
 
   app.setErrorHandler((error, _request, reply) => {
     const status = (error as { statusCode?: number }).statusCode ?? 500

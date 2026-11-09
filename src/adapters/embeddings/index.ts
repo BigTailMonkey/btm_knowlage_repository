@@ -82,23 +82,102 @@ export function keywordOverlap(queryTokens: string[], text: string): number {
   return hit / query.size
 }
 
-async function postJson(url: string, payload: unknown): Promise<Record<string, unknown>> {
+interface RetryHint {
+  retryable?: boolean
+  retryAfterMs?: number
+}
+
+function fail(message: string, hint: RetryHint = {}): EmbeddingError {
+  return Object.assign(new EmbeddingError(message), hint)
+}
+
+/** 限流与瞬时故障可重试；4xx 参数类错误重试无意义。 */
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504])
+
+function parseRetryAfter(value: string | null): number | undefined {
+  if (!value) return undefined
+  const seconds = Number(value.trim())
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000)
+  const at = Date.parse(value)
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined
+}
+
+function isTransientFetchError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return error.name === 'AbortError' || error.name === 'TimeoutError' || error.name === 'TypeError'
+}
+
+/**
+ * 退避间隔：把 retry_max_retries 次重试的间隔在「retry_base_ms → retry_max_ms」之间按等比均匀铺开，
+ * 第 1 次重试等 base（默认 5s），最后一次等 max（默认 3 分钟），中间等比递增。
+ * 服务给出 Retry-After 时取两者较大值，仍受 max 封顶。
+ */
+export function backoffDelayMs(retry: number, retryAfterMs?: number): number {
+  const base = Math.max(1, settings.embeddingRetryBaseMs)
+  const cap = Math.max(base, settings.embeddingRetryMaxMs)
+  const total = Math.max(1, Math.trunc(settings.embeddingRetryMaxRetries))
+  const step = total <= 1 ? 0 : Math.min(1, (Math.max(1, retry) - 1) / (total - 1))
+  let delay = Math.round(base * (cap / base) ** step)
+  if (retryAfterMs !== undefined) delay = Math.max(delay, retryAfterMs)
+  delay = Math.min(cap, delay)
+  if (settings.embeddingRetryJitter) delay = Math.round(delay * (0.5 + Math.random() * 0.5))
+  return delay
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function postOnce(url: string, payload: unknown): Promise<Record<string, unknown>> {
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (settings.embeddingApiKey) headers.authorization = `Bearer ${settings.embeddingApiKey}`
+  let response: Response
   try {
-    const response = await fetch(url, {
+    response = await fetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(settings.embeddingTimeoutSeconds * 1000),
     })
-    if (!response.ok) {
-      throw new EmbeddingError(`向量服务返回 ${response.status}: ${(await response.text()).slice(0, 300)}`)
-    }
+  } catch (error) {
+    throw fail(
+      `向量服务不可用: ${error instanceof Error ? error.message : String(error)}`,
+      { retryable: isTransientFetchError(error) },
+    )
+  }
+  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 300)
+    throw fail(`向量服务返回 ${response.status}: ${detail}`, {
+      retryable: RETRYABLE_STATUS.has(response.status),
+      retryAfterMs: parseRetryAfter(response.headers.get('retry-after')),
+    })
+  }
+  try {
     return (await response.json()) as Record<string, unknown>
   } catch (error) {
-    if (error instanceof EmbeddingError) throw error
-    throw new EmbeddingError(`向量服务不可用: ${error instanceof Error ? error.message : String(error)}`)
+    throw fail(`向量服务响应不是合法 JSON: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+async function postJson(url: string, payload: unknown): Promise<Record<string, unknown>> {
+  const maxAttempts = Math.max(1, Math.trunc(settings.embeddingRetryMaxRetries)) + 1
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await postOnce(url, payload)
+    } catch (error) {
+      const hint = error as RetryHint
+      const exhausted = attempt >= maxAttempts
+      if (error instanceof EmbeddingError && hint.retryable && !exhausted) {
+        await sleep(backoffDelayMs(attempt, hint.retryAfterMs))
+        continue
+      }
+      if (error instanceof EmbeddingError && attempt > 1) {
+        error.message = `${error.message}（含首次共尝试 ${attempt} 次）`
+      }
+      throw error instanceof EmbeddingError
+        ? error
+        : fail(`向量服务不可用: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 }
 

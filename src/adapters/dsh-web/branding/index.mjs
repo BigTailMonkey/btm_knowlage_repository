@@ -27,6 +27,28 @@ html[data-knowweave-embedded] [class~="hHd-Xa_root"]:not([class~="hHd-Xa_collaps
   margin: 0;
   padding-block: 4px;
 }
+/* 连接中断时 bootstrap 标记 data-knowweave-offline：盖住输入区并说明原因，
+   避免断线状态下提交只得到一条失败提示；标记消失后自动恢复输入。 */
+html[data-knowweave-offline] [data-composer-card] {
+  position: relative;
+}
+html[data-knowweave-offline] [data-composer-card]::after {
+  content: '与对话服务的连接已断开，正在重新连接…';
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 16px;
+  border-radius: var(--dsw-radius-panel, 12px);
+  background: color-mix(in srgb, var(--dsw-alias-bg-base, #ffffff) 78%, transparent);
+  color: var(--dsw-alias-label-secondary, #666666);
+  font-size: 13px;
+  line-height: 18px;
+  text-align: center;
+  pointer-events: auto;
+}
 `
 
 /** Apply presentation before the upstream shell boots; all transport routes stay intact. */

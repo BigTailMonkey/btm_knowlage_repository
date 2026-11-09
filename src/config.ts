@@ -52,6 +52,7 @@ const model = raw.model ?? {}
 const embedding = raw.embedding ?? {}
 const retrieval = raw.retrieval ?? {}
 const reflection = raw.reflection ?? {}
+const trash = raw.trash ?? {}
 const tenant = raw.tenant ?? {}
 const server = raw.server ?? {}
 const dsh = raw.dsh ?? {}
@@ -97,6 +98,11 @@ export const settings = {
   embeddingInstructions: text(embedding.instructions, ''),
   embeddingBatchSize: num(embedding.batch_size, 32),
   embeddingTimeoutSeconds: num(embedding.timeout_seconds, 30),
+  // 重试策略：首次失败后最多重试 retry_max_retries 次；间隔在 base_ms→max_ms 之间等比均匀铺开（含首次共 retries+1 次请求）
+  embeddingRetryMaxRetries: Math.max(0, Math.trunc(num(embedding.retry_max_retries, 10))),
+  embeddingRetryBaseMs: Math.max(1, num(embedding.retry_base_ms, 5_000)),
+  embeddingRetryMaxMs: Math.max(1, num(embedding.retry_max_ms, 180_000)),
+  embeddingRetryJitter: bool(embedding.retry_jitter, false),
 
   rerankThreshold: num(retrieval.rerank_threshold, 0.36),
   rerankUrl: text(retrieval.rerank_url, ''),
@@ -109,6 +115,8 @@ export const settings = {
   reflectionEnabled: bool(reflection.enabled, true),
   reflectionRunAt: typeof reflection.run_at === 'string' ? reflection.run_at : '03:00',
   reflectionIntervalSeconds: num(reflection.interval_seconds, 21600),
+  // 回收站保留天数；到期由每日维护自动彻底清除，0 表示不自动清除
+  trashRetentionDays: Math.max(0, Math.trunc(num(trash.retention_days, 30))),
 
   sidecarUrl: text(sidecar.url, 'http://127.0.0.1:8732'),
   sidecarEnabled: bool(sidecar.enabled, true),

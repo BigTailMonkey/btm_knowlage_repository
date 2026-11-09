@@ -3,7 +3,8 @@ import { resolve, join, extname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createHash } from 'node:crypto'
 import { query } from '../db/index.js'
-import { processIngestQueue, savedIngestJobs, submitIngest, tombstoneDocument } from './ingestion.js'
+import { processIngestQueue, savedIngestJobs, submitIngest } from './ingestion.js'
+import { trashDocument } from './trash.js'
 import type { Principal } from './security.js'
 
 const EXTENSIONS = new Set(['.txt','.md','.markdown','.html','.htm','.pdf','.docx','.csv','.json','.yaml','.yml','.png','.jpg','.jpeg','.tiff','.tif','.webp','.bmp','.wav','.mp3','.m4a','.mp4','.webm','.ogg','.flac'])
@@ -46,7 +47,7 @@ export async function syncDirectory(principal: Principal, directory: string, del
   if (deleteMissing) {
     const prefix = pathToFileURL(root + '/').href
     const documents = await query<{ id: string; uri: string }>("SELECT id,uri FROM documents WHERE tenant_id=$1 AND status='active' AND left(uri,char_length($2::text))=$2", [principal.tenantId,prefix])
-    for (const doc of documents) if (!seen.has(doc.uri)) { await tombstoneDocument(principal,doc.id); deleted += 1 }
+    for (const doc of documents) if (!seen.has(doc.uri)) { await trashDocument(principal,doc.id); deleted += 1 }
   }
   const jobs = (await savedIngestJobs(principal)).filter((job) => submitted.includes(String(job.job_id)))
   return { scanned: files.length, unchanged, submitted: submitted.length, deleted, jobs, errors }

@@ -9,11 +9,14 @@ import { runEvaluation, type EvaluationCase } from '../src/core/evaluation.js'
 import { harness } from '../src/adapters/harness/index.js'
 import { embedder, sparseVector, tokenize } from '../src/adapters/embeddings/index.js'
 import type { Principal } from '../src/core/security.js'
+import { createTempDatabase } from '../tests/temp-database.js'
 
 const live = process.argv.includes('--live')
 const directory = await mkdtemp(join(tmpdir(), 'knowweave-golden-'))
+// 临时库保留到人工复核结束，供 scripts/inspect-evaluation.ts 读取轨迹。
+const database = await createTempDatabase('knowweave_eval')
 settings.dataDir = directory
-settings.databaseUrl = ''
+settings.databaseUrl = database.url
 settings.semanticEntities = false
 settings.rerankUrl = ''
 if (!live) {
@@ -40,8 +43,8 @@ try {
   }
   const evaluation = await runEvaluation(principal, cases, live ? 'answer' : 'retrieval', live ? (completed,total)=>process.stdout.write(`\ncompleted ${completed}/${total}`) : undefined)
   const artifact = join(directory, 'evaluation.json')
-  await writeFile(artifact, JSON.stringify({ corpus: '20 repository source excerpts; 50 explicit excerpt/citation questions', corpus_version: 2, live, ...evaluation }, null, 2))
-  console.log('\n' + JSON.stringify({ ...evaluation.metrics, artifact, live, threshold: settings.rerankThreshold }))
+  await writeFile(artifact, JSON.stringify({ corpus: '20 repository source excerpts; 50 explicit excerpt/citation questions', corpus_version: 2, live, database: database.name, ...evaluation }, null, 2))
+  console.log('\n' + JSON.stringify({ ...evaluation.metrics, artifact, database: database.name, live, threshold: settings.rerankThreshold }))
   // Version 2 baseline is 100%; allow at most two percentage points regression.
   if (evaluation.metrics.pass_rate < 0.98 || evaluation.metrics.recall_at_10 < 0.85 || evaluation.metrics.context_precision < 0.75
     || (live && (evaluation.metrics.citation_accuracy ?? 0) < 0.98)) process.exitCode = 1

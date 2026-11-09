@@ -1,5 +1,6 @@
 import { query, transaction, type DbClient } from '../db/index.js'
 import { extractFactsForDocument } from './learning.js'
+import { notifyReviewQueueChanged } from './review-events.js'
 import { canRead, principalByUserId, principalSet, type Principal } from './security.js'
 
 interface Promotion {
@@ -132,6 +133,7 @@ async function processEnrichmentJob(job: EnrichmentJob): Promise<void> {
   } finally {
     clearInterval(heartbeat)
   }
+  let reviewChanged = false
   await transaction(async (client) => {
     const [current] = await client.query(
       "SELECT id FROM documents WHERE id=$1 AND current_version=$2 AND status='active' FOR UPDATE",
@@ -143,6 +145,17 @@ async function processEnrichmentJob(job: EnrichmentJob): Promise<void> {
       [job.id, job.attempts, status, error],
     )
     if (!owned) return
+    // 抽取期间文档被移入回收站或换版：由此产生的待审项已无有效出处，直接关闭。
+    if (status === 'stale') {
+      const invalidated = await client.query<{ id: string }>(
+        `UPDATE review_queue SET status='resolved', resolution=$3::jsonb, resolved_at=now()
+         WHERE tenant_id=$1 AND status='open' AND payload->>'new_fact_id' IN (
+           SELECT id FROM facts WHERE tenant_id=$1 AND source_doc_id=$2 AND status='retracted'
+         ) RETURNING id`,
+        [job.tenant_id, docId, JSON.stringify({ action: 'evidence_retracted', by: 'system' })],
+      )
+      if (invalidated.length) reviewChanged = true
+    }
     if (status === 'failed') {
       await client.query(
         "UPDATE documents SET enrichment_status='failed',enrichment_error=COALESCE($3,enrichment_error) WHERE id=$1 AND current_version=$2 AND status='active'",
@@ -157,6 +170,7 @@ async function processEnrichmentJob(job: EnrichmentJob): Promise<void> {
         [promotion.review_id, job.tenant_id, JSON.stringify({ action: promotion.action, note: promotion.note })],
       )
       if (closed.length) {
+        reviewChanged = true
         await client.query(
           `UPDATE memory_items SET promoted_fact_id=(
              SELECT f.id FROM fact_evidence e JOIN facts f ON f.id=e.fact_id
@@ -172,6 +186,7 @@ async function processEnrichmentJob(job: EnrichmentJob): Promise<void> {
       )
     }
   })
+  if (reviewChanged) notifyReviewQueueChanged(job.tenant_id)
 }
 
 export async function stopEnrichmentWorker(): Promise<void> {

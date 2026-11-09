@@ -178,6 +178,7 @@
                 <input id="doc-search" type="search" placeholder="搜索标题" aria-label="搜索文档标题" />
               </div>
               <span class="muted" id="doc-count"></span>
+              <button class="btn" id="open-trash" type="button">回收站</button>
               <button class="btn primary" id="open-ingest">添加文档</button>
             </div>
 
@@ -204,8 +205,24 @@
 
           <!-- 研究台 -->
           <section class="page" id="page-ask">
+            <header class="ask-head">
+              <div class="ask-head-main">
+                <h1>研究台</h1>
+                <p>向已入库的文档提问，每条结论都能回到原文。</p>
+              </div>
+              <div class="ask-scope" id="ask-scope">
+                <span class="scope-chip"><b id="scope-docs">—</b> 文档</span>
+                <span class="scope-chip"><b id="scope-chunks">—</b> 检索单元</span>
+                <span class="scope-chip"><b id="scope-entities">—</b> 实体</span>
+                <span class="scope-chip"><b id="scope-facts">—</b> 事实</span>
+              </div>
+            </header>
+
             <form class="ask-composer" id="ask-form">
-              <textarea id="question" rows="2" placeholder="输入问题" aria-label="输入问题"></textarea>
+              <label class="composer-field">
+                <span class="sr-only">输入问题</span>
+                <textarea id="question" rows="2" placeholder="问点什么，比如「随访频次怎么规定？」" aria-label="输入问题"></textarea>
+              </label>
               <div class="ask-composer-bar">
                 <div class="segmented" id="mode-tabs" role="group" aria-label="检索模式">
                   <button type="button" class="seg active" data-mode="quick" aria-pressed="true">快速</button>
@@ -215,13 +232,17 @@
                   <button type="button" class="seg" data-mode="compare" aria-pressed="false">对比</button>
                 </div>
                 <div class="ask-composer-actions">
-                  <div class="ask-asof">
-                    <label for="as-of">截至</label>
+                  <label class="ask-asof" for="as-of">
+                    <span>截至</span>
                     <input type="date" id="as-of" />
-                  </div>
-                  <button class="btn primary" id="ask-btn" type="submit">提问</button>
+                  </label>
+                  <button class="btn primary ask-send" id="ask-btn" type="submit">
+                    <span>提问</span>
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h9M8.5 4.2 12.5 8l-4 3.8"/></svg>
+                  </button>
                 </div>
               </div>
+              <p class="ask-hint" id="mode-hint">单轮混合召回，适合定义与参数</p>
             </form>
 
             <div class="recent-strip" id="conversation-list" aria-label="最近会话" hidden></div>
@@ -230,15 +251,20 @@
               <div class="ask-main">
                 <div class="ask-result" id="ask-result">
                   <div class="ask-empty">
-                    <div class="ask-empty-intro">
-                      <span class="mark" aria-hidden="true">
+                    <div class="ask-empty-lead">
+                      <span class="ask-empty-mark" aria-hidden="true">
                         <svg viewBox="0 0 24 24" fill="none">
                           <path d="M3 9c4.5 0 4.5-5 9-5s4.5 5 9 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                           <path d="M3 15c4.5 0 4.5 5 9 5s4.5-5 9-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                         </svg>
                       </span>
-                      <h2>从一条问题开始</h2>
-                      <p>每条回答都附原文片段与检索分数。</p>
+                      <h2>从一条具体问题开始</h2>
+                      <p>问题问得越具体，召回的片段越准。系统只使用通过阈值筛选的原文作答，证据不足时会直接说明。</p>
+                    </div>
+                    <div class="ask-empty-steps">
+                      <div class="ask-step"><span>1</span><div><b>召回</b><p>混合检索从全部文档中取候选片段</p></div></div>
+                      <div class="ask-step"><span>2</span><div><b>重排与阈值</b><p>低分片段被淘汰，不进入生成上下文</p></div></div>
+                      <div class="ask-step"><span>3</span><div><b>成文与引用</b><p>答案逐句标注编号，可回到原文定位</p></div></div>
                     </div>
                   </div>
                 </div>
@@ -246,9 +272,12 @@
 
               <aside class="ask-side">
                 <section class="block evidence-block">
-                  <div class="block-head"><h2>证据</h2><span class="muted" id="evidence-count"></span></div>
+                  <div class="block-head">
+                    <h2>证据</h2>
+                    <span class="muted" id="evidence-count"></span>
+                  </div>
                   <div id="evidence-gate"></div>
-                  <div id="evidence-body"><div class="rail-empty">暂无证据</div></div>
+                  <div id="evidence-body"><div class="rail-empty">提问后这里会列出被采用的原文片段</div></div>
                 </section>
               </aside>
             </div>
@@ -373,6 +402,32 @@
       </div>
     </div>
   </div>
+
+  <dialog class="dialog consult-dialog" id="consult-dialog" aria-labelledby="consult-title">
+    <div class="consult-shell">
+      <header class="consult-head">
+        <div class="consult-head-main">
+          <div class="consult-head-line">
+            <h2 id="consult-title">审阅助手</h2>
+            <span class="consult-tag">结合原文、出处与库内记录作答</span>
+          </div>
+          <p class="consult-subject" id="consult-subject"></p>
+        </div>
+        <button class="icon-btn" data-close aria-label="关闭"><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button>
+      </header>
+      <div class="consult-log" id="consult-log" role="log" aria-live="polite"></div>
+      <div class="consult-foot">
+        <div class="consult-suggest" id="consult-suggest"></div>
+        <form class="consult-form" id="consult-form">
+          <div class="consult-input-wrap">
+            <textarea id="consult-input" rows="1" placeholder="继续追问，Enter 发送，Shift + Enter 换行" autocomplete="off"></textarea>
+          </div>
+          <button class="consult-send" type="submit" id="consult-send" data-mode="send">发送</button>
+        </form>
+        <p class="consult-hint">模型只依据原文、出处和知识库里的记录判断，不能替代人工核实。</p>
+      </div>
+    </div>
+  </dialog>
 
   <dialog class="dialog wide" id="doc-dialog" aria-labelledby="doc-dialog-title">
     <div class="dialog-head">
@@ -504,6 +559,17 @@
         <button class="btn" type="button" data-close>取消</button>
         <button class="btn danger" type="button" id="entity-delete-confirm">确认删除</button>
       </div>
+    </div>
+  </dialog>
+
+  <dialog class="dialog wide" id="trash-dialog" aria-labelledby="trash-title">
+    <div class="dialog-head">
+      <h2 id="trash-title">回收站</h2>
+      <button class="icon-btn" data-close aria-label="关闭"><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button>
+    </div>
+    <div class="dialog-body">
+      <p class="muted small" id="trash-note"></p>
+      <div id="trash-list"></div>
     </div>
   </dialog>
 

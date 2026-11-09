@@ -2,13 +2,15 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { settings } from '../src/config.js'
 import { query, closePool } from '../src/db/index.js'
+import { databaseUrlFor } from '../tests/temp-database.js'
 
 const artifact=resolve(process.argv[2] || '')
 if (!process.argv[2]) throw new Error('用法：node --import tsx scripts/inspect-evaluation.ts /path/to/evaluation.json（仅在评测进程结束后运行）')
 settings.dataDir=dirname(artifact)
-settings.databaseUrl=''
 try {
   const evaluation=JSON.parse(await readFile(artifact,'utf8'))
+  if (!evaluation.database) throw new Error('评测结果未记录临时 PostgreSQL 数据库，无法读取轨迹')
+  settings.databaseUrl=databaseUrlFor(String(evaluation.database))
   const calls=await query<{trace_id:string;params:Record<string,unknown>;output:{ok?:boolean;error?:string};status:string}>("SELECT trace_id,params,output,status FROM trace_spans WHERE stage='answer.generate'")
   const verification=await query<{output:{supported?:boolean}}>("SELECT output FROM trace_spans WHERE stage='answer.verify'")
   const traces=await query<{id:string;status:string;meta:{answer_strategy?:string}}>("SELECT id,status,meta FROM traces WHERE feature='eval'")

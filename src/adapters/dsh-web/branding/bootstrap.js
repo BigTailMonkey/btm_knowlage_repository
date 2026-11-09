@@ -13,6 +13,38 @@
       event.stopImmediatePropagation()
       window.parent.postMessage({ type: 'knowweave:open-citation', path }, '*')
     }, true)
+
+    // The embedding shell cannot see this page's WebSocket. A heartbeat lets it tell a
+    // live conversation surface from a dead, unauthenticated or crashed one.
+    const heartbeat = () => {
+      try { window.parent.postMessage({ type: 'knowweave:heartbeat' }, '*') } catch (_) { /* parent gone */ }
+    }
+    heartbeat()
+    setInterval(heartbeat, 4000)
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) heartbeat() }, true)
+
+    // Sending while the transport is down only produces a failure notice, so hold the
+    // composer until the Connection indicator reports an established generation again.
+    // Enter is the composer's submit key; gating it here keeps a draft in the editor.
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
+      if (!document.documentElement.hasAttribute('data-knowweave-offline')) return
+      const card = event.target?.closest?.('[data-composer-card]')
+      if (card === undefined || card === null) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    }, true)
+  }
+
+  /** The Connection indicator is DSH's own transport state; mirror it into a page marker. */
+  function updateTransport() {
+    if (!embedded) return
+    const phase = document.querySelector('button[data-phase]')?.dataset.phase
+      ?? (window.navigator?.onLine === false ? 'disconnected' : undefined)
+    const offline = phase === 'connecting' || phase === 'disconnected'
+    if (offline === document.documentElement.hasAttribute('data-knowweave-offline')) return
+    if (offline) document.documentElement.setAttribute('data-knowweave-offline', '')
+    else document.documentElement.removeAttribute('data-knowweave-offline')
   }
 
   // Only presentation templates are adapted. IDs, URLs, substituted parameters,
@@ -136,6 +168,7 @@
 
   function updateChrome() {
     if (embedded) notifyNewConversation()
+    updateTransport()
     updateTitle()
     for (const boot of document.querySelectorAll('[data-dsh-boot]')) {
       for (const child of boot.querySelectorAll('div')) {
@@ -162,7 +195,7 @@
   })
   observer.observe(document.documentElement, {
     subtree: true, childList: true, characterData: true,
-    attributes: true, attributeFilter: ['title', 'aria-label', 'data-content-phase', 'data-conversation-session'],
+    attributes: true, attributeFilter: ['title', 'aria-label', 'data-content-phase', 'data-conversation-session', 'data-phase'],
   })
   updateChrome()
 })()

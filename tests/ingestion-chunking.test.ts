@@ -4,7 +4,8 @@ import { after, before, beforeEach, test } from 'node:test'
 import { testWorkspace, clearKnowledge } from './helpers.js'
 import { query, queryOne } from '../src/db/index.js'
 import { chunkBlocks, MAX_TOKENS, type ParsedBlock } from '../src/core/chunking.js'
-import { ingestParsed, listIngestJobs, submitIngest, tombstoneDocument } from '../src/core/ingestion.js'
+import { ingestParsed, listIngestJobs, submitIngest } from '../src/core/ingestion.js'
+import { trashDocument } from '../src/core/trash.js'
 import { parseHtml, parseMarkdown, parseText, parseTextContent } from '../src/adapters/parsing/index.js'
 import { embedder } from '../src/adapters/embeddings/index.js'
 
@@ -187,7 +188,7 @@ test('deleting a source retracts legacy evidence-free facts but preserves shared
     await query("INSERT INTO facts(id,tenant_id,subject_id,predicate,object_literal,source_doc_id) VALUES($1,$2,'entity-audit','属性','值',$3)", [id, workspace.principal.tenantId, first.document_id])
   }
   await query("INSERT INTO fact_evidence(id,fact_id,doc_id,quote) VALUES('shared-evidence','shared-fact',$1,'另一份来源')", [second.document_id])
-  const deleted = await tombstoneDocument(workspace.principal, String(first.document_id))
+  const deleted = await trashDocument(workspace.principal, String(first.document_id))
   assert.equal(deleted.affected_facts, 2)
   const facts = await query<{ id: string; status: string }>('SELECT id,status FROM facts ORDER BY id')
   assert.deepEqual(facts, [{ id: 'legacy-fact', status: 'retracted' }, { id: 'shared-fact', status: 'active' }])

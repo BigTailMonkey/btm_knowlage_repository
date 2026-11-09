@@ -18,9 +18,16 @@ interface CompletionOptions {
 export interface LlmHarness {
   complete(prompt: string, system?: string, options?: CompletionOptions): Promise<HarnessResult>
   stream(prompt: string, system?: string): AsyncGenerator<string>
+  streamChat(prompt: string, system?: string): AsyncGenerator<HarnessChunk>
   health(): Promise<Record<string, unknown>>
   ask(sessionId: string, prompt: string, system?: string): Promise<HarnessResult>
   close(): Promise<void>
+}
+
+/** 流式增量：reasoning 是模型思考过程，text 是正文。 */
+export interface HarnessChunk {
+  reasoning?: string
+  text?: string
 }
 
 export function modelUnavailable(operation: string, reason: string): Error {
@@ -118,6 +125,77 @@ class ConfiguredModel implements LlmHarness {
 
   async *stream(prompt: string, system?: string): AsyncGenerator<string> {
     yield requireModelText(await this.complete(prompt, system), '模型生成')
+  }
+
+  async *streamChat(prompt: string, system?: string): AsyncGenerator<HarnessChunk> {
+    const { model, modelProvider: provider, modelBaseUrl, modelApiKey, modelMaxTokens } = settings
+    if (!this.available()) throw new Error('请配置 [model] 的 model、base_url 和 api_key')
+    const messages = [
+      ...(system ? [{ role: 'system', content: system }] : []),
+      { role: 'user', content: prompt },
+    ]
+    const response = await fetch(`${modelBaseUrl.replace(/\/+$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${modelApiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        max_tokens: modelMaxTokens,
+        temperature: 0.1,
+        stream: true,
+      }),
+      signal: AbortSignal.timeout(120_000),
+      redirect: 'error',
+    })
+    if (!response.ok || !response.body) {
+      this.lastError = `模型接口返回 HTTP ${response.status}`
+      this.lastUsed = 'none'
+      throw new Error(this.lastError)
+    }
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let answer = ''
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        let index = buffer.indexOf('\n')
+        while (index >= 0) {
+          const line = buffer.slice(0, index).trim()
+          buffer = buffer.slice(index + 1)
+          if (line.startsWith('data:')) {
+            const raw = line.slice(5).trim()
+            if (raw && raw !== '[DONE]') {
+              try {
+                const payload = JSON.parse(raw) as {
+                  choices?: Array<{ delta?: { content?: string | null; reasoning_content?: string | null; reasoning?: string | null } }>
+                }
+                const delta = payload.choices?.[0]?.delta
+                const reasoning = delta?.reasoning_content ?? delta?.reasoning ?? ''
+                if (reasoning) yield { reasoning }
+                if (delta?.content) {
+                  answer += delta.content
+                  yield { text: delta.content }
+                }
+              } catch {
+                // 心跳或非 JSON 行直接跳过
+              }
+            }
+          }
+          index = buffer.indexOf('\n')
+        }
+      }
+    } finally {
+      reader.releaseLock()
+    }
+    this.lastError = null
+    this.lastUsed = provider
+    if (!answer.trim()) throw new Error('模型返回空响应')
   }
 
   async health(): Promise<Record<string, unknown>> {
