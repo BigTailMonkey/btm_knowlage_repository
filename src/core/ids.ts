@@ -4,6 +4,11 @@ export function newId(prefix: string): string {
   return `${prefix}_${randomBytes(10).toString('hex')}`
 }
 
+/** enrich 任务 id：每篇文档每个版本一条，抽取检查点也挂在这条任务上。 */
+export function enrichJobId(docId: string, version: number): string {
+  return `enrich:${docId}:${version}`
+}
+
 export function utcNow(): Date {
   return new Date()
 }

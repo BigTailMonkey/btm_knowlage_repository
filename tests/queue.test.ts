@@ -4,8 +4,11 @@ import { testWorkspace, clearKnowledge } from './helpers.js'
 import { query, queryOne } from '../src/db/index.js'
 import { embedder } from '../src/adapters/embeddings/index.js'
 import { harness } from '../src/adapters/harness/index.js'
-import { enrichmentTasks, processEnrichmentQueue, stopEnrichmentWorker } from '../src/core/enrichment-queue.js'
+import { enrichmentTasks, processEnrichmentQueue, requestEnrichment, stopEnrichmentWorker } from '../src/core/enrichment-queue.js'
+import { extractionProgress } from '../src/core/extraction-progress.js'
 import { createServer } from '../src/app/server.js'
+import { settings } from '../src/config.js'
+import { newId } from '../src/core/ids.js'
 import { submitIngest, processIngestQueue, savedIngestJobs, retryIngestJob, stopIngestWorker } from '../src/core/ingestion.js'
 let workspace: Awaited<ReturnType<typeof testWorkspace>>
 let original: typeof embedder.embedMany
@@ -66,6 +69,219 @@ test('ordinary imports extract entities and resume unfinished extraction without
     assert.equal((await query('SELECT id FROM fact_evidence WHERE doc_id=$1', [doc!.id])).length, 1)
   } finally {
     harness.complete = complete
+  }
+})
+
+test('running extraction reports batch base and request progress, then clears it', async () => {
+  const complete = harness.complete
+  const seen: Array<{ stage: string; batches_total: number; batches_done: number; requests: number } | null> = []
+  harness.complete = async (_prompt, system) => {
+    const doc = await queryOne<{ id: string; current_version: number }>('SELECT id,current_version FROM documents LIMIT 1')
+    seen.push(doc ? extractionProgress(doc.id, doc.current_version) : null)
+    if (system?.includes('事实校验器')) {
+      return { text: '[]', tokensIn: 0, tokensOut: 0, latencyMs: 0, model: 'test-model', provider: 'test', error: null, ok: true }
+    }
+    return {
+      text: JSON.stringify([{ subject: '知织', predicate: '使用', object: '数据库', quote: '知织使用数据库' }]),
+      tokensIn: 0, tokensOut: 0, latencyMs: 0, model: 'test-model', provider: 'test', error: null, ok: true,
+    }
+  }
+  try {
+    await submitIngest(workspace.principal, 'file', { filename: 'progress.txt', data: Buffer.from('知织使用数据库。') })
+    await processIngestQueue()
+    await processEnrichmentQueue()
+    assert.ok(seen.length >= 1, '抽取期间能读到进度')
+    assert.equal(seen[0]?.batches_total, 1, '批次作为底数')
+    assert.equal(seen[0]?.batches_done, 0)
+    assert.match(String(seen[0]?.stage), /1\/1 批抽取/)
+    const doc = await queryOne<{ id: string; current_version: number }>('SELECT id,current_version FROM documents')
+    assert.equal(extractionProgress(doc!.id, doc!.current_version), null, '结束后进度清空')
+  } finally {
+    harness.complete = complete
+  }
+})
+
+test('failed extraction resumes from the last finished batch instead of re-extracting it', async () => {
+  // 9000+ 字 → 2 批；第 2 批首次失败，重试只补第 2 批
+  const sentences = Array.from({ length: 900 }, (_, index) => `知织使用库${String(index).padStart(4, '0')}号`)
+  const complete = harness.complete
+  const ok = (text: string) => ({ text, tokensIn: 0, tokensOut: 0, latencyMs: 0, model: 'test-model', provider: 'test', error: null, ok: true })
+  let batch1Calls = 0
+  let batch2Calls = 0
+  let failBatch2 = true
+  const seenProgress: Array<{ batches_done: number; stage: string } | null> = []
+  harness.complete = async (prompt, system) => {
+    if (system?.includes('事实校验器')) {
+      const numbered = [...prompt.matchAll(/^(\d+)\. /gm)].map((match) => Number(match[1]))
+      return ok(JSON.stringify(numbered.map((index) => ({ index, keep: true, reason: '' }))))
+    }
+    const batch = Number(/分批：(\d+)/.exec(prompt)?.[1])
+    const quote = /原文：\n([^\n]+)/.exec(prompt)?.[1] ?? ''
+    const doc = await queryOne<{ id: string; current_version: number }>('SELECT id,current_version FROM documents LIMIT 1')
+    if (doc) seenProgress.push(extractionProgress(doc.id, doc.current_version))
+    if (batch === 1) batch1Calls += 1
+    else {
+      batch2Calls += 1
+      if (failBatch2) return { text: '', tokensIn: 0, tokensOut: 0, latencyMs: 0, model: 'test-model', provider: 'test', error: '模型接口返回 HTTP 429：rate limited', ok: false }
+    }
+    return ok(JSON.stringify([{
+      subject: '知织', subject_type: 'org', predicate: '使用', object: quote.replace('知织使用', ''),
+      object_type: 'org', quote,
+    }]))
+  }
+  try {
+    await submitIngest(workspace.principal, 'file', { filename: 'resume.txt', data: Buffer.from(sentences.join('\n')) })
+    await processIngestQueue()
+    await processEnrichmentQueue()
+    const doc = await queryOne<{ id: string; enrichment_status: string }>('SELECT id,enrichment_status FROM documents')
+    assert.equal(doc?.enrichment_status, 'failed')
+    assert.equal(batch1Calls, 1)
+    assert.equal(batch2Calls, 1)
+    const saved = await queryOne<{ checkpoint: { batches: unknown[]; total: number } }>(
+      "SELECT payload->'checkpoint' AS checkpoint FROM jobs WHERE id=$1", [`enrich:${doc!.id}:1`])
+    assert.equal(saved?.checkpoint?.batches.length, 1, '已完成批次要落盘')
+    assert.equal(saved?.checkpoint?.total, 2)
+
+    failBatch2 = false
+    seenProgress.length = 0
+    assert.equal(await requestEnrichment(workspace.principal, doc!.id, 'failed'), true)
+    await processEnrichmentQueue()
+    assert.equal(batch1Calls, 1, '已完成的批次不再重复抽取')
+    assert.equal(batch2Calls, 2, '只补没跑完的那一批')
+    assert.equal(seenProgress[0]?.batches_done, 1, '续跑时进度接着已完成批次算')
+    assert.match(String(seenProgress[0]?.stage), /续抽第 2\/2 批抽取/)
+    assert.equal((await queryOne<{ enrichment_status: string }>('SELECT enrichment_status FROM documents'))?.enrichment_status, 'done')
+    assert.equal((await queryOne<{ checkpoint: unknown }>("SELECT payload->'checkpoint' AS checkpoint FROM jobs WHERE id=$1", [`enrich:${doc!.id}:1`]))?.checkpoint, null, '成功后清空检查点')
+  } finally {
+    harness.complete = complete
+  }
+})
+
+test('forcing a fresh extraction drops the checkpoint and re-runs finished batches', async () => {
+  const sentences = Array.from({ length: 900 }, (_, index) => `知织使用库${String(index).padStart(4, '0')}号`)
+  const complete = harness.complete
+  const ok = (text: string) => ({ text, tokensIn: 0, tokensOut: 0, latencyMs: 0, model: 'test-model', provider: 'test', error: null, ok: true })
+  let batch1Calls = 0
+  let batch2Calls = 0
+  let failBatch2 = true
+  harness.complete = async (prompt, system) => {
+    if (system?.includes('事实校验器')) {
+      const numbered = [...prompt.matchAll(/^(\d+)\. /gm)].map((match) => Number(match[1]))
+      return ok(JSON.stringify(numbered.map((index) => ({ index, keep: true, reason: '' }))))
+    }
+    const batch = Number(/分批：(\d+)/.exec(prompt)?.[1])
+    const quote = /原文：\n([^\n]+)/.exec(prompt)?.[1] ?? ''
+    if (batch === 1) batch1Calls += 1
+    else {
+      batch2Calls += 1
+      if (failBatch2) return { text: '', tokensIn: 0, tokensOut: 0, latencyMs: 0, model: 'test-model', provider: 'test', error: '模型接口返回 HTTP 429：rate limited', ok: false }
+    }
+    return ok(JSON.stringify([{
+      subject: '知织', subject_type: 'org', predicate: '使用', object: quote.replace('知织使用', ''),
+      object_type: 'org', quote,
+    }]))
+  }
+  try {
+    await submitIngest(workspace.principal, 'file', { filename: 'reset.txt', data: Buffer.from(sentences.join('\n')) })
+    await processIngestQueue()
+    await processEnrichmentQueue()
+    const doc = await queryOne<{ id: string; enrichment_status: string }>('SELECT id,enrichment_status FROM documents')
+    assert.equal(doc?.enrichment_status, 'failed')
+    assert.equal(batch1Calls, 1)
+    assert.notEqual((await queryOne<{ checkpoint: unknown }>("SELECT payload->'checkpoint' AS checkpoint FROM jobs WHERE id=$1", [`enrich:${doc!.id}:1`]))?.checkpoint, null)
+
+    // 强制重抽：检查点被丢掉，接口与数据都要回到从头开始
+    const app = await createServer()
+    try {
+      const response = await app.inject({
+        method: 'POST', url: '/api/v1/documents/extractions/retry', headers: workspace.headers,
+        payload: { document_ids: [doc!.id], reset: true },
+      })
+      assert.equal(response.statusCode, 200)
+      assert.deepEqual(response.json(), { queued: 1, reset: true })
+    } finally {
+      await app.close()
+    }
+    assert.equal((await queryOne<{ checkpoint: unknown }>("SELECT payload->'checkpoint' AS checkpoint FROM jobs WHERE id=$1", [`enrich:${doc!.id}:1`]))?.checkpoint, null, '检查点已被丢弃')
+
+    failBatch2 = false
+    batch1Calls = 0
+    batch2Calls = 0
+    await processEnrichmentQueue()
+    assert.equal(batch1Calls, 1, '强制重抽必须重新跑已完成的批次')
+    assert.equal(batch2Calls, 1)
+  } finally {
+    harness.complete = complete
+  }
+})
+
+test('reset must be a boolean on the retry endpoint', async () => {
+  const app = await createServer()
+  try {
+    const response = await app.inject({
+      method: 'POST', url: '/api/v1/documents/extractions/retry', headers: workspace.headers,
+      payload: { reset: 'yes' },
+    })
+    assert.equal(response.statusCode, 400)
+    assert.match(response.json().detail, /reset 必须为布尔值/)
+  } finally {
+    await app.close()
+  }
+})
+
+test('failed merge resumes after the merged candidates without re-extracting', async () => {
+  // 单批 8 条候选：前 6 条实体已存在，第 7 条触发语义判定并首次失败
+  const lines = Array.from({ length: 8 }, (_, index) => `知织使用库${index + 1}号`)
+  const complete = harness.complete
+  const previousSemantic = settings.semanticEntities
+  settings.semanticEntities = true
+  const ok = (text: string) => ({ text, tokensIn: 0, tokensOut: 0, latencyMs: 0, model: 'test-model', provider: 'test', error: null, ok: true })
+  let extractionCalls = 0
+  let semanticCalls = 0
+  let failSemantic = true
+  try {
+    for (const name of ['知织', ...lines.slice(0, 6).map((_, index) => `库${index + 1}号`)]) {
+      await query(`INSERT INTO entities (id,tenant_id,type,canonical_name,normalized_name,description,status,acl_principals)
+        VALUES ($1,$2,'org',$3,$3,'','active','["tenant:public"]'::jsonb)`, [newId('ent'), settings.defaultTenantId, name])
+    }
+    harness.complete = async (prompt, system) => {
+      if (system?.includes('判定名称是否指同一实体')) {
+        semanticCalls += 1
+        if (failSemantic) return { text: '', tokensIn: 0, tokensOut: 0, latencyMs: 0, model: 'test-model', provider: 'test', error: '模型接口返回 HTTP 429：限流', ok: false }
+        return ok(JSON.stringify({ same_entity: false, entity_id: null, confidence: 0 }))
+      }
+      if (system?.includes('事实校验器')) {
+        const numbered = [...prompt.matchAll(/^(\d+)\. /gm)].map((match) => Number(match[1]))
+        return ok(JSON.stringify(numbered.map((index) => ({ index, keep: true, reason: '' }))))
+      }
+      extractionCalls += 1
+      return ok(JSON.stringify(lines.map((line, index) => ({
+        subject: '知织', subject_type: 'org', predicate: `使用${index + 1}`,
+        object: `库${index + 1}号`, object_type: 'org', quote: line,
+      }))))
+    }
+    await submitIngest(workspace.principal, 'file', { filename: 'merge-resume.txt', data: Buffer.from(lines.join('\n')) })
+    await processIngestQueue()
+    await processEnrichmentQueue()
+    const doc = await queryOne<{ id: string; enrichment_status: string }>('SELECT id,enrichment_status FROM documents')
+    assert.equal(doc?.enrichment_status, 'failed')
+    assert.equal(extractionCalls, 1)
+    assert.equal(semanticCalls, 1)
+    const checkpoint = await queryOne<{ checkpoint: { merged: number } }>(
+      "SELECT payload->'checkpoint' AS checkpoint FROM jobs WHERE id=$1", [`enrich:${doc!.id}:1`])
+    assert.equal(checkpoint?.checkpoint?.merged, 5, '合并进度每 5 条落一次盘')
+    assert.equal((await query('SELECT id FROM facts')).length, 6, '失败前已合并的 6 条事实保留')
+
+    failSemantic = false
+    assert.equal(await requestEnrichment(workspace.principal, doc!.id, 'failed'), true)
+    await processEnrichmentQueue()
+    assert.equal(extractionCalls, 1, '候选全部复用，不再重新抽取')
+    assert.equal((await queryOne<{ enrichment_status: string }>('SELECT enrichment_status FROM documents'))?.enrichment_status, 'done')
+    assert.equal((await query('SELECT id FROM facts')).length, 8, '续跑后 8 条事实齐全且没有重复')
+    assert.equal((await queryOne<{ checkpoint: unknown }>("SELECT payload->'checkpoint' AS checkpoint FROM jobs WHERE id=$1", [`enrich:${doc!.id}:1`]))?.checkpoint, null)
+  } finally {
+    harness.complete = complete
+    settings.semanticEntities = previousSemantic
   }
 })
 

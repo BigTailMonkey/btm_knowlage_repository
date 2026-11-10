@@ -146,6 +146,35 @@ function pct(value) {
   return `${(Number(value || 0) * 100).toFixed(1)}%`;
 }
 
+// 进度用的时长：不足一分钟给秒，其余给 m+补零的秒
+function elapsedText(ms) {
+  const total = Math.max(0, Math.round(Number(ms || 0) / 1000));
+  if (total < 60) return `${total}秒`;
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return seconds ? `${minutes}分${String(seconds).padStart(2, "0")}秒` : `${minutes}分`;
+}
+
+// 抽取进度：批次是底数，实际发出的请求数是进度（事前无法算出准确请求数）
+function extractionStage(task) {
+  if (task.status === "failed") return "抽取失败";
+  if (task.status !== "running") return "等待抽取";
+  const progress = task.progress;
+  if (!progress) return "抽取中";
+  const parts = ["抽取中"];
+  if (progress.batches_total) parts.push(`${num(progress.batches_done)}/${num(progress.batches_total)} 批`);
+  if (progress.requests) parts.push(`${num(progress.requests)} 次请求`);
+  if (progress.elapsed_ms) parts.push(elapsedText(progress.elapsed_ms));
+  return parts.join(" · ");
+}
+
+function extractionPercent(task) {
+  const progress = task.progress;
+  if (task.status !== "running" || !progress?.batches_total) return null;
+  const ratio = Number(progress.batches_done || 0) / Number(progress.batches_total);
+  return Math.min(100, Math.max(3, Math.round(ratio * 100)));
+}
+
 function money(value) {
   const amount = Number(value || 0);
   return amount < 0.01 && amount > 0 ? `¥${amount.toFixed(5)}` : `¥${amount.toFixed(2)}`;
@@ -537,22 +566,36 @@ function renderExtractionJobs({ items, can_retry }) {
       <strong>事实与实体抽取</strong>
       ${can_retry && failures.length ? `<button class="btn sm" data-extraction-retry="" ${extractionRetrying ? "disabled" : ""}>重试全部失败项（${num(failures.length)}）</button>` : ""}
     </div>
-    ${items.map(task => `
+    ${items.map(task => {
+      const percent = extractionPercent(task);
+      const eta = task.status === "running" && task.progress?.eta_ms
+        ? `<p class="muted small">按当前批次速度预计还需 ${elapsedText(task.progress.eta_ms)}</p>` : "";
+      return `
       <div class="job-card${task.status === "failed" ? " failed" : ""}">
         <div class="job-line"><strong class="job-title">${esc(task.title)} · v${num(task.version)}</strong>
-          <span class="job-stage">${task.status === "failed" ? "抽取失败" : task.status === "running" ? "抽取中" : "等待抽取"}</span>
+          <span class="job-stage">${esc(extractionStage(task))}</span>
         </div>
         ${task.status === "failed" ? `<p class="muted small">${esc(task.error || "上次抽取失败，可重试。")}</p>
-          ${can_retry ? `<button class="text-btn" data-extraction-retry="${esc(task.id)}" ${extractionRetrying ? "disabled" : ""}>重试抽取</button>` : ""}` : ""}
-      </div>`).join("")}` : "";
-  $$("[data-extraction-retry]", box).forEach(button => button.addEventListener("click", async () => {
+          ${can_retry ? `<button class="text-btn" data-extraction-retry="${esc(task.id)}" ${extractionRetrying ? "disabled" : ""}>重试抽取</button>
+            <button class="text-btn" data-extraction-reset="${esc(task.id)}" ${extractionRetrying ? "disabled" : ""} title="丢掉已有断点，从第一批重新抽取：更慢，但结果完全重算">从头重抽</button>` : ""}` : ""}
+        ${percent === null ? "" : `<div class="job-progress"><i style="width:${percent}%"></i></div>`}
+        ${task.status === "running" ? eta : ""}
+      </div>`;
+    }).join("")}` : "";
+  $$("[data-extraction-retry], [data-extraction-reset]", box).forEach(button => button.addEventListener("click", async () => {
     if (extractionRetrying) return;
     extractionRetrying = true;
-    const id = button.dataset.extractionRetry;
+    // data-extraction-reset 存在时表示从头重抽：丢掉检查点，不续跑
+    const reset = button.dataset.extractionReset !== undefined;
+    const id = reset ? button.dataset.extractionReset : button.dataset.extractionRetry;
     renderExtractionJobs({ items, can_retry });
     try {
-      const result = await api("/documents/extractions/retry", { method: "POST", body: id ? { document_ids: [id] } : {} });
-      toast(result.queued ? `已提交 ${num(result.queued)} 项抽取重试` : "没有可重试的失败项");
+      const result = await api("/documents/extractions/retry", {
+        method: "POST", body: id ? { document_ids: [id], reset } : { reset },
+      });
+      toast(result.queued
+        ? `已提交 ${num(result.queued)} 项抽取${reset ? "从头重抽" : "重试"}`
+        : "没有可重试的失败项");
     } catch (error) { toast(error.message); }
     finally {
       extractionRetrying = false;

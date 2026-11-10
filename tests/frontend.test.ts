@@ -208,18 +208,40 @@ test('library exposes model failures and sends the chosen single or bulk retry',
   const box = page.element('#extraction-jobs')
   const single = page.element('single-retry')
   const bulk = page.element('bulk-retry')
+  const reset = page.element('reset-retry')
   single.dataset.extractionRetry = 'doc-a'
   bulk.dataset.extractionRetry = ''
-  box.querySelectorAll = (selector: string) => selector === '[data-extraction-retry]' ? [single, bulk] : []
+  reset.dataset.extractionReset = 'doc-a'
+  box.querySelectorAll = (selector: string) => selector === '[data-extraction-retry], [data-extraction-reset]'
+    ? [single, bulk, reset] : []
 
   await page.run('state.page = "library"; loadIngestJobs()')
   assert.equal(box.hidden, false)
   assert.match(box.innerHTML, /模型 HTTP 401/)
   assert.match(box.innerHTML, /后续文档 · v1[\s\S]*抽取中/)
+  assert.match(box.innerHTML, /从头重抽/)
   await single.handlers.click()
   await bulk.handlers.click()
+  await reset.handlers.click()
   assert.deepEqual(page.calls.filter(call => call.url.endsWith('/extractions/retry'))
-    .map(call => JSON.parse(String(call.options.body))), [{ document_ids: ['doc-a'] }, {}])
+    .map(call => JSON.parse(String(call.options.body))),
+    [{ document_ids: ['doc-a'], reset: false }, { reset: false }, { document_ids: ['doc-a'], reset: true }])
+})
+
+test('running extraction shows batch base, request count and remaining time instead of a bare 抽取中', async () => {
+  const page = frontend(url => url.endsWith('/extractions') ? { can_retry: true, items: [
+    { id: 'doc-a', title: '长文档', version: 3, status: 'running', error: null,
+      progress: { stage: '第 5/13 批校验', batches_done: 4, batches_total: 13, requests: 1280,
+        model_requests: 30, embedding_requests: 1250, elapsed_ms: 92_000, eta_ms: 138_000 } },
+    { id: 'doc-b', title: '排队文档', version: 1, status: 'pending', error: null, progress: null },
+  ] } : { items: [] })
+  const box = page.element('#extraction-jobs')
+  await page.run('state.page = "library"; loadIngestJobs()')
+  assert.match(box.innerHTML, /长文档 · v3[\s\S]*抽取中 · 4\/13 批 · 1,280 次请求 · 1分32秒/)
+  assert.match(box.innerHTML, /预计还需 2分18秒/)
+  assert.match(box.innerHTML, /job-progress[\s\S]*width:31%/)
+  assert.match(box.innerHTML, /排队文档 · v1[\s\S]*等待抽取/)
+  assert.doesNotMatch(box.innerHTML, /排队文档[\s\S]*次请求/, '还没开始的任务不编造进度')
 })
 
 test('source highlighting uses UTF-16 offsets, merges overlap, and escapes document HTML', () => {

@@ -1,5 +1,7 @@
 import { query, transaction, type DbClient } from '../db/index.js'
 import { extractFactsForDocument } from './learning.js'
+import { extractionProgress } from './extraction-progress.js'
+import { enrichJobId } from './ids.js'
 import { notifyReviewQueueChanged } from './review-events.js'
 import { canRead, principalByUserId, principalSet, type Principal } from './security.js'
 
@@ -18,7 +20,7 @@ interface EnrichmentJob {
 }
 
 function jobId(docId: string, version: number): string {
-  return `enrich:${docId}:${version}`
+  return enrichJobId(docId, version)
 }
 
 export async function enqueueEnrichment(
@@ -43,8 +45,18 @@ export async function enqueueEnrichment(
   return queued.length > 0
 }
 
+/** 强制重抽：丢掉检查点后重新入队，下一轮从第一批开始。正在运行的任务不会被改动。 */
+async function resetCheckpoint(client: DbClient, principal: Principal, docId: string, version: number): Promise<void> {
+  await client.query(
+    `UPDATE jobs SET payload = payload - 'checkpoint', updated_at=now()
+      WHERE id=$1 AND tenant_id=$2 AND status <> 'running'`,
+    [enrichJobId(docId, version), principal.tenantId],
+  )
+}
+
 export async function requestEnrichment(
   principal: Principal, docId: string, requiredState?: 'failed' | 'deferred', promotion?: Promotion,
+  options: { reset?: boolean } = {},
 ): Promise<boolean> {
   return transaction(async (client) => {
     const [doc] = await client.query<{ current_version: number; enrichment_status: string; acl_principals: string[] }>(
@@ -56,12 +68,13 @@ export async function requestEnrichment(
       throw Object.assign(new Error('文档不存在或无权访问'), { statusCode: 404 })
     }
     if (requiredState && doc.enrichment_status !== requiredState) return false
+    if (options.reset) await resetCheckpoint(client, principal, docId, doc.current_version)
     return enqueueEnrichment(client, principal, docId, doc.current_version, promotion)
   })
 }
 
 export async function enrichmentTasks(principal: Principal) {
-  return query<{ id: string; title: string; status: string; error: string | null; version: number }>(
+  const rows = await query<{ id: string; title: string; status: string; error: string | null; version: number }>(
     `SELECT d.id,d.title,CASE WHEN j.status IN ('pending','running') THEN j.status ELSE d.enrichment_status END AS status,
        COALESCE(d.enrichment_error,j.error,previous.error) AS error,d.current_version AS version
      FROM documents d LEFT JOIN jobs j ON j.id='enrich:' || d.id || ':' || d.current_version::text
@@ -75,6 +88,8 @@ export async function enrichmentTasks(principal: Principal) {
      ORDER BY d.updated_at DESC, d.id`,
     [principal.tenantId, [...principalSet(principal)]],
   )
+  // 运行中的任务补上实时进度：批次是底数，实际请求数是进度。
+  return rows.map((row) => ({ ...row, progress: extractionProgress(row.id, row.version) }))
 }
 
 let worker: Promise<void> | null = null

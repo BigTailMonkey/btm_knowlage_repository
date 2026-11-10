@@ -4,6 +4,8 @@ import {
   retryWithBackoff, type BackoffPolicy,
 } from '../../util/retry.js'
 
+import { countModelRequest } from '../../util/request-meter.js'
+
 export interface HarnessResult {
   text: string
   tokensIn: number
@@ -67,6 +69,7 @@ function modelBackoff(): BackoffPolicy {
 async function postChat(body: Record<string, unknown>, timeoutMs: number): Promise<Response> {
   const { modelBaseUrl, modelApiKey } = settings
   return retryWithBackoff(modelBackoff(), async () => {
+    countModelRequest()
     let response: Response
     try {
       response = await fetch(`${modelBaseUrl.replace(/\/+$/, '')}/chat/completions`, {

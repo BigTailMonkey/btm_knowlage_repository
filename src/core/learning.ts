@@ -1,7 +1,8 @@
+import { createHash } from 'node:crypto'
 import { query, queryOne, transaction } from '../db/index.js'
 import { completeStructured, modelUnavailable, requireModelText } from '../adapters/harness/index.js'
 import { estimateTokens } from './chunking.js'
-import { newId, todayLocal } from './ids.js'
+import { enrichJobId, newId, todayLocal } from './ids.js'
 import type { ChunkRow, DocumentRow, EntityRow, FactRow, VersionRow } from './rows.js'
 import { Principal, canRead } from './security.js'
 import { settings } from '../config.js'
@@ -9,6 +10,10 @@ import { evidenceWeight } from './source-policy.js'
 import { resolveSemanticEntity } from './entity-resolution.js'
 import { consolidateKnowledge } from './consolidation.js'
 import { MIN_FACT_CONFIDENCE } from './fact-visibility.js'
+import {
+  closeExtractionMeter, completeExtractionBatch, planExtractionBatches, setExtractionStage,
+  startExtractionMeter, trackExtraction, type ExtractionMeter,
+} from './extraction-progress.js'
 import { notifyReviewQueueChanged } from './review-events.js'
 
 const EXTRACT_SYSTEM = `你是 KnoWeave 的事实抽取器。只抽取原文明确陈述、可被引用验证的断言。
@@ -200,6 +205,58 @@ export async function deleteEntity(principal: Principal, entityId: string): Prom
   }
 }
 
+/** 抽取检查点：按批存已验证的候选，重试时跳过已完成批次，只补剩下的。 */
+interface ExtractionCheckpoint {
+  version: number
+  /** 抽取与校验的提示词指纹；规则改了旧候选就作废 */
+  prompt: string
+  /** 逐批保存的候选，顺序与批次一致 */
+  batches: Candidate[][]
+  /** 首次抽取时的总批次数；段落变化导致批次不同时检查点作废 */
+  total: number
+  discarded: number
+  /** 已合并的候选数（候选顺序稳定，可以按下标续跑） */
+  merged: number
+  /** 累计请求数，续跑时进度接着显示 */
+  requests: { model: number; embedding: number }
+}
+
+const CHECKPOINT_VERSION = 1
+const CHECKPOINT_PROMPT = createHash('sha256').update(`${EXTRACT_SYSTEM}\n${CHECK_SYSTEM}`).digest('hex').slice(0, 16)
+/** 合并阶段每处理这么多个候选落一次盘，避免每次写整份检查点 */
+const MERGE_CHECKPOINT_EVERY = 5
+
+function candidateKey(candidate: Candidate): string {
+  return [normalizeName(candidate.subject), candidate.predicate,
+    normalizeName(candidate.objectName || candidate.objectLiteral),
+    candidate.validFrom, candidate.validTo, candidate.chunkId].join('|')
+}
+
+/** 只有任务还在、且规则指纹一致时才认这份检查点。 */
+async function readExtractionCheckpoint(tenantId: string, docId: string, version: number): Promise<ExtractionCheckpoint | null> {
+  const row = await queryOne<{ checkpoint: ExtractionCheckpoint | null }>(
+    `SELECT payload->'checkpoint' AS checkpoint FROM jobs WHERE id=$1 AND tenant_id=$2`,
+    [enrichJobId(docId, version), tenantId],
+  )
+  const checkpoint = row?.checkpoint
+  if (!checkpoint || typeof checkpoint !== 'object') return null
+  if (checkpoint.version !== CHECKPOINT_VERSION || checkpoint.prompt !== CHECKPOINT_PROMPT) return null
+  if (!Array.isArray(checkpoint.batches) || !Number.isFinite(checkpoint.merged)) return null
+  return checkpoint
+}
+
+async function saveExtractionCheckpoint(tenantId: string, docId: string, version: number, checkpoint: ExtractionCheckpoint): Promise<void> {
+  await query(
+    `UPDATE jobs SET payload = payload || $1::jsonb, updated_at=now() WHERE id=$2 AND tenant_id=$3`,
+    [JSON.stringify({ checkpoint }), enrichJobId(docId, version), tenantId],
+  )
+}
+
+async function clearExtractionCheckpoint(tenantId: string, docId: string, version: number): Promise<void> {
+  await query(`UPDATE jobs SET payload = payload - 'checkpoint', updated_at=now() WHERE id=$1 AND tenant_id=$2`,
+    [enrichJobId(docId, version), tenantId])
+}
+
 const EXTRACTION_BATCH_CHARS = 7000
 const EXTRACTION_OVERLAP = 180
 
@@ -264,7 +321,23 @@ export function isEntityName(name: string): boolean {
   return !incompleteEntityWords.has(words.at(-1)?.segment ?? '')
 }
 
-async function extractCandidates(document: DocumentRow): Promise<{ candidates: Candidate[]; discarded: number }> {
+/** 检查点的读写与复用判定，由 extractDocument 创建后交给抽取循环。 */
+interface CheckpointStore {
+  state: ExtractionCheckpoint
+  /** 每完成一批就落盘，失败后下一轮能从这里继续 */
+  flush: (meter: ExtractionMeter) => Promise<void>
+}
+
+/** 章节没有改动时（chunk id 与批次数都能对上）才复用已存的候选。 */
+function reusableCheckpoint(state: ExtractionCheckpoint, batchCount: number, chunks: ChunkRow[]): boolean {
+  if (!state.batches.length || state.total !== batchCount) return false
+  const chunkIds = new Set(chunks.map((chunk) => chunk.id))
+  return state.batches.every((list) => list.every((candidate) => candidate.chunkId !== null && chunkIds.has(candidate.chunkId)))
+}
+
+async function extractCandidates(
+  document: DocumentRow, meter: ExtractionMeter, store: CheckpointStore,
+): Promise<{ candidates: Candidate[]; discarded: number; resumed: boolean }> {
   const chunks = await query<ChunkRow>(
     `SELECT c.* FROM chunks c JOIN document_versions v ON c.version_id = v.id
      WHERE c.doc_id = $1 AND c.is_parent = false AND v.version = $2 ORDER BY c.seq`,
@@ -272,8 +345,33 @@ async function extractCandidates(document: DocumentRow): Promise<{ candidates: C
   )
   const candidates: Candidate[] = []
   const seen = new Set<string>()
-  let discarded = 0
-  for (const [index, batch] of extractionBatches(chunks).entries()) {
+  let discarded = store.state.discarded
+  const batches = extractionBatches(chunks)
+  planExtractionBatches(meter, batches.length)
+  // 段落被重新索引或规则变了：检查点作废，从第一批重来。
+  const resumable = reusableCheckpoint(store.state, batches.length, chunks)
+  if (!resumable) {
+    store.state.batches = []
+    store.state.merged = 0
+    store.state.discarded = 0
+    discarded = 0
+    meter.batchesDone = 0
+  }
+  const resumed = resumable
+  for (const [index, batch] of batches.entries()) {
+    const saved = resumable ? store.state.batches[index] : undefined
+    if (saved) {
+      for (const candidate of saved) {
+        const key = candidateKey(candidate)
+        if (seen.has(key)) continue
+        seen.add(key)
+        candidates.push(candidate)
+      }
+      // 复用的批次不计入本轮的批次耗时，避免把续跑时的预计剩余算歪。
+      meter.batchesDone += 1
+      continue
+    }
+    setExtractionStage(meter, `${resumed ? '续抽' : ''}第 ${index + 1}/${batches.length} 批抽取`)
     const prompt = `文档标题：${document.title}\n来源类型：${document.source_type}\n分批：${index + 1}\n\n原文：\n${batch.text}\n\n请输出 JSON 数组。`
     const result = await completeStructured(prompt, EXTRACT_SYSTEM)
     const operation = `第 ${index + 1} 批抽取`
@@ -313,20 +411,25 @@ async function extractCandidates(document: DocumentRow): Promise<{ candidates: C
         quote,
         chunkId: chunk.id,
       }
-      const key = [normalizeName(candidate.subject), candidate.predicate, normalizeName(candidate.objectName || candidate.objectLiteral), candidate.validFrom, candidate.validTo, candidate.chunkId].join('|')
+      const key = candidateKey(candidate)
       if (seen.has(key)) continue
       seen.add(key)
       fresh.push(candidate)
     }
     // 结构是否成立（是否只是把引文复述一遍、主语谓语重复、宾语与谓语同义）
     // 不做规则猜测，交给模型逐条判断；通不过的直接丢弃，不进入知识库也不进审阅队列。
+    setExtractionStage(meter, `${resumed ? '续抽' : ''}第 ${index + 1}/${batches.length} 批校验`)
     const keep = await checkCandidates(fresh)
-    fresh.forEach((candidate, position) => {
-      if (keep[position]) candidates.push(candidate)
-      else discarded += 1
-    })
+    const accepted = fresh.filter((candidate, position) => keep[position])
+    discarded += fresh.length - accepted.length
+    candidates.push(...accepted)
+    store.state.batches[index] = accepted
+    store.state.total = batches.length
+    store.state.discarded = discarded
+    completeExtractionBatch(meter)
+    await store.flush(meter)
   }
-  return { candidates, discarded }
+  return { candidates, discarded, resumed }
 }
 
 /** 让模型复核候选事实的结构；未给出判断的一律不保留。 */
@@ -572,30 +675,70 @@ async function extractDocument(principal: Principal, document: DocumentRow): Pro
   )
   if (!startedVersion.length) return { status: 'stale' }
   const started = Date.now()
+  const meter = startExtractionMeter(docId, document.current_version)
+  const tenantId = principal.tenantId
+  const currentVersion = document.current_version
+  // 断点续传：已抽完的批次和已合并的候选都记在 jobs.payload.checkpoint 里，重试只补剩下的。
+  const state: ExtractionCheckpoint = (await readExtractionCheckpoint(tenantId, docId, currentVersion)) ?? {
+    version: CHECKPOINT_VERSION, prompt: CHECKPOINT_PROMPT, batches: [], total: 0,
+    discarded: 0, merged: 0, requests: { model: 0, embedding: 0 },
+  }
+  meter.model = state.requests.model
+  meter.embedding = state.requests.embedding
+  const store: CheckpointStore = {
+    state,
+    flush: async (current: ExtractionMeter) => {
+      state.requests = { model: current.model, embedding: current.embedding }
+      await saveExtractionCheckpoint(tenantId, docId, currentVersion, state)
+    },
+  }
   try {
-    const { candidates, discarded } = await extractCandidates(document)
-    const current = await queryOne<DocumentRow>('SELECT * FROM documents WHERE id = $1', [docId])
-    if (!current || current.status !== 'active' || current.current_version !== document.current_version) {
+    // 批次是底数、实际请求数是进度：候选数量和实体池大小都取决于模型返回，事前只能算出批次。
+    const extracted = await trackExtraction(meter, async () => {
+      const { candidates, discarded, resumed } = await extractCandidates(document, meter, store)
+      const current = await queryOne<DocumentRow>('SELECT * FROM documents WHERE id = $1', [docId])
+      if (!current || current.status !== 'active' || current.current_version !== document.current_version) return null
+      const counts: Record<string, number> = { created: 0, merged: 0, superseded: 0, disputed: 0, rejected: 0 }
+      const startMerged = Math.min(state.merged, candidates.length)
+      for (const [index, candidate] of candidates.entries()) {
+        if (index < startMerged) continue
+        setExtractionStage(meter, `合并事实 ${index + 1}/${candidates.length}`)
+        const outcome = await mergeOrArbitrate(principal, document, candidate)
+        counts[outcome] = (counts[outcome] ?? 0) + 1
+        if ((index + 1) % MERGE_CHECKPOINT_EVERY === 0) {
+          state.merged = index + 1
+          await store.flush(meter)
+        }
+      }
+      state.merged = candidates.length
+      return { candidates, discarded, counts, resumed, skipped: startMerged }
+    })
+    if (!extracted) {
+      await clearExtractionCheckpoint(tenantId, docId, currentVersion)
       return { document_id: docId, status: 'stale', candidates: 0, message: '抽取期间文档已更新，本次旧版本结果已丢弃' }
     }
-    const counts: Record<string, number> = { created: 0, merged: 0, superseded: 0, disputed: 0, rejected: 0 }
-    for (const candidate of candidates) {
-      const outcome = await mergeOrArbitrate(principal, document, candidate)
-      counts[outcome] = (counts[outcome] ?? 0) + 1
-    }
+    const { candidates, discarded, counts, resumed, skipped } = extracted
     await query(`UPDATE documents SET enrichment_status = $1 WHERE id = $2 AND current_version = $3 AND status = 'active'`, [candidates.length ? 'done' : 'empty', docId, document.current_version])
     await consolidateKnowledge(principal.tenantId)
+    // 成功后才丢弃检查点：失败时保留，下一轮从断点继续。
+    await clearExtractionCheckpoint(tenantId, docId, currentVersion)
     return {
       document_id: docId,
       candidates: candidates.length,
       discarded,
       outcomes: counts,
+      resumed,
+      resumed_candidates: skipped,
+      batches: meter.batchesTotal,
+      requests: meter.model + meter.embedding,
       elapsed_ms: Date.now() - started,
     }
   } catch (error) {
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 300)
     await query(`UPDATE documents SET enrichment_status = 'failed', enrichment_error = $3 WHERE id = $1 AND current_version = $2 AND status = 'active'`, [docId, document.current_version, message])
     throw error
+  } finally {
+    closeExtractionMeter(meter)
   }
 }
 

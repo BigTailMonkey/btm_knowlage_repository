@@ -140,18 +140,24 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
   app.post('/extractions/retry', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
     requireEditor(principal)
-    const ids = (request.body as { document_ids?: unknown } | undefined)?.document_ids
+    const body = request.body as { document_ids?: unknown; reset?: unknown } | undefined
+    const ids = body?.document_ids
     if (ids !== undefined && (!Array.isArray(ids) || !ids.length || ids.some(id => typeof id !== 'string' || !id))) {
       throw Object.assign(new Error('document_ids 必须为非空文档 ID 列表'), { statusCode: 400 })
     }
+    if (body?.reset !== undefined && typeof body.reset !== 'boolean') {
+      throw Object.assign(new Error('reset 必须为布尔值'), { statusCode: 400 })
+    }
+    const reset = body?.reset === true
     const selected = ids ? new Set<string>(ids as string[]) : null
     const tasks = await enrichmentTasks(principal)
     let queued = 0
     for (const task of tasks) {
-      if (task.status === 'failed' && (!selected || selected.has(task.id)) && await requestEnrichment(principal, task.id, 'failed')) queued++
+      if (task.status === 'failed' && (!selected || selected.has(task.id))
+        && await requestEnrichment(principal, task.id, 'failed', undefined, { reset })) queued++
     }
     if (queued) void processEnrichmentQueue().catch(app.log.error.bind(app.log))
-    return { queued }
+    return { queued, reset }
   })
 
   app.get('/acl-options', { preHandler: authenticate }, async (request) => {
@@ -352,19 +358,24 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
     requireEditor(principal)
     const { doc_id: docId } = request.params as { doc_id: string }
     await visibleDocument(principal, docId)
-    const scope = (request.body as { scope?: string } | undefined)?.scope ?? 'facts'
+    const body = request.body as { scope?: string; reset?: unknown } | undefined
+    const scope = body?.scope ?? 'facts'
     if (!['facts','index','all'].includes(scope)) throw Object.assign(new Error('scope 必须为 facts、index 或 all'), { statusCode: 400 })
+    if (body?.reset !== undefined && typeof body.reset !== 'boolean') {
+      throw Object.assign(new Error('reset 必须为布尔值'), { statusCode: 400 })
+    }
+    const reset = body?.reset === true
     if (scope !== 'facts') {
       const result = await reindexDocument(principal.tenantId, docId)
       if (scope === 'all') {
-        await requestEnrichment(principal, docId)
+        await requestEnrichment(principal, docId, undefined, undefined, { reset })
         void processEnrichmentQueue().catch(app.log.error.bind(app.log))
       }
       return result
     }
-    await requestEnrichment(principal, docId)
+    await requestEnrichment(principal, docId, undefined, undefined, { reset })
     void processEnrichmentQueue().catch(app.log.error.bind(app.log))
-    return { document_id: docId, status: 'queued', message: '已排入事实抽取队列' }
+    return { document_id: docId, status: 'queued', reset, message: reset ? '已排入事实抽取队列（从头重抽）' : '已排入事实抽取队列' }
   })
 
   app.patch('/:doc_id/policy', { preHandler: authenticate }, async request => {

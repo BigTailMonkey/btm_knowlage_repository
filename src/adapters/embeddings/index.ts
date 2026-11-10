@@ -1,4 +1,5 @@
 import { settings } from '../../config.js'
+import { countEmbeddingRequest } from '../../util/request-meter.js'
 import {
   RETRYABLE_HTTP_STATUS, backoffDelayMs as backoffDelay, describeHttpFailure, isTransientFetchError,
   parseRetryAfter, retryWithBackoff, type BackoffPolicy, type RetryHint,
@@ -110,6 +111,7 @@ export function backoffDelayMs(retry: number, retryAfterMs?: number): number {
 }
 
 async function postOnce(url: string, payload: unknown): Promise<Record<string, unknown>> {
+  countEmbeddingRequest()
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (settings.embeddingApiKey) headers.authorization = `Bearer ${settings.embeddingApiKey}`
   let response: Response
