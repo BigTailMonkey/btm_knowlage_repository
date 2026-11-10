@@ -20,6 +20,18 @@ confidence(0-1), quote(必须逐字来自原文，不超过120字)。
 主语和实体型宾语必须是可独立指代的完整名称或名词短语，保留引文中的写法。排除动作片段、连词结尾的残句、代词、跨句拼接。
 没有明确主语时跳过，例如“收集和提供风险信息”不产生事实。数字、日期、版本必须保留。没有符合条件的事实时返回 []。`
 
+const CHECK_SYSTEM = `你是 KnoWeave 的事实校验器。输入是若干条候选事实，逐条判断它能否作为一条独立、可读的断言进入知识库。
+输出一个 JSON 数组，不要输出任何解释或 Markdown。每项字段：index(候选编号), keep(true 或 false), reason(不超过 40 字的简短理由)。
+必须对每个候选编号都给出判断，不要遗漏。
+以下情形 keep=false：
+- 宾语只是把整条引文（或主语、谓语一起）复述一遍，不是一个能独立指代的名词短语；
+- 宾语或谓语内部又重复出现主语或谓语，导致同一句话读了两次；
+- 主语和宾语指向同一个事物；
+- 谓语与宾语语义重复，宾语里已经含了谓语的动词含义；
+- 主语或宾语是动作片段、残句、代词，而不是完整名称或名词短语；
+- 引文是跨句拼接，或读起来不像原文在陈述主谓宾关系。
+判断从严：只要拼出来的句子像病句或语义重复，就不要保留。`
+
 const DATE_RE = /(20\d{2})[-年/.](\d{1,2})[-月/.](\d{1,2})?/
 
 interface Candidate {
@@ -252,7 +264,7 @@ export function isEntityName(name: string): boolean {
   return !incompleteEntityWords.has(words.at(-1)?.segment ?? '')
 }
 
-async function extractCandidates(document: DocumentRow): Promise<Candidate[]> {
+async function extractCandidates(document: DocumentRow): Promise<{ candidates: Candidate[]; discarded: number }> {
   const chunks = await query<ChunkRow>(
     `SELECT c.* FROM chunks c JOIN document_versions v ON c.version_id = v.id
      WHERE c.doc_id = $1 AND c.is_parent = false AND v.version = $2 ORDER BY c.seq`,
@@ -260,12 +272,14 @@ async function extractCandidates(document: DocumentRow): Promise<Candidate[]> {
   )
   const candidates: Candidate[] = []
   const seen = new Set<string>()
+  let discarded = 0
   for (const [index, batch] of extractionBatches(chunks).entries()) {
     const prompt = `文档标题：${document.title}\n来源类型：${document.source_type}\n分批：${index + 1}\n\n原文：\n${batch.text}\n\n请输出 JSON 数组。`
     const result = await completeStructured(prompt, EXTRACT_SYSTEM)
     const operation = `第 ${index + 1} 批抽取`
     const items = parseJsonArray(requireModelText(result, operation))
     if (items === null) throw modelUnavailable(operation, '模型未返回完整的 JSON 数组')
+    const fresh: Candidate[] = []
     for (const item of items) {
       const subject = String(item.subject ?? '').trim()
       const predicate = String(item.predicate ?? '').trim()
@@ -302,10 +316,38 @@ async function extractCandidates(document: DocumentRow): Promise<Candidate[]> {
       const key = [normalizeName(candidate.subject), candidate.predicate, normalizeName(candidate.objectName || candidate.objectLiteral), candidate.validFrom, candidate.validTo, candidate.chunkId].join('|')
       if (seen.has(key)) continue
       seen.add(key)
-      candidates.push(candidate)
+      fresh.push(candidate)
     }
+    // 结构是否成立（是否只是把引文复述一遍、主语谓语重复、宾语与谓语同义）
+    // 不做规则猜测，交给模型逐条判断；通不过的直接丢弃，不进入知识库也不进审阅队列。
+    const keep = await checkCandidates(fresh)
+    fresh.forEach((candidate, position) => {
+      if (keep[position]) candidates.push(candidate)
+      else discarded += 1
+    })
   }
-  return candidates
+  return { candidates, discarded }
+}
+
+/** 让模型复核候选事实的结构；未给出判断的一律不保留。 */
+async function checkCandidates(candidates: Candidate[]): Promise<boolean[]> {
+  if (!candidates.length) return []
+  const list = candidates.map((candidate, index) =>
+    `${index + 1}. 主语=${candidate.subject} | 谓语=${candidate.predicate} | 宾语=${candidate.objectName || candidate.objectLiteral} | 引文=${candidate.quote}`,
+  ).join('\n')
+  const operation = '事实校验'
+  const items = parseJsonArray(requireModelText(
+    await completeStructured(`候选事实：\n${list}\n\n请输出 JSON 数组。`, CHECK_SYSTEM),
+    operation,
+  ))
+  if (items === null) throw modelUnavailable(operation, '模型未返回完整的 JSON 数组')
+  const keep = candidates.map(() => false)
+  for (const item of items) {
+    const position = Number(item.index)
+    if (!Number.isInteger(position) || position < 1 || position > keep.length) continue
+    keep[position - 1] = item.keep === true || item.keep === 'true'
+  }
+  return keep
 }
 
 type Period = Pick<FactRow, 'valid_from' | 'valid_to'>
@@ -373,9 +415,10 @@ async function factSources(factId: string): Promise<Array<{ doc_id: string; weig
   )
 }
 
+/** 只有与知识库已有事实冲突时才需要人工裁决，其他候选事实直接生效。 */
 async function queueFactReview(
   principal: Principal, subject: EntityRow, fact: FactRow, candidate: Candidate,
-  document: DocumentRow, conflicting: FactRow[], reason: string,
+  document: DocumentRow, conflicting: FactRow[],
 ): Promise<void> {
   const existing = await queryOne<{ id: string }>(
     `SELECT id FROM review_queue WHERE tenant_id = $1 AND status = 'open'
@@ -392,9 +435,10 @@ async function queueFactReview(
     subject: subject.canonical_name, predicate: fact.predicate,
     new_fact_id: fact.id, new_object: candidate.objectName || candidate.objectLiteral,
     old_fact_ids: conflicting.map((old) => old.id), old_objects: oldObjects,
-    quote: candidate.quote, doc_id: document.id, reason,
+    quote: candidate.quote, doc_id: document.id,
+    reason: '同一件事在文档里有不同说法，请判断以哪一条为准。',
   })
-  const kind = conflicting.length ? 'fact_conflict' : 'fact_validation'
+  const kind = 'fact_conflict'
   const title = factSentence(subject.canonical_name, candidate.predicate, candidate.objectName || candidate.objectLiteral)
   if (existing) {
     await query('UPDATE review_queue SET payload = $1::jsonb, kind = $2, title = $3 WHERE id = $4', [payload, kind, title, existing.id])
@@ -480,7 +524,9 @@ async function mergeOrArbitrate(principal: Principal, document: DocumentRow, can
   const canSupersede = supported && winsSourceVote && fact.valid_from !== null && conflicting.length > 0 && conflicting.every((old) =>
     old.valid_from !== null && dateOnly(fact.valid_from)! > dateOnly(old.valid_from)!,
   )
-  if (wasActive || (supported && (!conflicting.length || canSupersede))) {
+  // 审阅策略：只有与已有事实冲突且无法按来源票自动取代时才进入审阅队列。
+  // 知识库中没有的新事实、单源事实、低置信事实都直接生效，不再因为缺少印证而等待人工确认。
+  if (wasActive || !conflicting.length || (supported && canSupersede)) {
     await query(`UPDATE facts SET status = 'active' WHERE id = $1`, [fact.id])
     if (canSupersede) {
       for (const old of conflicting) {
@@ -495,12 +541,7 @@ async function mergeOrArbitrate(principal: Principal, document: DocumentRow, can
     notifyReviewQueueChanged(principal.tenantId)
     return canSupersede ? 'superseded' : sameObject ? 'merged' : 'created'
   }
-  const reason = conflicting.length
-    ? '同一件事在文档里有不同说法，请判断以哪一条为准。'
-    : fact.confidence < MIN_FACT_CONFIDENCE
-      ? '抽取把握不足，需要你确认后再进知识库。'
-      : '这条信息目前只在一份文档里出现，还没有其他来源印证。'
-  await queueFactReview(principal, subject, fact, candidate, document, conflicting, reason)
+  await queueFactReview(principal, subject, fact, candidate, document, conflicting)
   return 'disputed'
 }
 
@@ -532,7 +573,7 @@ async function extractDocument(principal: Principal, document: DocumentRow): Pro
   if (!startedVersion.length) return { status: 'stale' }
   const started = Date.now()
   try {
-    const candidates = await extractCandidates(document)
+    const { candidates, discarded } = await extractCandidates(document)
     const current = await queryOne<DocumentRow>('SELECT * FROM documents WHERE id = $1', [docId])
     if (!current || current.status !== 'active' || current.current_version !== document.current_version) {
       return { document_id: docId, status: 'stale', candidates: 0, message: '抽取期间文档已更新，本次旧版本结果已丢弃' }
@@ -547,6 +588,7 @@ async function extractDocument(principal: Principal, document: DocumentRow): Pro
     return {
       document_id: docId,
       candidates: candidates.length,
+      discarded,
       outcomes: counts,
       elapsed_ms: Date.now() - started,
     }

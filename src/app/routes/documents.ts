@@ -15,6 +15,7 @@ import { isEntityName } from '../../core/learning.js'
 import { enrichmentTasks, processEnrichmentQueue, requestEnrichment } from '../../core/enrichment-queue.js'
 import { DISPLAYABLE_FACT } from '../../core/fact-visibility.js'
 import { reindexDocument } from '../../core/reindexing.js'
+import { continuationView, linkContinuation, unlinkContinuation } from '../../core/continuation.js'
 import { purgeDocument, restoreDocument, trashDocument, trashDocuments } from '../../core/trash.js'
 import { evidenceWeight } from '../../core/source-policy.js'
 import type { ChunkRow, DocumentRow, EntityRow, FactRow, VersionRow } from '../../core/rows.js'
@@ -265,6 +266,7 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
       facts,
       entities,
       review_only_facts: reviewOnlyFacts,
+      continuation: await continuationView(principal, document),
     }
   })
 
@@ -325,6 +327,24 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
       source: { text: partial ? (cited ? cited.text : visibleChunks.map((chunk) => chunk.text).join('\n\n')) : version.text },
       chunks: cited ? [{ id: cited.id, spans: partial ? [{ start: 0, end: cited.text.length }] : spans?.[cited.id] ?? [], text: cited.text }] : [],
     }
+  })
+
+  app.post('/:doc_id/continuation', { preHandler: authenticate }, async (request) => {
+    const principal = currentPrincipal(request)
+    const { doc_id: docId } = request.params as { doc_id: string }
+    return linkContinuation(principal, docId, (request.body ?? {}) as {
+      other_doc_id?: unknown
+      relation?: unknown
+      effective_date?: unknown
+      note?: unknown
+    })
+  })
+
+  app.delete('/:doc_id/continuation', { preHandler: authenticate }, async (request) => {
+    const principal = currentPrincipal(request)
+    const { doc_id: docId } = request.params as { doc_id: string }
+    const relation = (request.query as { relation?: string }).relation
+    return unlinkContinuation(principal, docId, relation)
   })
 
   app.post('/:doc_id/reprocess', { preHandler: authenticate }, async (request) => {

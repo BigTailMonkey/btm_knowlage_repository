@@ -5,6 +5,7 @@ import { query, queryOne } from '../../db/index.js'
 import { ask } from '../../core/answering.js'
 import { factIsEffective, normalizeAsOf, retrieve } from '../../core/retrieval.js'
 import { factDict } from '../../core/serializers.js'
+import { continuationView } from '../../core/continuation.js'
 import { canRead } from '../../core/security.js'
 import { newId } from '../../core/ids.js'
 import { queryKnowledgeGraph, queryStructuredFacts } from '../../core/knowledge-query.js'
@@ -98,7 +99,7 @@ const TOOLS = [
   },
   {
     name: 'kb_get_document',
-    description: '核对可见文档的原文、结构和事实。带上证据的 version_id 可读取对应历史版本，默认读取当前版本。',
+    description: '核对可见文档的原文、结构、事实与延续关系。带上证据的 version_id 可读取对应历史版本，默认读取当前版本。',
     inputSchema: { type: 'object', properties: { doc_id: { type: 'string' }, version_id: { type: 'string' } }, required: ['doc_id'] },
   },
   {
@@ -259,6 +260,7 @@ export async function mcpRoutes(app: FastifyInstance): Promise<void> {
           version: version ? { id: version.id, version: version.version, parser: version.parser, created_at: version.created_at, meta: version.meta } : null,
           chunks: visibleChunks.map(({ acl_principals, ...chunk }) => chunk),
           facts: scopedFacts,
+          continuation: await continuationView(principal, document),
         }, native))
       }
       if (name === 'kb_entity_timeline') {
@@ -281,9 +283,18 @@ export async function mcpRoutes(app: FastifyInstance): Promise<void> {
           `SELECT * FROM facts f WHERE f.tenant_id = $1 AND (f.subject_id = $2 OR f.object_id = $2)
              AND f.status IN ('active', 'superseded')
              AND EXISTS (SELECT 1 FROM fact_evidence e JOIN documents d ON d.id = e.doc_id
-                         WHERE e.fact_id = f.id AND d.tenant_id = $1 AND d.status = 'active')
+                         WHERE e.fact_id = f.id AND d.tenant_id = $1 AND d.status = 'active'
+                           AND ($3::date IS NULL OR NOT EXISTS (
+                             SELECT 1 FROM document_continuations chain
+                             WHERE chain.tenant_id = $1 AND (
+                               (chain.successor_doc_id = d.id AND chain.effective_date > $3::date)
+                               OR (chain.predecessor_doc_id = d.id AND chain.effective_date <= $3::date
+                                   AND EXISTS (SELECT 1 FROM documents successor
+                                               WHERE successor.id = chain.successor_doc_id AND successor.status = 'active'))
+                             )
+                           )))
            ORDER BY f.valid_from ASC NULLS FIRST, f.recorded_at ASC, f.id`,
-          [principal.tenantId, entity.id],
+          [principal.tenantId, entity.id, asOf],
         )
         const timeline = []
         for (const fact of facts) {

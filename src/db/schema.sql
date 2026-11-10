@@ -54,6 +54,23 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE INDEX IF NOT EXISTS ix_documents_tenant ON documents (tenant_id);
 CREATE INDEX IF NOT EXISTS ix_documents_hash ON documents (content_hash);
 
+-- 文档沿革：旧文档由新文档接续时登记一条有生效日期的边。每个文档最多一个
+-- 前序和一个后续，形成线性链；检索按结算日期只保留当时有效的那一篇。
+CREATE TABLE IF NOT EXISTS document_continuations (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  predecessor_doc_id TEXT NOT NULL REFERENCES documents(id),
+  successor_doc_id TEXT NOT NULL REFERENCES documents(id),
+  effective_date DATE NOT NULL,
+  note TEXT,
+  created_by TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (predecessor_doc_id),
+  UNIQUE (successor_doc_id)
+);
+CREATE INDEX IF NOT EXISTS ix_continuations_tenant ON document_continuations (tenant_id);
+CREATE INDEX IF NOT EXISTS ix_continuations_effective ON document_continuations (tenant_id, effective_date);
+
 CREATE TABLE IF NOT EXISTS document_versions (
   id TEXT PRIMARY KEY,
   doc_id TEXT NOT NULL REFERENCES documents(id),

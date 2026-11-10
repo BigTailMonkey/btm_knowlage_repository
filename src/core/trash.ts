@@ -2,6 +2,7 @@ import { embedder, type Embedding } from '../adapters/embeddings/index.js'
 import { settings } from '../config.js'
 import { query, queryOne, transaction, type DbClient } from '../db/index.js'
 import { chunkBlocks, type ParsedBlock } from './chunking.js'
+import { removeContinuationLinks } from './continuation.js'
 import { enqueueEnrichment } from './enrichment-queue.js'
 import { newId } from './ids.js'
 import { insertChunkRows } from './ingestion.js'
@@ -270,6 +271,7 @@ async function purgeTrashedDocument(tenantId: string, docId: string, by: string)
     )
     removedVersions = versions.length
     await client.query('DELETE FROM citations WHERE doc_id = $1', [docId])
+    await removeContinuationLinks(client, tenantId, docId)
     await client.query('DELETE FROM documents WHERE id = $1', [docId])
     // 原始文件字节、抽取任务与审计记录都在 jobs 里，一并清除。
     const jobs = await client.query<{ id: string }>(

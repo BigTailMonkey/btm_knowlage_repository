@@ -1,4 +1,5 @@
 import { query, queryOne } from '../db/index.js'
+import { continuationSummary } from './continuation.js'
 import { iso } from './ids.js'
 import type { ChunkRow, DocumentRow, EntityRow, FactRow } from './rows.js'
 import { aclLabel } from './security.js'
@@ -10,6 +11,7 @@ export async function documentDict(document: DocumentRow): Promise<Record<string
        AND version_id IN (SELECT id FROM document_versions WHERE doc_id = $1 AND version = $2)`,
     [document.id, document.current_version],
   )
+  const continuation = await continuationSummary(document)
   return {
     id: document.id,
     title: document.title,
@@ -30,6 +32,8 @@ export async function documentDict(document: DocumentRow): Promise<Record<string
     deleted_at: document.deleted_at ?? null,
     deleted_by: document.deleted_by ?? null,
     chunks: Number(count?.count ?? 0),
+    continuation,
+    in_force: continuation ? Boolean(continuation.in_force) : document.status === 'active',
     created_at: iso(document.created_at),
     updated_at: iso(document.updated_at),
   }

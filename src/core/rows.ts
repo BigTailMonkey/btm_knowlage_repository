@@ -46,6 +46,17 @@ export interface VersionRow {
   created_at: string
 }
 
+export interface ContinuationRow {
+  id: string
+  tenant_id: string
+  predecessor_doc_id: string
+  successor_doc_id: string
+  effective_date: string
+  note: string | null
+  created_by: string
+  created_at: string
+}
+
 export interface ChunkRow {
   id: string
   version_id: string

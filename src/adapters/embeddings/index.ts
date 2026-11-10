@@ -1,4 +1,8 @@
 import { settings } from '../../config.js'
+import {
+  RETRYABLE_HTTP_STATUS, backoffDelayMs as backoffDelay, describeHttpFailure, isTransientFetchError,
+  parseRetryAfter, retryWithBackoff, type BackoffPolicy, type RetryHint,
+} from '../../util/retry.js'
 
 const CJK = /[\u3400-\u9fff\uf900-\ufaff]+/g
 const WORD = /[A-Za-z][A-Za-z0-9_-]+|\d+(?:\.\d+)?/g
@@ -82,29 +86,18 @@ export function keywordOverlap(queryTokens: string[], text: string): number {
   return hit / query.size
 }
 
-interface RetryHint {
-  retryable?: boolean
-  retryAfterMs?: number
-}
-
 function fail(message: string, hint: RetryHint = {}): EmbeddingError {
   return Object.assign(new EmbeddingError(message), hint)
 }
 
-/** 限流与瞬时故障可重试；4xx 参数类错误重试无意义。 */
-const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504])
-
-function parseRetryAfter(value: string | null): number | undefined {
-  if (!value) return undefined
-  const seconds = Number(value.trim())
-  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000)
-  const at = Date.parse(value)
-  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined
-}
-
-function isTransientFetchError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false
-  return error.name === 'AbortError' || error.name === 'TimeoutError' || error.name === 'TypeError'
+/** 向量服务的重试策略来自 [embedding] 段。 */
+function embeddingBackoff(): BackoffPolicy {
+  return {
+    baseMs: settings.embeddingRetryBaseMs,
+    maxMs: settings.embeddingRetryMaxMs,
+    maxRetries: settings.embeddingRetryMaxRetries,
+    jitter: settings.embeddingRetryJitter,
+  }
 }
 
 /**
@@ -113,19 +106,7 @@ function isTransientFetchError(error: unknown): boolean {
  * 服务给出 Retry-After 时取两者较大值，仍受 max 封顶。
  */
 export function backoffDelayMs(retry: number, retryAfterMs?: number): number {
-  const base = Math.max(1, settings.embeddingRetryBaseMs)
-  const cap = Math.max(base, settings.embeddingRetryMaxMs)
-  const total = Math.max(1, Math.trunc(settings.embeddingRetryMaxRetries))
-  const step = total <= 1 ? 0 : Math.min(1, (Math.max(1, retry) - 1) / (total - 1))
-  let delay = Math.round(base * (cap / base) ** step)
-  if (retryAfterMs !== undefined) delay = Math.max(delay, retryAfterMs)
-  delay = Math.min(cap, delay)
-  if (settings.embeddingRetryJitter) delay = Math.round(delay * (0.5 + Math.random() * 0.5))
-  return delay
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+  return backoffDelay(retry, embeddingBackoff(), retryAfterMs)
 }
 
 async function postOnce(url: string, payload: unknown): Promise<Record<string, unknown>> {
@@ -146,9 +127,9 @@ async function postOnce(url: string, payload: unknown): Promise<Record<string, u
     )
   }
   if (!response.ok) {
-    const detail = (await response.text()).slice(0, 300)
-    throw fail(`向量服务返回 ${response.status}: ${detail}`, {
-      retryable: RETRYABLE_STATUS.has(response.status),
+    // 与模型调用一致：留下响应体和限流头，429 时才能判断是速率、令牌还是并发。
+    throw fail(await describeHttpFailure(response, '向量服务'), {
+      retryable: RETRYABLE_HTTP_STATUS.has(response.status),
       retryAfterMs: parseRetryAfter(response.headers.get('retry-after')),
     })
   }
@@ -160,25 +141,12 @@ async function postOnce(url: string, payload: unknown): Promise<Record<string, u
 }
 
 async function postJson(url: string, payload: unknown): Promise<Record<string, unknown>> {
-  const maxAttempts = Math.max(1, Math.trunc(settings.embeddingRetryMaxRetries)) + 1
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      return await postOnce(url, payload)
-    } catch (error) {
-      const hint = error as RetryHint
-      const exhausted = attempt >= maxAttempts
-      if (error instanceof EmbeddingError && hint.retryable && !exhausted) {
-        await sleep(backoffDelayMs(attempt, hint.retryAfterMs))
-        continue
-      }
-      if (error instanceof EmbeddingError && attempt > 1) {
-        error.message = `${error.message}（含首次共尝试 ${attempt} 次）`
-      }
-      throw error instanceof EmbeddingError
-        ? error
-        : fail(`向量服务不可用: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
+  return retryWithBackoff(embeddingBackoff(), () => postOnce(url, payload), {
+    onRetry: ({ attempt, maxAttempts, delayMs, error }) => {
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn(`[embedding] 第 ${attempt}/${maxAttempts - 1} 次重试前等待 ${Math.round(delayMs / 1000)}s：${message}`)
+    },
+  })
 }
 
 interface Embedder {

@@ -31,6 +31,14 @@ provider = "volcengine-ark"
 model = "deepseek-v4.1-flash"
 api_key = ""
 base_url = "https://ark.cn-beijing.volces.com/api/coding/v3"
+# 429（限流）/ 5xx / 超时与网络故障在本次调用内自动重试，4xx 参数类错误不重试
+# 共重试 retry_max_retries 次（不含首次）：间隔在 retry_base_ms → retry_max_ms 之间等比均匀铺开
+# 默认 4 次：2s、4.9s、12.2s、30s，累计约 49s；流式对话只在首个 token 之前重试
+retry_max_retries = 4
+retry_base_ms = 2000
+retry_max_ms = 30000
+# 抖动：开启后每次等待取 50%~100% 随机（只会缩短，不会超过封顶）
+retry_jitter = false
 
 [embedding]
 provider = "volcengine-ark"

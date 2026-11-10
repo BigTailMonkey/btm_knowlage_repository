@@ -35,7 +35,8 @@ test('ordinary imports extract entities and resume unfinished extraction without
   const upload = { filename: 'architecture.txt', data: Buffer.from('知织使用数据库。') }
   const complete = harness.complete
   let extractionCalls = 0
-  harness.complete = async () => {
+  harness.complete = async (_prompt, system) => {
+    if (system?.includes('事实校验器')) return { text: JSON.stringify([{ index: 1, keep: true, reason: '' }]), tokensIn: 0, tokensOut: 0, latencyMs: 0, model: 'test-model', provider: 'test', error: null, ok: true }
     extractionCalls++
     return {
       text: JSON.stringify([{ subject: '知织', predicate: '使用', object: '数据库', quote: '知织使用数据库' }]),
@@ -77,7 +78,8 @@ test('model failures leave indexing and later extraction unblocked and can be re
   const held = new Promise<void>(resolve => { release = resolve })
   const entered = new Promise<void>(resolve => { started = resolve })
   let recovered = false
-  harness.complete = async prompt => {
+  harness.complete = async (prompt, system) => {
+    if (system?.includes('事实校验器')) return { text: '[]', ok: true, error: null, model: 'stub', provider: 'stub', tokensIn: 0, tokensOut: 0, latencyMs: 0 }
     if (!recovered && prompt.includes('首先失败')) {
       started()
       await held

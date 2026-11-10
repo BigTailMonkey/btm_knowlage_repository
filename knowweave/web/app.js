@@ -615,6 +615,19 @@ async function loadDocs() {
   }
 }
 
+function continuationBadge(doc) {
+  const continuation = doc.continuation;
+  if (!continuation) return "";
+  if (continuation.role === "predecessor") {
+    return continuation.in_force
+      ? `<div class="pill">有后续</div>`
+      : `<div class="pill warn">已被延续</div>`;
+  }
+  return continuation.in_force
+    ? `<div class="pill">延续</div>`
+    : `<div class="pill warn">待生效 ${esc(shortDate(continuation.effective_date))}</div>`;
+}
+
 function renderDocs() {
   const target = $("#doc-table-body");
   const empty = $("#doc-empty");
@@ -628,6 +641,7 @@ function renderDocs() {
       <td>
         <div class="cell-title">
           <strong>${esc(doc.title)}</strong>
+          ${continuationBadge(doc)}
           <span>${esc(plain(doc.summary) || "无")}</span>
           <span class="cell-inline">${esc(SOURCE_LABEL[doc.source_type] || doc.source_type)} · ${num(doc.chunks)} 个检索单元 · ${shortDate(doc.updated_at)}</span>
         </div>
@@ -789,9 +803,14 @@ async function openDoc(docId, citation = null) {
   if (!dialog.open) dialog.showModal();
   try {
     const selectedVersion = citation?.version_id;
-    const data = await api(`/documents/${encodeURIComponent(docId)}${selectedVersion ? `?version_id=${encodeURIComponent(selectedVersion)}` : ""}`);
+    const [data, library] = await Promise.all([
+      api(`/documents/${encodeURIComponent(docId)}${selectedVersion ? `?version_id=${encodeURIComponent(selectedVersion)}` : ""}`),
+      api("/documents?limit=200").catch(() => ({ items: [] })),
+    ]);
     if (request !== docOpenRequest) return;
     const doc = data.document;
+    const continuation = data.continuation;
+    const linkableItems = (library.items || []).filter((item) => item.id !== doc.id);
     const enrichmentLabel = ENRICHMENT_LABEL[doc.enrichment_status];
     const ranges = sourceRanges(data, citation);
     const version = data.source?.version ?? doc.version;
@@ -835,6 +854,29 @@ async function openDoc(docId, citation = null) {
       </div>
 
       <div class="section">
+        <h3>延续关系</h3>
+        ${continuation?.chain?.length ? `<div class="continuation-chain">${continuation.chain.map((node) => `
+          <button type="button" class="version-row version-link" data-open-doc="${esc(node.id)}"${node.id === doc.id ? ' aria-current="true"' : ""}>
+            <span>${esc(node.title)}${node.id === doc.id ? " · 当前" : node.in_force ? " · 当时有效" : " · 非现行"}</span>
+            <span class="meta">${node.effective_date ? `自 ${esc(node.effective_date)} 起` : "链首"} · v${esc(node.version)}</span>
+          </button>`).join("")}</div>` : `<p class="muted small">这篇文档还没有登记延续关系。政策类文档更新后，把新旧两篇连起来，检索就会按日期只取当时有效的一篇；未填日期或日期在未来时，旧文档仍是现行版本。</p>`}
+        ${continuation?.predecessor ? `<div class="continuation-actions"><span class="muted small">前序：${esc(continuation.predecessor.title)}</span><button class="btn" type="button" data-continuation-unlink="continues">解除接续</button></div>` : ""}
+        ${continuation?.successor ? `<div class="continuation-actions"><span class="muted small">后续：${esc(continuation.successor.title)}</span><button class="btn" type="button" data-continuation-unlink="continued_by">解除延续</button></div>` : ""}
+        <div class="continuation-form">
+          <select id="continuation-direction" aria-label="延续方向">
+            <option value="continues">接续自（当前是新文档）</option>
+            <option value="continued_by">延续到（当前是旧文档）</option>
+          </select>
+          <select id="continuation-other" aria-label="关联文档"${linkableItems.length ? "" : " disabled"}>
+            ${linkableItems.length ? linkableItems.map((item) => `<option value="${esc(item.id)}">${esc(item.title)}</option>`).join("") : `<option>没有可关联的文档</option>`}
+          </select>
+          <input type="date" id="continuation-date" aria-label="生效日期" />
+          <input id="continuation-note" maxlength="500" placeholder="备注（可选）" />
+          <button class="btn" type="button" data-continuation-link${linkableItems.length ? "" : " disabled"}>建立延续</button>
+        </div>
+      </div>
+
+      <div class="section">
         <h3>事实层</h3>
         ${data.review_only_facts ? `<p class="muted small">${num(data.review_only_facts)} 条低置信度候选仅供审阅。</p>` : ""}
         ${data.facts.length ? data.facts.map((fact) => `
@@ -872,6 +914,47 @@ async function openDoc(docId, citation = null) {
     });
     $$("[data-doc-version]", $("#doc-dialog-body")).forEach((button) => {
       button.addEventListener("click", () => openDoc(docId, { version_id: button.dataset.docVersion }));
+    });
+    $$("[data-open-doc]", $("#doc-dialog-body")).forEach((button) => {
+      button.addEventListener("click", () => openDoc(button.dataset.openDoc));
+    });
+    $$("[data-continuation-unlink]", $("#doc-dialog-body")).forEach((button) => {
+      button.addEventListener("click", async () => {
+        if (!confirm("确认解除这条延续关系？")) return;
+        setBusy(button, true, "解除中");
+        try {
+          await api(`/documents/${encodeURIComponent(doc.id)}/continuation?relation=${button.dataset.continuationUnlink}`, { method: "DELETE" });
+          toast("延续关系已解除");
+          await openDoc(doc.id);
+          loadDocs();
+        } catch (error) {
+          toast(error.message);
+        } finally {
+          setBusy(button, false);
+        }
+      });
+    });
+    $("[data-continuation-link]", $("#doc-dialog-body"))?.addEventListener("click", async (event) => {
+      const other = $("#continuation-other", $("#doc-dialog-body"))?.value;
+      const effectiveDate = $("#continuation-date", $("#doc-dialog-body"))?.value;
+      const relation = $("#continuation-direction", $("#doc-dialog-body"))?.value;
+      const note = $("#continuation-note", $("#doc-dialog-body"))?.value.trim();
+      if (!other) return toast("没有可关联的文档");
+      if (!effectiveDate) return toast("请填写生效日期");
+      setBusy(event.currentTarget, true, "保存中");
+      try {
+        await api(`/documents/${encodeURIComponent(doc.id)}/continuation`, {
+          method: "POST",
+          body: { other_doc_id: other, relation, effective_date: effectiveDate, note },
+        });
+        toast("延续关系已建立");
+        await openDoc(doc.id);
+        loadDocs();
+      } catch (error) {
+        toast(error.message);
+      } finally {
+        setBusy(event.currentTarget, false);
+      }
     });
     const highlight = $("#source-highlight-target", $("#doc-dialog-body"));
     highlight?.scrollIntoView({ behavior: "smooth", block: "center" });

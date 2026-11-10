@@ -44,7 +44,7 @@ export async function testWorkspace() {
 }
 
 export async function clearKnowledge(): Promise<void> {
-  for (const table of ['eval_runs', 'eval_cases', 'reflection_runs', 'knowledge_summaries', 'feedback', 'citations', 'messages', 'conversations', 'replay_runs', 'usage_ledger', 'trace_spans', 'traces', 'review_queue', 'fact_evidence', 'facts', 'entity_aliases', 'entities', 'chunks', 'blocks', 'document_versions', 'documents', 'jobs', 'memory_items', 'gaps']) {
+  for (const table of ['eval_runs', 'eval_cases', 'reflection_runs', 'knowledge_summaries', 'feedback', 'citations', 'messages', 'conversations', 'replay_runs', 'usage_ledger', 'trace_spans', 'traces', 'review_queue', 'fact_evidence', 'facts', 'entity_aliases', 'entities', 'chunks', 'blocks', 'document_versions', 'document_continuations', 'documents', 'jobs', 'memory_items', 'gaps']) {
     await query(`DELETE FROM ${table}`)
   }
 }

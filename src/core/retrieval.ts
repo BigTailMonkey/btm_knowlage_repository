@@ -95,13 +95,29 @@ export interface RetrievalResult {
   asOf: string | null
 }
 
-async function loadCandidates(tenantId: string, asOf: string | null): Promise<Array<[ChunkRow, RetrievalDocument]>> {
-  const versionFilter = asOf
-    ? `v.id = (SELECT historical.id FROM document_versions historical
-               WHERE historical.doc_id = d.id
-                 AND historical.created_at < (($2::date + interval '1 day') AT TIME ZONE $3)
-               ORDER BY historical.created_at DESC, historical.version DESC LIMIT 1)`
-    : 'v.version = d.current_version'
+async function loadCandidates(
+  tenantId: string,
+  asOf: string | null,
+  includeDocIds: string[] = [],
+): Promise<Array<[ChunkRow, RetrievalDocument]>> {
+  const effectiveDate = asOf ?? todayLocal(settings.timezone)
+  // A document that participates in a continuation chain represents one policy
+  // generation; its content revisions are not historical policy generations.
+  // Always use the current version and let the chain decide which document was
+  // in force on the requested date.
+  const params: unknown[] = [tenantId, effectiveDate, includeDocIds]
+  let versionFilter = 'v.version = d.current_version'
+  if (asOf) {
+    params.push(asOf, settings.timezone)
+    versionFilter = `CASE WHEN EXISTS (SELECT 1 FROM document_continuations chain
+                         WHERE chain.tenant_id = d.tenant_id
+                           AND (chain.predecessor_doc_id = d.id OR chain.successor_doc_id = d.id))
+           THEN v.version = d.current_version
+           ELSE v.id = (SELECT historical.id FROM document_versions historical
+                        WHERE historical.doc_id = d.id
+                          AND historical.created_at < (($4::date + interval '1 day') AT TIME ZONE $5)
+                        ORDER BY historical.created_at DESC, historical.version DESC LIMIT 1) END`
+  }
   const rows = await query<{ chunk: ChunkRow; document: RetrievalDocument }>(
     `SELECT to_jsonb(c) AS chunk,
             to_jsonb(d) || jsonb_build_object('selected_version', v.version) AS document
@@ -109,8 +125,20 @@ async function loadCandidates(tenantId: string, asOf: string | null): Promise<Ar
      JOIN documents d ON c.doc_id = d.id
      JOIN document_versions v ON c.version_id = v.id
      WHERE d.tenant_id = $1 AND d.status = 'active'
-       AND ${versionFilter} AND c.is_parent = false`,
-    asOf ? [tenantId, asOf, settings.timezone] : [tenantId],
+       AND ${versionFilter} AND c.is_parent = false
+       AND (
+         d.id = ANY($3::text[])
+         OR NOT EXISTS (
+           SELECT 1 FROM document_continuations chain
+           WHERE chain.tenant_id = d.tenant_id AND (
+             (chain.successor_doc_id = d.id AND chain.effective_date > $2::date)
+             OR (chain.predecessor_doc_id = d.id AND chain.effective_date <= $2::date
+                 AND EXISTS (SELECT 1 FROM documents successor
+                             WHERE successor.id = chain.successor_doc_id AND successor.status = 'active'))
+           )
+         )
+       )`,
+    params,
   )
   return rows.map((row) => [row.chunk, row.document])
 }
@@ -242,7 +270,23 @@ export async function retrieve(
   const mode = options.mode ?? 'quick'
   const asOf = normalizeAsOf(options.asOf)
   const graphHops = Math.max(1, Math.min(3, Math.floor(Number(options.graphHops) || (mode === 'graph' ? 2 : 1))))
-  let candidates = await loadCandidates(principal.tenantId, asOf)
+  // An exact cited document title is an explicit source scope. Resolve it before
+  // loading candidates so a historical policy can still be addressed by name
+  // even when its successor is the default in-force document.
+  const titles = new Set([...text.matchAll(/《([^》]+)》/g)].map((match) => match[1]!.trim().normalize('NFKC').toLowerCase()))
+  const includeDocIds = new Set(options.docIds ?? [])
+  if (titles.size) {
+    const all = await query<Pick<DocumentRow, 'id' | 'title' | 'acl_principals'>>(
+      "SELECT id, title, acl_principals FROM documents WHERE tenant_id = $1 AND status = 'active'",
+      [principal.tenantId],
+    )
+    for (const document of all) {
+      if (titles.has(document.title.trim().normalize('NFKC').toLowerCase()) && canRead(principal, document.acl_principals)) {
+        includeDocIds.add(document.id)
+      }
+    }
+  }
+  let candidates = await loadCandidates(principal.tenantId, asOf, [...includeDocIds])
   if (options.docIds?.length) {
     const allowed = new Set(options.docIds)
     candidates = candidates.filter((pair) => allowed.has(pair[1].id))
@@ -258,11 +302,10 @@ export async function retrieve(
     latencyMs: 1,
   })
   // An exact cited document title is an explicit source scope, not a weak keyword.
-  const titles = new Set([...text.matchAll(/《([^》]+)》/g)].map(match=>match[1]!.trim().normalize('NFKC').toLowerCase()))
-  const scoped = visible.filter(([,document])=>titles.has(document.title.trim().normalize('NFKC').toLowerCase()))
+  const scoped = visible.filter(([, document]) => titles.has(document.title.trim().normalize('NFKC').toLowerCase()))
   if (scoped.length) {
-    options.recorder?.addSpan({stage:'source.scope',output:{before:visible.length,after:scoped.length,document_ids:[...new Set(scoped.map(([,document])=>document.id))]}})
-    visible=scoped
+    options.recorder?.addSpan({ stage: 'source.scope', output: { before: visible.length, after: scoped.length, document_ids: [...new Set(scoped.map(([, document]) => document.id))] } })
+    visible = scoped
   }
   if (!visible.length) {
     return {

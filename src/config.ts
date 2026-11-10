@@ -88,6 +88,11 @@ export const settings = {
   modelApiKey: text(model.api_key, '').trim(),
   modelBaseUrl: text(model.base_url, '').trim(),
   modelMaxTokens,
+  // 生成/抽取/校验共用：429、5xx、超时与网络故障在本次调用内自动退避重试
+  modelRetryMaxRetries: Math.max(0, Math.trunc(num(model.retry_max_retries, 4))),
+  modelRetryBaseMs: Math.max(1, num(model.retry_base_ms, 2_000)),
+  modelRetryMaxMs: Math.max(1, num(model.retry_max_ms, 30_000)),
+  modelRetryJitter: bool(model.retry_jitter, false),
 
   embeddingProvider: text(embedding.provider, 'volcengine-ark'),
   embeddingModel: text(embedding.model, 'doubao-embedding-vision'),

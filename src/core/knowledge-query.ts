@@ -112,10 +112,23 @@ function evidenceFrom(factId: 'f.id' | 'm.fact_id' | 'g.sample_fact_id'): string
     AND jsonb_typeof(c.acl_principals) = 'array' AND c.acl_principals ?| $2::text[]
     AND ($6::text[] IS NULL OR d.id = ANY($6))
     AND ($7::text IS NULL OR d.source_type = $7)
-    AND CASE WHEN $3::date IS NULL THEN v.version = d.current_version
+    AND CASE WHEN EXISTS (SELECT 1 FROM document_continuations chain
+                          WHERE chain.tenant_id = d.tenant_id
+                            AND (chain.predecessor_doc_id = d.id OR chain.successor_doc_id = d.id))
+        THEN v.version = d.current_version
+        WHEN $3::date IS NULL THEN v.version = d.current_version
         ELSE v.id = (SELECT hv.id FROM document_versions hv WHERE hv.doc_id = d.id AND hv.tenant_id = $1
                      AND hv.created_at < (($3::date + interval '1 day') AT TIME ZONE $5)
-                     ORDER BY hv.created_at DESC, hv.version DESC, hv.id DESC LIMIT 1) END`
+                     ORDER BY hv.created_at DESC, hv.version DESC, hv.id DESC LIMIT 1) END
+    AND ($6::text[] IS NOT NULL OR NOT EXISTS (
+      SELECT 1 FROM document_continuations chain
+      WHERE chain.tenant_id = $1 AND (
+        (chain.successor_doc_id = d.id AND chain.effective_date > $4::date)
+        OR (chain.predecessor_doc_id = d.id AND chain.effective_date <= $4::date
+            AND EXISTS (SELECT 1 FROM documents successor
+                        WHERE successor.id = chain.successor_doc_id AND successor.status = 'active'))
+      )
+    ))`
 }
 
 const FACT_COLUMNS = `f.id AS fact_id, f.subject_id, s.canonical_name AS subject, f.predicate,
