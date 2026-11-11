@@ -429,9 +429,13 @@
     </div>
   </dialog>
 
-  <dialog class="dialog wide" id="doc-dialog" aria-labelledby="doc-dialog-title">
-    <div class="dialog-head">
-      <h2 id="doc-dialog-title"></h2>
+  <dialog class="dialog wide doc-dialog" id="doc-dialog" aria-labelledby="doc-dialog-title">
+    <div class="dialog-head doc-dialog-head">
+      <div class="doc-head-main">
+        <h2 id="doc-dialog-title"></h2>
+        <p class="doc-head-meta" id="doc-dialog-meta"></p>
+      </div>
+      <button class="icon-btn doc-head-info" type="button" data-doc-info aria-label="文档信息与操作"><svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="5.6"/><path d="M8 7.2v3.4M8 5.2v.2"/></svg></button>
       <button class="icon-btn" data-close aria-label="关闭"><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button>
     </div>
     <div class="dialog-body" id="doc-dialog-body"></div>

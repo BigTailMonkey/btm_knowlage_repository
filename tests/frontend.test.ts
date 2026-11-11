@@ -275,7 +275,7 @@ test('legacy citations fall back to a matching literal quote without changing th
 
 test('opening a citation requests its recorded version and renders a marked source plus version navigation', async () => {
   const page = frontend(() => ({
-    document: { id: 'doc-a', title: 'Doc <A>', version: 2, source_type: 'text', chunks: 1, quality: 1, acl_label: '全员可见' },
+    document: { id: 'doc-a', title: 'Doc <A>', version: 2, status: 'active', source_type: 'text', chunks: 1, quality: 1, acl_label: '全员可见', source_trust: 0.5, content_hash: 'abc123', updated_at: '2023-01-01T00:00:00Z', enrichment_status: 'done', summary: '' },
     versions: [{ id: 'old-v', version: 1, parser: 'text', hash: 'abc', chars: 8, created_at: '2023-01-01T00:00:00Z' }],
     source: { version_id: 'old-v', version: 1, text: 'old text', coordinate_system: 'normalized-text-utf16' },
     chunks: [{ id: 'old-c', text: 'old text', spans: [{ start: 0, end: 8 }], seq: 0, tokens: 2 }],
@@ -284,7 +284,8 @@ test('opening a citation requests its recorded version and renders a marked sour
   await page.run('openCitation({doc_id: "doc-a", chunk_id: "old-c", version_id: "old-v"})')
   assert.equal(page.calls[0]!.url, '/api/v1/documents/doc-a?version_id=old-v')
   const html = page.element('#doc-dialog-body').innerHTML
-  assert.match(html, /原文 · v1/)
+  assert.match(html, /data-doc-tab="source"[^>]*>原文/)
+  assert.match(html, /查看版本<\/span><strong>v1/)
   assert.match(html, /<mark[^>]*>old text<\/mark>/)
   assert.match(html, /data-doc-version="old-v" aria-current="true"/)
   assert.match(html, /data-doc-action="update"/)

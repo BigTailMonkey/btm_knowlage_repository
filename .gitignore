@@ -2,6 +2,7 @@
 .env
 .env.*
 .screenshots/
+.taste-skill/
 .trae-html-share-packages/
 __pycache__/
 *.py[cod]
