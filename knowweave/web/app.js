@@ -12,9 +12,14 @@ const state = {
   docs: [],
   stats: null,
   conversations: [],
+  showArchivedConversations: false,
   entities: [],
   graph: { nodes: [], edges: [] },
+  graphScope: "local",
+  graphOverviewZoom: false,
   activeEntity: null,
+  entityView: localStorage.getItem("kw_entity_view") === "graph" ? "graph" : "entity",
+  entityRail: localStorage.getItem("kw_entity_rail") === "shown",
   opsTab: "traces",
   harness: null,
   ingestFiles: [],
@@ -252,8 +257,15 @@ function loadingLines() {
 }
 
 /* ============ Shell ============ */
+function pageFromUrl() {
+  const url = new URL(location.href);
+  const legacyPage = url.hash.slice(1);
+  if (Object.hasOwn(PAGE_META, legacyPage)) return legacyPage;
+  return url.searchParams.get("page");
+}
+
 function showPage(page) {
-  if (!PAGE_META[page]) page = "chat";
+  if (!Object.hasOwn(PAGE_META, page)) page = "chat";
   if (state.page === "chat" && page !== "chat") closeChatCitation();
   state.page = page;
   document.body.dataset.page = page;
@@ -265,7 +277,14 @@ function showPage(page) {
   });
   $$(".page").forEach((section) => section.classList.toggle("active", section.id === `page-${page}`));
   $("#sheet").scrollTop = 0;
-  if (location.hash !== `#${page}`) history.replaceState(null, "", `#${page}`);
+  const url = new URL(location.href);
+  if (page === "chat") {
+    if (url.searchParams.has("page")) url.searchParams.delete("page");
+  } else if (url.searchParams.get("page") !== page) {
+    url.searchParams.set("page", page);
+  }
+  url.hash = "";
+  if (url.href !== location.href) history.replaceState(history.state, "", url);
   closeSidebar();
   loadPage(page);
 }
@@ -521,6 +540,10 @@ async function loadIngestJobs() {
     if (jobStatusCache) {
       current.forEach((status, id) => {
         const previous = jobStatusCache.get(id);
+        if (previous !== status && status === "awaiting_duplicate") {
+          const job = state.jobs.find((item) => item.job_id === id);
+          toast(`发现重复文档：${job.title}`);
+        }
         if (previous !== status && (status === "done" || status === "failed")) {
           const job = state.jobs.find((item) => item.job_id === id);
           if (!job) return;
@@ -607,13 +630,26 @@ function renderExtractionJobs({ items, can_retry }) {
 function renderIngestJobs() {
   const box = $("#ingest-jobs");
   if (!box) return;
-  const jobs = state.jobs.filter((job) => ["pending", "running", "failed"].includes(job.status));
+  const jobs = state.jobs.filter((job) => ["pending", "running", "failed", "awaiting_duplicate"].includes(job.status));
   box.hidden = !jobs.length;
   if (!jobs.length) {
     box.innerHTML = "";
     return;
   }
   box.innerHTML = jobs.map((job) => {
+    if (job.status === "awaiting_duplicate") {
+      return `<div class="job-card">
+        <div class="job-line">
+          <span class="job-title">${esc(job.title)}</span>
+          <span class="job-stage">发现重复文档</span>
+        </div>
+        <p class="muted small">${esc(job.message)}</p>
+        <div class="job-actions">
+          <button type="button" class="btn sm" data-duplicate-job="${esc(job.job_id)}" data-decision="continue">继续导入</button>
+          <button type="button" class="btn sm" data-duplicate-job="${esc(job.job_id)}" data-decision="skip">跳过重复文档</button>
+        </div>
+      </div>`;
+    }
     const failed = job.status === "failed";
     const percent = failed ? 100 : Math.max(3, Number(job.percent) || 3);
     const stage = runtimeText(failed ? job.error || "处理失败" : job.stage || "排队中");
@@ -624,10 +660,27 @@ function renderIngestJobs() {
           <span class="job-stage" title="${esc(stage)}">${esc(stage)}</span>
           <span class="job-percent">${failed ? "失败" : `${percent}%`}</span>
         </div>
-        ${failed ? `<div class="job-actions"><button class="text-btn" data-retry-job="${esc(job.job_id)}">重试解析</button><button class="text-btn" data-correct-job="${esc(job.job_id)}">人工修正文</button></div>` : ""}
+        ${failed ? `<div class="job-actions"><button class="text-btn" data-retry-job="${esc(job.job_id)}">重试入库</button><button class="text-btn" data-correct-job="${esc(job.job_id)}">人工修正文</button></div>` : ""}
         <div class="job-progress"><i style="width:${percent}%"></i></div>
       </div>`;
   }).join("");
+  box.querySelectorAll("[data-duplicate-job]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const { duplicateJob: id, decision } = button.dataset;
+      const buttons = button.parentElement.querySelectorAll("button");
+      buttons.forEach((choice) => { choice.disabled = true; });
+      try {
+        const job = await api(`/documents/jobs/${encodeURIComponent(id)}/duplicate`, { method: "POST", body: { action: decision } });
+        trackIngestJob(job);
+        toast(decision === "skip" ? "已跳过重复文档" : "已提交，继续导入");
+      } catch (error) {
+        toast(error.message);
+        if (error.status === 409) await loadIngestJobs();
+      } finally {
+        buttons.forEach((choice) => { choice.disabled = false; });
+      }
+    });
+  });
   box.querySelectorAll("[data-retry-job], [data-correct-job]").forEach((button) => {
     button.addEventListener("click", async () => {
       const corrected = button.dataset.correctJob ? prompt("输入人工修正后的文档正文，提交后重新索引：") : null;
@@ -2061,6 +2114,10 @@ function setupChat() {
       closeChatCitation();
       return;
     }
+    if (event.data?.type === "knowweave:chat-feedback") {
+      handleChatFeedback(event.data);
+      return;
+    }
     if (event.data?.type !== "knowweave:open-citation" || typeof event.data.path !== "string") return;
     const citation = /^\/([\w-]{1,100})\/([\w-]{1,100})(?:\/([\w-]{1,100}))?$/.exec(event.data.path);
     if (citation) void openChatCitation(citation[1], citation[2], citation[3]);
@@ -2069,11 +2126,75 @@ function setupChat() {
     resetNativeChat();
     return loadChat();
   });
+  $("#chat-feedback-submit").addEventListener("click", () => {
+    const draft = chatFeedbackDraft;
+    chatFeedbackDraft = null;
+    const comment = $("#chat-feedback-comment").value.trim();
+    $("#chat-feedback-dialog").close();
+    if (draft) void recordChatFeedback(draft, comment);
+  });
+  // 取消/关闭对话框：通知原生界面清除按钮的等待状态，不记录。
+  $("#chat-feedback-dialog").addEventListener("close", () => {
+    if (chatFeedbackDraft) {
+      ackChatFeedback(chatFeedbackDraft.messageId, false, chatFeedbackDraft.value);
+      chatFeedbackDraft = null;
+    }
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && nativeChat.url) {
       nativeChat.graceUntil = Date.now() + NATIVE_CHAT_RESUME_MS;
     }
   });
+}
+
+/* ============ 原生对话反馈（接管 DSH 评价按钮，只记录在本系统） ============ */
+let chatFeedbackDraft = null;
+
+function ackChatFeedback(messageId, ok, value) {
+  const frame = $("#native-chat-frame");
+  if (!frame?.contentWindow || !frame.src) return;
+  frame.contentWindow.postMessage(
+    { type: "knowweave:chat-feedback-ack", messageId, ok, value },
+    new URL(frame.src, location.href).origin,
+  );
+}
+
+async function recordChatFeedback(draft, comment) {
+  try {
+    await api("/chat-feedback", {
+      method: "POST",
+      body: {
+        session_id: draft.sessionId,
+        message_id: draft.messageId,
+        value: draft.value,
+        comment: comment || undefined,
+        context: draft.context || undefined,
+      },
+    });
+    ackChatFeedback(draft.messageId, true, draft.value);
+    toast("感谢你的反馈，已记录到本系统");
+  } catch (error) {
+    ackChatFeedback(draft.messageId, false, draft.value);
+    toast(error.message);
+  }
+}
+
+function handleChatFeedback(data) {
+  const sessionId = typeof data.sessionId === "string" ? data.sessionId : "";
+  const messageId = typeof data.messageId === "string" ? data.messageId : "";
+  const value = data.value === 1 ? 1 : data.value === -1 ? -1 : 0;
+  if (!sessionId || !messageId || !value) return;
+  const draft = {
+    sessionId, messageId, value,
+    context: typeof data.context === "string" ? data.context : "",
+  };
+  if (value === 1) {
+    void recordChatFeedback(draft, "");
+    return;
+  }
+  chatFeedbackDraft = draft;
+  $("#chat-feedback-comment").value = "";
+  $("#chat-feedback-dialog").showModal();
 }
 
 /* ============ Tour ============ */
@@ -2357,6 +2478,8 @@ async function runAsk(retryPayload = null) {
     renderAsk(result, question);
     input.value = "";
     resizeAskInput();
+    // 提问后回到最近视图：若刚在归档会话里提问，它已自动恢复。
+    state.showArchivedConversations = false;
     loadConversations();
     loadDashboard();
   } catch (error) {
@@ -2591,7 +2714,8 @@ async function loadAsk() {
 
 async function loadConversations() {
   try {
-    const data = await api("/conversations?limit=8");
+    const suffix = state.showArchivedConversations ? "&archived=1" : "";
+    const data = await api(`/conversations?limit=8${suffix}`);
     state.conversations = data.items;
     renderRecentState();
   } catch (_) { /* ignore */ }
@@ -2600,20 +2724,28 @@ async function loadConversations() {
 function renderRecentState() {
   const target = $("#conversation-list");
   if (!target) return;
+  const archivedView = state.showArchivedConversations;
   const items = state.conversations.slice(0, 8);
-  if (!items.length) {
+  if (!items.length && !archivedView) {
     target.hidden = true;
     target.innerHTML = "";
     return;
   }
   target.hidden = false;
-  target.innerHTML = `<span class="recent-label">最近</span>` + items.map((conversation) => `
-    <button class="recent-item ${conversation.id === state.conversationId ? "active" : ""}" type="button" data-conversation="${esc(conversation.id)}" title="${esc(conversation.title || "未命名会话")}">
+  const rows = items.map((conversation) => `
+    <button class="recent-item ${conversation.id === state.conversationId ? "active" : ""} ${archivedView ? "archived" : ""}" type="button" data-conversation="${esc(conversation.id)}" title="${esc(conversation.title || "未命名会话")}${archivedView ? "（已归档，继续提问会自动恢复）" : ""}">
       <span class="recent-title">${esc(conversation.title || "未命名会话")}</span>
-      <span class="recent-time">${chatWhen(conversation.created_at)}</span>
+      <span class="recent-time">${chatWhen(conversation.last_activity_at || conversation.created_at)}</span>
     </button>`).join("");
+  const toggle = `<button class="recent-toggle" type="button" data-archive-toggle title="${archivedView ? "返回最近会话" : "查看已归档会话"}">${archivedView ? "最近" : "已归档"}</button>`;
+  target.innerHTML = `<span class="recent-label">${archivedView ? "已归档" : "最近"}</span>` +
+    (rows || `<span class="recent-empty">暂无归档会话</span>`) + toggle;
   $$("#conversation-list [data-conversation]").forEach((row) => {
     row.addEventListener("click", () => continueConversation(row.dataset.conversation));
+  });
+  $("#conversation-list [data-archive-toggle]")?.addEventListener("click", () => {
+    state.showArchivedConversations = !state.showArchivedConversations;
+    loadConversations();
   });
 }
 
@@ -2651,9 +2783,96 @@ function nodeTypeLabel(type) {
   return NODE_TYPE_LABEL[type] || type || "实体";
 }
 
-function setEntitySub() {
-  const nodes = state.graph?.nodes?.length ?? state.entities.length;
-  const edges = state.graph?.edges?.length;
+/* 标题里的计数按画布上实际出现的实体和关系算，别把被折叠的也算进去 */
+function setEntitySub(drawnNodes, drawnEdges, hiddenNodes) {
+  const count = $("#graph-count");
+  if (!count) return;
+  if (!drawnNodes) {
+    count.textContent = "";
+    return;
+  }
+  const folded = hiddenNodes > 0 ? `（还有 ${num(hiddenNodes)} 个未显示）` : "";
+  count.textContent = `${num(drawnNodes)} 个实体 · ${num(drawnEdges)} 条关系${folded}`;
+}
+
+/* 实体列表与关系图谱两档布局：默认实体列表为主、图谱缩成小图；展开图谱时列表默认收起，只留图谱与描述 */
+function applyEntityViewUI(view) {
+  const layout = $("#entities-layout");
+  if (layout) {
+    layout.dataset.view = view;
+    layout.dataset.rail = state.entityRail ? "shown" : "hidden";
+  }
+  const railToggle = $("#entity-rail-toggle");
+  if (railToggle) {
+    railToggle.setAttribute("aria-pressed", state.entityRail ? "true" : "false");
+    railToggle.title = state.entityRail ? "收起实体列表，把空间留给图谱" : "展开实体列表，在图谱旁浏览实体";
+  }
+  const toggle = $("#graph-toggle");
+  if (!toggle) return;
+  const expanded = view === "graph";
+  toggle.setAttribute("aria-pressed", expanded ? "true" : "false");
+  toggle.title = expanded ? "收起图谱，回到实体列表" : "展开关系图谱";
+  const label = toggle.querySelector("span");
+  if (label) label.textContent = expanded ? "收起图谱" : "查看关系图谱";
+}
+
+function setEntityView(view) {
+  const next = view === "graph" ? "graph" : "entity";
+  state.entityView = next;
+  localStorage.setItem("kw_entity_view", next);
+  applyEntityViewUI(next);
+  // 缩略图只看一跳，展开后取两跳：重新取一次数据，再按新画布重绘
+  loadGraph();
+}
+
+function setupEntityView() {
+  applyEntityViewUI(state.entityView);
+  $$("[data-graph-scope]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setGraphScope(button.dataset.graphScope);
+      if (state.graphScope === "overview" && state.entityView !== "graph") setEntityView("graph");
+      else loadGraph();
+    });
+  });
+  const size = $("#graph-overview-size");
+  size.addEventListener("click", () => {
+    state.graphOverviewZoom = !state.graphOverviewZoom;
+    size.setAttribute("aria-pressed", String(state.graphOverviewZoom));
+    size.textContent = state.graphOverviewZoom ? "适应画布" : "放大节点";
+    drawGraph();
+  });
+  const toggle = $("#graph-toggle");
+  if (toggle) {
+    toggle.addEventListener("click", () => setEntityView(state.entityView === "graph" ? "entity" : "graph"));
+  }
+  const railToggle = $("#entity-rail-toggle");
+  if (railToggle) {
+    railToggle.addEventListener("click", () => {
+      state.entityRail = !state.entityRail;
+      localStorage.setItem("kw_entity_rail", state.entityRail ? "shown" : "hidden");
+      applyEntityViewUI(state.entityView);
+      drawGraph();
+    });
+  }
+  // 缩略图状态下点击图谱空白处直接展开
+  const canvas = $("#graph-canvas");
+  if (canvas) {
+    canvas.addEventListener("click", (event) => {
+      if (state.entityView !== "entity") return;
+      // 空白处或边标签上都可以展开：标签现在可悬停（为了看完整原文），不再穿透到画布
+      const onTag = Boolean(event.target && event.target.closest && event.target.closest(".g-edge-tag"));
+      if (event.target !== canvas && !onTag) return;
+      setEntityView("graph");
+    });
+  }
+}
+
+function setGraphScope(scope) {
+  state.graphScope = scope;
+  $("#graph-overview-size").hidden = scope !== "overview";
+  $$("[data-graph-scope]").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.graphScope === scope));
+  });
 }
 
 /* ============ Entities ============ */
@@ -2662,7 +2881,6 @@ async function loadEntities(q = "") {
     const data = await api(`/entities?limit=80${q ? `&q=${encodeURIComponent(q)}` : ""}`);
     const items = [...data.items].sort((a, b) => (b.facts || 0) - (a.facts || 0) || a.name.localeCompare(b.name, "zh"));
     state.entities = items;
-    setEntitySub();
     const target = $("#entity-list");
     $("#entity-count").textContent = `${num(items.length)} 个`;
     if (!items.length) {
@@ -2672,13 +2890,14 @@ async function loadEntities(q = "") {
     target.innerHTML = items.map((entity) => `
       <button class="row ${state.activeEntity === entity.id ? "selected" : ""}" type="button" data-entity="${esc(entity.id)}">
         <span class="row-main">
-          <span class="row-title">${esc(entity.name)}</span>
+          <span class="row-title" title="${esc(entity.name)}">${esc(entity.name)}</span>
           <span class="row-sub">${esc(nodeTypeLabel(entity.type))} · ${num(entity.facts)} 条事实</span>
         </span>
       </button>`).join("");
     $$("#entity-list [data-entity]").forEach((row) => row.addEventListener("click", () => selectEntity(row.dataset.entity)));
     const hasActive = items.some((entity) => entity.id === state.activeEntity);
-    if (!hasActive && items[0]) selectEntity(items[0].id);
+    if (!hasActive && items[0] && state.graphScope === "local"
+        && (!state.activeEntity || q || state.graph.error)) selectEntity(items[0].id);
   } catch (error) {
     toast(error.message);
   }
@@ -2687,11 +2906,18 @@ async function loadEntities(q = "") {
 async function selectEntity(entityId) {
   state.activeEntity = entityId;
   $$("#entity-list [data-entity]").forEach((row) => row.classList.toggle("selected", row.dataset.entity === entityId));
-  drawGraph(entityId);
+  if (state.graphScope === "overview") {
+    $$("#graph-canvas .g-overview-node").forEach((node) => {
+      node.classList.toggle("selected", node.dataset.entity === entityId);
+    });
+  } else {
+    loadGraph();
+  }
   const target = $("#entity-detail");
   target.innerHTML = loadingLines();
   try {
     const data = await api(`/entities/${entityId}`);
+    if (state.activeEntity !== entityId) return;
     const entity = data.entity;
     const facts = data.facts || [];
     const documents = data.documents || [];
@@ -2705,8 +2931,13 @@ async function selectEntity(entityId) {
         ${entity.description ? `<p class="entity-desc">${esc(plain(entity.description))}</p>` : ""}
 
         <div class="entity-section">
-          <div class="entity-section-head"><h3>事实</h3><span>${num(facts.length)} 条</span></div>
-          ${facts.length ? `<div class="entity-facts">${facts.map(entityFactHtml).join("")}</div>` : `<div class="rail-empty">暂无事实</div>`}
+          <div class="entity-section-head"><h3>关系</h3><span>${num(facts.filter((fact) => fact.object_id).length)} 条</span></div>
+          ${facts.some((fact) => fact.object_id) ? entityFactGroups(facts.filter((fact) => fact.object_id), entity) : `<div class="rail-empty">暂无实体间关系</div>`}
+        </div>
+
+        <div class="entity-section">
+          <div class="entity-section-head"><h3>属性</h3><span>${num(facts.filter((fact) => !fact.object_id).length)} 条</span></div>
+          ${facts.some((fact) => !fact.object_id) ? entityFactGroups(facts.filter((fact) => !fact.object_id), entity) : `<div class="rail-empty">暂无属性</div>`}
         </div>
 
         <div class="entity-section">
@@ -2736,7 +2967,7 @@ async function selectEntity(entityId) {
       );
     }
   } catch (error) {
-    target.innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
+    if (state.activeEntity === entityId) target.innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
   }
 }
 
@@ -2795,8 +3026,8 @@ async function saveEntity(form) {
     toast("实体已更新");
     state.activeEntity = entityId;
     await loadEntities($("#entity-search").value.trim());
-    await loadGraph();
     await selectEntity(entityId);
+    if (state.graphScope === "overview") await loadGraph();
   } catch (error) {
     hint.hidden = false;
     hint.textContent = error.message;
@@ -2832,9 +3063,9 @@ async function confirmEntityDelete(button) {
     if (result.reviews_closed) details.push(`关闭 ${num(result.reviews_closed)} 个待审项`);
     toast(details.join(" · "));
     $("#entity-detail").innerHTML = `<div class="empty-block">选择实体</div>`;
-    drawGraph(null);
+    state.graph = { focus: null, hops: 0, nodes: [], edges: [], hidden: { nodes: 0, edges: 0 } };
+    renderGraph();
     await loadEntities($("#entity-search").value.trim());
-    await loadGraph();
   } catch (error) {
     toast(error.message);
   } finally {
@@ -2842,15 +3073,36 @@ async function confirmEntityDelete(button) {
   }
 }
 
-function entityFactHtml(fact) {
+/* 事实按关系类型分组：组头是归一后的关系类型，条目里保留原文谓语 */
+function entityFactGroups(facts, entity) {
+  const groups = new Map();
+  facts.forEach((fact) => {
+    const label = fact.relation?.label || "其它";
+    const list = groups.get(label) || [];
+    list.push(fact);
+    groups.set(label, list);
+  });
+  return [...groups.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0], "zh"))
+    .map(([label, list]) => `<div class="fact-group">
+      <div class="fact-group-head"><span>${esc(label)}</span><span>${num(list.length)}</span></div>
+      ${list.map((fact) => entityFactHtml(fact, entity)).join("")}
+    </div>`).join("");
+}
+
+function entityFactHtml(fact, entity) {
   const object = fact.object || fact.object_literal || "";
+  const inbound = Boolean(fact.object_id) && fact.subject_id !== entity.id;
   const status = fact.status && fact.status !== "active" ? factPill(fact.status) : "";
   const date = fact.valid_from
     ? `${dayOnly(fact.valid_from)} → ${fact.valid_to ? dayOnly(fact.valid_to) : "至今"}`
     : (fact.recorded_at ? `记录于 ${dayOnly(fact.recorded_at)}` : "");
-  const quote = fact.evidence?.[0]?.quote ? `<div class="fact-quote">${esc(plain(fact.evidence[0].quote))}</div>` : "";
+  const quote = fact.evidence?.[0]?.quote
+    ? `<div class="fact-quote" title="${esc(plain(fact.evidence[0].quote))}">${esc(plain(fact.evidence[0].quote))}</div>`
+    : "";
   return `<div class="entity-fact">
     <div class="fact-triple">
+      ${inbound ? `<span class="fact-src">${esc(fact.subject)} →</span>` : ""}
       <span class="fact-pred">${esc(fact.predicate)}</span>
       ${object ? `<span class="fact-arrow">→</span><span class="fact-obj">${esc(object)}</span>` : ""}
     </div>
@@ -2863,304 +3115,824 @@ function entityFactHtml(fact) {
   </div>`;
 }
 
+let graphRequest = 0;
+
+/* 取当前焦点的邻域：缩略图看一跳，展开看两跳；只认实体关系，字面值走属性条 */
 async function loadGraph() {
+  const focusId = state.activeEntity;
+  const overview = state.graphScope === "overview";
+  const token = ++graphRequest;
+  if (!overview && !focusId) {
+    if (state.entities[0]) return selectEntity(state.entities[0].id);
+    state.graph = { focus: null, hops: 0, nodes: [], edges: [], hidden: { nodes: 0, edges: 0 } };
+    renderGraph();
+    return;
+  }
+  const hops = state.entityView === "graph" ? 2 : 1;
+  if (state.graph.overview !== overview || (!overview && state.graph.focus !== focusId)) {
+    state.graph = { overview, nodes: [], edges: [], loading: true };
+    renderGraph();
+  }
   try {
-    const data = await api("/graph?limit=80");
-    state.graph = data;
-    setEntitySub();
-    drawGraph(state.activeEntity);
+    const data = await api(overview ? "/graph?scope=overview" : `/graph?focus=${encodeURIComponent(focusId)}&hops=${hops}&limit=80`);
+    if (token !== graphRequest) return;   // 只渲染最新一次请求，避免快速切换实体时串图
+    state.graph = { ...data, overview };
+    renderGraph();
   } catch (error) {
+    if (token !== graphRequest) return;
+    if (state.graph.loading) {
+      state.graph = { overview, nodes: [], edges: [], error: error.message };
+      renderGraph();
+    }
     toast(error.message);
   }
 }
 
+
+/* ============ 关系图谱 ============ */
+/*
+ * 阅读约定（与图例一致）：
+ *   节点 = 有身份的实体；字面值不占节点，作为主语「属性」挂在节点上（图下方的属性条）。
+ *   半径 = 跳数：焦点在中心，内环是一跳直接关系，外环是二跳中介实体。
+ *   连线 = 一条事实，箭头由主语指向宾语；线旁标出原文谓语（“筛查和发现”），
+ *   不是归一后的类别名（“举措”）；类别只在悬停提示里说明，避免把动词读丢。
+ *   位置不是装饰：同一关系类型的邻居相邻排列，肉眼能看出「这一类关系」。
+ */
+const GRAPH_NS = "http://www.w3.org/2000/svg";
+
 function graphTextLabel(text, limit) {
-  const chars = Array.from(text || "");
+  const chars = Array.from(String(text || ""));
   return chars.length > limit ? `${chars.slice(0, limit - 1).join("")}…` : chars.join("");
 }
 
-function graphTextWidth(text) {
-  return Array.from(text || "").reduce((width, ch) => width + (/[\u3000-\u9fff\uff00-\uffef]/.test(ch) ? 11.2 : 6.4), 0);
+/* 中文按 1.02 个字宽、西文按 0.58 估算，用来排标签框和避让 */
+function graphTextWidth(text, size = 11) {
+  return Array.from(String(text || "")).reduce(
+    (width, ch) => width + (/[\u3000-\u9fff\uff00-\uffef]/.test(ch) ? size * 1.02 : size * 0.58),
+    0,
+  );
 }
 
-function splitGraph(nodes, edges) {
-  const byId = new Map(nodes.map((node) => [node.id, node]));
-  const adjacency = new Map(nodes.map((node) => [node.id, []]));
+/* 边与属性的标签：原文谓语优先，读者要看到“筛查和发现”这种动作，而不是“举措”这种归类 */
+function graphRelationLabel(item) {
+  const predicate = String((item && (item.predicate || item.label)) || "").trim();
+  if (predicate) return predicate;
+  return String((item && item.relation && item.relation.label) || "关系");
+}
+
+/* 关系类型短名（举措、目标值……）：只用于分组与悬停提示，不再直接当边标签 */
+function graphRelationType(item) {
+  const relation = item && item.relation;
+  const label = relation && relation.label;
+  return String(label || "其它");
+}
+
+function graphNodeRadius(node, compact, focusId) {
+  if (node.id === focusId) return compact ? 15 : 22;
+  const base = compact ? 6.5 : 9;
+  return base + Math.min(compact ? 3 : 6, (node.degree || 0) * (compact ? 1.2 : 1.5));
+}
+
+/* 同一对实体、同一关系类型、同一状态的重复事实合并成一条线，标上 ×N，避免图上一排一模一样的弧线 */
+function graphMergeEdges(edges) {
+  const merged = [];
+  const byKey = new Map();
   edges.forEach((edge) => {
-    (adjacency.get(edge.source) || []).push(edge.target);
-    (adjacency.get(edge.target) || []).push(edge.source);
-  });
-  const seen = new Set();
-  const components = [];
-  nodes.forEach((node) => {
-    if (seen.has(node.id)) return;
-    const stack = [node.id];
-    const ids = [];
-    seen.add(node.id);
-    while (stack.length) {
-      const id = stack.pop();
-      ids.push(id);
-      (adjacency.get(id) || []).forEach((other) => {
-        if (!seen.has(other)) {
-          seen.add(other);
-          stack.push(other);
-        }
-      });
+    const key = `${edge.source}|${edge.target}|${edge.relation?.key ?? edge.predicate}|${edge.status}`;
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.count += 1;
+      existing.predicates.push(edge.predicate);
+      return;
     }
-    const idSet = new Set(ids);
-    components.push({
-      nodes: ids.map((id) => byId.get(id)),
-      edges: edges.filter((edge) => idSet.has(edge.source) && idSet.has(edge.target)),
-    });
+    const copy = { ...edge, count: 1, predicates: [edge.predicate] };
+    byKey.set(key, copy);
+    merged.push(copy);
   });
-  return components.sort((a, b) => b.nodes.length - a.nodes.length || a.nodes[0].name.localeCompare(b.nodes[0].name, "zh"));
+  return merged;
 }
 
-function localComponent(component, radiusOf, compact, spread = 1) {
-  const degree = new Map(component.nodes.map((node) => [node.id, 0]));
-  component.edges.forEach((edge) => {
-    degree.set(edge.source, (degree.get(edge.source) || 0) + 1);
-    degree.set(edge.target, (degree.get(edge.target) || 0) + 1);
-  });
-  const hub = component.nodes.reduce((best, node) => (degree.get(node.id) > degree.get(best.id) ? node : best), component.nodes[0]);
-  const positions = new Map([[hub.id, { x: 0, y: 0 }]]);
-  const others = component.nodes.filter((node) => node.id !== hub.id);
-  const radius = (compact ? 34 : 48) * spread;
-  if (others.length === 1) {
-    positions.set(others[0].id, { x: radius, y: 0 });
-  } else {
-    const step = (Math.PI * 2) / Math.max(1, others.length);
-    others.forEach((node, index) => {
-      const angle = -Math.PI / 2 + index * step;
-      positions.set(node.id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
-    });
-  }
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minY = Infinity;
-  let maxY = -Infinity;
-  component.nodes.forEach((node) => {
-    const point = positions.get(node.id);
-    const nodeRadius = radiusOf(node);
-    minX = Math.min(minX, point.x - nodeRadius);
-    maxX = Math.max(maxX, point.x + nodeRadius);
-    minY = Math.min(minY, point.y - nodeRadius);
-    maxY = Math.max(maxY, point.y + nodeRadius);
-  });
-  return { positions, minX, maxX, minY, maxY };
+function graphEl(tag, className) {
+  const el = document.createElementNS(GRAPH_NS, tag);
+  if (className) el.setAttribute("class", className);
+  return el;
 }
 
-function graphLayout(nodes, edges, width, height, radiusOf, centerId, compact, gridMode, spread = 1) {
-  const components = splitGraph(nodes, edges);
-  const selected = components.find((component) => component.nodes.some((node) => node.id === centerId)) || components[0];
-  const rest = components.filter((component) => component !== selected);
-  const layouts = new Map(components.map((component) => [component, localComponent(component, radiusOf, compact, spread)]));
-  const centers = new Map();
-  if (gridMode) {
-    const ordered = [selected, ...rest];
-    const cols = 2;
-    const rows = Math.max(1, Math.ceil(ordered.length / cols));
-    const cellW = width / cols;
-    const cellH = height / rows;
-    ordered.forEach((component, index) => {
-      centers.set(component, {
-        x: cellW * ((index % cols) + 0.5),
-        y: cellH * (Math.floor(index / cols) + 0.5),
-      });
+/* 圆角标签框与已有内容的相交检测，用于把标签挤到不遮挡的位置 */
+function graphLabelBox(x, y, width, anchor) {
+  if (anchor === "start") return { x1: x - 5, x2: x + width + 5, y1: y - 11, y2: y + 4 };
+  if (anchor === "end") return { x1: x - width - 5, x2: x + 5, y1: y - 11, y2: y + 4 };
+  return { x1: x - width / 2 - 5, x2: x + width / 2 + 5, y1: y - 11, y2: y + 4 };
+}
+
+function graphBoxOverlaps(a, b) {
+  return a.x2 > b.x1 && a.x1 < b.x2 && a.y2 > b.y1 && a.y1 < b.y2;
+}
+
+function graphBoxHitsCircle(box, circle) {
+  const cx = Math.max(box.x1, Math.min(box.x2, circle.x));
+  const cy = Math.max(box.y1, Math.min(box.y2, circle.y));
+  return (circle.x - cx) ** 2 + (circle.y - cy) ** 2 < circle.r ** 2;
+}
+
+/* 标签一律画出来：越界就夹进画布，重叠就挑代价最小的候选位置，不再整块丢弃 */
+function graphPlaceLabel(text, size, candidates, blockers, placed) {
+  const width = graphTextWidth(text, size);
+  let best = null;
+  let bestScore = Infinity;
+  candidates.forEach((candidate, index) => {
+    const anchor = candidate.anchor || "middle";
+    const box = graphLabelBox(candidate.x, candidate.y, width, anchor);
+    let score = index * 0.4;
+    blockers.forEach((circle) => {
+      if (graphBoxHitsCircle(box, circle)) score += 5;
     });
-  } else {
-    centers.set(selected, { x: width / 2, y: height / 2 });
-    const radiusX = Math.max(70, width / 2 - 108);
-    const radiusY = Math.max(60, height / 2 - 100);
-    rest.forEach((component, index) => {
-      const angle = -Math.PI / 2 + (index * Math.PI * 2) / Math.max(1, rest.length);
-      centers.set(component, {
-        x: width / 2 + Math.cos(angle) * radiusX,
-        y: height / 2 + Math.sin(angle) * radiusY,
-      });
+    placed.forEach((other) => {
+      if (graphBoxOverlaps(box, other)) score += 7;
+    });
+    if (score < bestScore) {
+      bestScore = score;
+      best = { x: candidate.x, y: candidate.y, anchor, box };
+    }
+  });
+  placed.push(best.box);
+  return { ...best, width, size };
+}
+
+/* 把锚点方向调到不会把文本顶出画布的一侧 */
+function graphClampCandidate(candidate, textWidth, width, height) {
+  const copy = { x: candidate.x, y: Math.min(Math.max(candidate.y, 14), height - 8), anchor: candidate.anchor || "middle" };
+  // 只把坐标夹回画布，不翻转锚点：翻转会把文字压到节点自己身上
+  if (copy.anchor === "start") copy.x = Math.min(copy.x, width - textWidth - 8);
+  if (copy.anchor === "end") copy.x = Math.max(copy.x, textWidth + 8);
+  if (copy.anchor === "middle") copy.x = Math.min(Math.max(copy.x, textWidth / 2 + 8), width - textWidth / 2 - 8);
+  return copy;
+}
+
+/**
+ * 焦点辐射布局：按 BFS 跳数分环，内环按关系类型分组排布，外环挂在父节点的角度上。
+ * 关系只有两种端点在同一环时（兄弟之间）才弯曲线条，避免从中心横穿。
+ */
+function graphFocusLayout(nodes, edges, width, height, radiusOf, focusId, compact) {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const focus = byId.get(focusId) || nodes[0];
+  const center = { x: width / 2, y: height / 2 };
+  const adjacency = new Map(nodes.map((node) => [node.id, []]));
+  const focusEdge = new Map();
+  edges.forEach((edge) => {
+    if (!edge.target || !adjacency.has(edge.source) || !adjacency.has(edge.target)) return;
+    adjacency.get(edge.source).push(edge.target);
+    adjacency.get(edge.target).push(edge.source);
+    if (edge.source !== focus.id && edge.target !== focus.id) return;
+    const other = edge.source === focus.id ? edge.target : edge.source;
+    const current = focusEdge.get(other);
+    if (!current || (edge.confidence || 0) > (current.confidence || 0)) focusEdge.set(other, edge);
+  });
+
+  const hop = new Map([[focus.id, 0]]);
+  const parent = new Map();
+  const queue = [focus.id];
+  while (queue.length) {
+    const id = queue.shift();
+    (adjacency.get(id) || []).forEach((other) => {
+      if (hop.has(other)) return;
+      hop.set(other, (hop.get(id) || 0) + 1);
+      parent.set(other, id);
+      queue.push(other);
     });
   }
+  const hopOf = (id) => hop.get(id) ?? Infinity;
+
+  const relationKey = (id) => {
+    const edge = focusEdge.get(id);
+    return edge ? graphRelationType(edge) : "～";
+  };
+  const neighbours = nodes
+    .filter((node) => node.id !== focus.id && hopOf(node.id) === 1)
+    .sort((a, b) => relationKey(a.id).localeCompare(relationKey(b.id), "zh")
+      || (b.degree || 0) - (a.degree || 0)
+      || a.name.localeCompare(b.name, "zh"));
+  const farther = nodes
+    .filter((node) => node.id !== focus.id && hopOf(node.id) !== 1)
+    .sort((a, b) => hopOf(a.id) - hopOf(b.id)
+      || (b.degree || 0) - (a.degree || 0)
+      || a.name.localeCompare(b.name, "zh"));
+
+  const focusRadius = radiusOf(focus);
+  const maxRing = Math.max(40, Math.min(width, height) / 2 - (compact ? 18 : 42));
+  // 环是椭圆：横向留出更多字位，竖向受画布高度限制。半径仍编码跳数，只是两个半轴不同
+  const ringRadii = (radius) => ({
+    rx: compact ? Math.min(Math.max(46, width / 2 - 70), Math.max(radius, 40) * 2.1) : Math.min(width / 2 - 70, radius * 1.35),
+    ry: compact ? Math.max(26, Math.min(height / 2 - 34, Math.max(radius, 40) * 1.12)) : radius,
+  });
+  const perimeter = (radius) => {
+    const { rx, ry } = ringRadii(radius);
+    return Math.PI * (rx + ry);
+  };
+  const ringNeed = (list) => list.reduce((sum, node) => sum + radiusOf(node) * 2 + (compact ? 20 : 34), 0) / (Math.PI * 2);
+
+  let inner = neighbours;
+  const r1Floor = focusRadius + (compact ? 20 : 34);
+  // 环半径既要容得下所有邻居，也要把画布用起来：邻居很少时不要把图缩成中间一小团
+  const r1Comfortable = maxRing * 0.72;
+  const r1Ceiling = Math.max(r1Floor, maxRing * 0.8);
+  let r1 = r1Floor;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    r1 = Math.min(Math.max(ringNeed(inner), r1Floor, r1Comfortable), r1Ceiling);
+    const capacity = Math.max(1, Math.floor(perimeter(r1) / (compact ? 26 : 40)));
+    const allowed = compact ? Math.min(capacity, 3) : capacity;
+    if (inner.length <= allowed) break;
+    inner = inner.slice(0, allowed);
+  }
+
+  const angles = new Map();
+  // 邻居很少时横着摆，读起来像「中心 —关系→ 邻居」；多了才从正上方开始绕圈
+  const angleAt = (index, count) => {
+    if (count === 1) return 0;
+    if (count === 2) return index === 0 ? 0 : Math.PI;
+    return -Math.PI / 2 + (Math.PI * 2 * index) / count;
+  };
+  inner.forEach((node, index) => {
+    angles.set(node.id, angleAt(index, inner.length));
+  });
+
+  const childrenByParent = new Map();
+  farther.forEach((node) => {
+    const owner = parent.get(node.id) || focus.id;
+    const list = childrenByParent.get(owner) || [];
+    list.push(node);
+    childrenByParent.set(owner, list);
+  });
+  const outer = [];
+  childrenByParent.forEach((children, owner) => {
+    const base = angles.get(owner) ?? -Math.PI / 4;
+    const shown = compact ? [] : children.slice(0, 6);
+    shown.forEach((node, index) => {
+      const spread = Math.min(0.42, 1.5 / (shown.length + 1));
+      angles.set(node.id, base + (index - (shown.length - 1) / 2) * spread);
+      outer.push(node);
+    });
+  });
+
+  const r2 = Math.max(r1 + 34, Math.min(maxRing, r1 * 1.6));
+  const innerRing = ringRadii(r1);
+  const outerRing = ringRadii(r2);
   const points = new Map();
-  components.forEach((component) => {
-    const layout = layouts.get(component);
-    const center = centers.get(component);
-    const offsetX = center.x - (layout.minX + layout.maxX) / 2;
-    const offsetY = center.y - (layout.minY + layout.maxY) / 2;
-    component.nodes.forEach((node) => {
-      const point = layout.positions.get(node.id);
-      points.set(node.id, { id: node.id, node, x: point.x + offsetX, y: point.y + offsetY });
-    });
+  points.set(focus.id, { x: center.x, y: center.y, angle: 0, ring: 0 });
+  inner.forEach((node) => {
+    const angle = angles.get(node.id) ?? 0;
+    points.set(node.id, { x: center.x + Math.cos(angle) * innerRing.rx, y: center.y + Math.sin(angle) * innerRing.ry, angle, ring: 1 });
   });
-  return points;
+  outer.forEach((node) => {
+    const angle = angles.get(node.id) ?? 0;
+    points.set(node.id, { x: center.x + Math.cos(angle) * outerRing.rx, y: center.y + Math.sin(angle) * outerRing.ry, angle, ring: 2 });
+  });
+
+  return { focus, points, center, hidden: nodes.length - points.size };
 }
 
-function drawGraph(centerId) {
+function graphArrow(svg, tip, direction, variant) {
+  const length = 6.5;
+  const half = 3.4;
+  const baseX = tip.x - direction.x * length;
+  const baseY = tip.y - direction.y * length;
+  const perpendicularX = -direction.y * half;
+  const perpendicularY = direction.x * half;
+  const arrow = graphEl("path", `g-arrow${variant ? ` ${variant}` : ""}`);
+  arrow.setAttribute(
+    "d",
+    `M${tip.x.toFixed(1)},${tip.y.toFixed(1)} L${(baseX + perpendicularX).toFixed(1)},${(baseY + perpendicularY).toFixed(1)} L${(baseX - perpendicularX).toFixed(1)},${(baseY - perpendicularY).toFixed(1)} Z`,
+  );
+  svg.appendChild(arrow);
+}
+
+function renderGraphAttrs() {
+  const strip = $("#graph-attrs");
+  if (!strip) return;
+  const data = state.graph || {};
+  const focus = (data.nodes || []).find((node) => node.id === (data.focus || state.activeEntity));
+  const attrs = (focus && focus.attrs) || [];
+  const hasRelations = (data.edges || []).some((edge) => edge.target);
+  // 没有实体关系时属性已经画在画布上，不再重复一条属性条
+  if (data.overview || !attrs.length || !hasRelations) {
+    strip.hidden = true;
+    strip.innerHTML = "";
+    return;
+  }
+  const shown = attrs.slice(0, 3);
+  strip.hidden = false;
+  strip.innerHTML = `<span class="graph-attrs-label">属性</span>`
+    + shown.map((attr) => `<span class="graph-attr" title="${esc(`${graphRelationLabel(attr)}：${attr.value}`)}">`
+      + `<b>${esc(graphRelationLabel(attr))}</b>${esc(attr.value)}</span>`).join("")
+    + (attrs.length > shown.length ? `<span class="graph-attr more">还有 ${num(attrs.length - shown.length)} 条</span>` : "");
+}
+
+function renderGraph() {
+  // 先铺属性条，再按实际剩余高度画图，避免画布被属性条挤扁后拉伸变形
+  renderGraphAttrs();
+  drawGraph();
+}
+
+function layoutGraphOverview(nodes, edges, width, height) {
+  const neighbours = new Map(nodes.map(({ id }) => [id, new Set()]));
+  for (const { source, target } of edges) {
+    neighbours.get(source).add(target);
+    neighbours.get(target).add(source);
+  }
+  const ordered = [...nodes].sort((a, b) =>
+    neighbours.get(b.id).size - neighbours.get(a.id).size || b.degree - a.degree);
+  const seen = new Set();
+  const trees = [];
+  const isolated = [];
+  for (const { id } of ordered) {
+    if (seen.has(id)) continue;
+    if (!neighbours.get(id).size) {
+      isolated.push(id);
+      continue;
+    }
+    const root = { id, depth: 0, children: [], leaves: 1 };
+    const entries = [root];
+    seen.add(id);
+    for (const parent of entries) {
+      for (const next of neighbours.get(parent.id)) {
+        if (seen.has(next)) continue;
+        const child = { id: next, depth: parent.depth + 1, children: [], leaves: 1 };
+        seen.add(next);
+        parent.children.push(child);
+        entries.push(child);
+      }
+    }
+    // 每个分支的角度由它的叶节点数决定，避免不同分支互相穿过。
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const entry = entries[i];
+      if (entry.children.length) entry.leaves = entry.children.reduce((sum, child) => sum + child.leaves, 0);
+    }
+    trees.push({ root, depth: entries.at(-1).depth });
+  }
+
+  const [main, ...outer] = trees;
+  const turn = Math.PI * 2;
+  const points = new Map();
+  let seed = 37;
+  const random = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+  const project = (tree, heading, sweep, step) => {
+    const result = new Map();
+    const queue = [{ entry: tree.root, start: heading - sweep / 2, sweep, x: 0, y: 0 }];
+    for (const sector of queue) {
+      const { entry, x, y } = sector;
+      result.set(entry.id, { x, y });
+      let angle = sector.start;
+      for (const child of entry.children) {
+        const span = sector.sweep * child.leaves / entry.leaves;
+        const direction = angle + span * (0.28 + random() * 0.44);
+        const length = step * (0.72 + random() * 0.56);
+        queue.push({ entry: child, start: angle, sweep: span,
+          x: x + Math.cos(direction) * length, y: y + Math.sin(direction) * length });
+        angle += span;
+      }
+    }
+    return result;
+  };
+
+  const aspect = Math.max(0.75, Math.min(2.5, width / height));
+  const area = Math.max(65000, (nodes.length - isolated.length) * 7400 + isolated.length * 1550);
+  const halfWidth = Math.sqrt(area * aspect) / 2;
+  const halfHeight = Math.sqrt(area / aspect) / 2;
+  const occupied = [];
+  const put = (positions, dx, dy, box) => {
+    for (const [id, point] of positions) points.set(id, { x: point.x + dx, y: point.y + dy });
+    occupied.push({ x1: box.x1 + dx, x2: box.x2 + dx, y1: box.y1 + dy, y2: box.y2 + dy });
+  };
+  const bounds = (positions, horizontal, vertical) => {
+    const box = { x1: Infinity, x2: -Infinity, y1: Infinity, y2: -Infinity };
+    for (const { x, y } of positions.values()) {
+      box.x1 = Math.min(box.x1, x - horizontal);
+      box.x2 = Math.max(box.x2, x + horizontal);
+      box.y1 = Math.min(box.y1, y - vertical);
+      box.y2 = Math.max(box.y2, y + vertical);
+    }
+    return box;
+  };
+
+  if (main) {
+    const step = Math.max(122, main.root.leaves * 36 / turn);
+    const positions = project(main, -1.2, turn, step);
+    put(positions, 0, 0, bounds(positions, 44, 32));
+  }
+  // 给每组真实连线留出独立的空间。节点之间没有视觉边界。
+  for (const tree of outer.sort((a, b) => b.root.leaves - a.root.leaves || b.depth - a.depth)) {
+    const step = Math.max(54, tree.root.leaves * 12 / Math.PI);
+    const positions = project(tree, random() * turn, Math.PI * 1.3, step);
+    const box = bounds(positions, 20, 19);
+    let best;
+    for (let attempt = 0; !best; attempt += 1) {
+      const expansion = 1 + Math.floor(attempt / 96) * 0.25;
+      const x = (random() * 2 - 1) * halfWidth * expansion - (box.x1 + box.x2) / 2;
+      const y = (random() * 2 - 1) * halfHeight * expansion - (box.y1 + box.y2) / 2;
+      const candidate = { x1: x + box.x1, x2: x + box.x2, y1: y + box.y1, y2: y + box.y2 };
+      if (!occupied.some((other) => graphBoxOverlaps(candidate, other))) best = { x, y };
+    }
+    put(positions, best.x, best.y, box);
+  }
+  // 独立节点散布在连线之间的空白处。
+  const extent = bounds(points, 0, 0);
+  const scatterWidth = Math.max(halfWidth, -extent.x1, extent.x2);
+  const scatterHeight = Math.max(halfHeight, -extent.y1, extent.y2);
+  const dot = { x1: -12, x2: 12, y1: -12, y2: 12 };
+  for (const id of isolated) {
+    for (let attempt = 0; ; attempt += 1) {
+      const expansion = 1 + Math.floor(attempt / 96) * 0.2;
+      const x = (random() * 2 - 1) * scatterWidth * expansion;
+      const y = (random() * 2 - 1) * scatterHeight * expansion;
+      const candidate = { x1: x + dot.x1, x2: x + dot.x2, y1: y + dot.y1, y2: y + dot.y2 };
+      if (occupied.some((other) => graphBoxOverlaps(candidate, other))) continue;
+      put(new Map([[id, { x: 0, y: 0 }]]), x, y, dot);
+      break;
+    }
+  }
+  const final = bounds(points, 72, 34);
+  const canvasWidth = Math.max(-final.x1, final.x2) * 2;
+  const canvasHeight = Math.max(-final.y1, final.y2) * 2;
+  for (const point of points.values()) {
+    point.x += canvasWidth / 2;
+    point.y += canvasHeight / 2;
+  }
+  return { points, width: canvasWidth, height: canvasHeight, hub: main?.root.id, neighbours: neighbours.get(main?.root.id) };
+}
+
+function drawGraphOverview(svg, data, width, height) {
+  const { nodes, edges } = data;
+  const { points, width: canvasWidth, height: canvasHeight, hub, neighbours } = layoutGraphOverview(nodes, edges, width, height);
+  const zoom = state.graphOverviewZoom ? 1.45 : 1;
+  const scale = Math.min(width / canvasWidth, height / canvasHeight) * zoom;
+  const viewWidth = Math.max(canvasWidth, width / scale);
+  const viewHeight = Math.max(canvasHeight, height / scale);
+  if (state.graphOverviewZoom) {
+    svg.style.width = `${Math.ceil(viewWidth * scale)}px`;
+    svg.style.height = `${Math.ceil(viewHeight * scale)}px`;
+  }
+  svg.setAttribute("viewBox", `${(canvasWidth - viewWidth) / 2} ${(canvasHeight - viewHeight) / 2} ${viewWidth} ${viewHeight}`);
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const radiusOf = (node) => node.id === hub ? 15 : node.degree ? 5 + Math.min(node.degree, 4) : 3.5;
+  const pairs = new Map();
+  const incident = new Map(nodes.map((node) => [node.id, new Set()]));
+  edges.forEach((edge) => {
+    const key = JSON.stringify([edge.source, edge.target].sort());
+    if (!pairs.has(key)) pairs.set(key, []);
+    pairs.get(key).push(edge);
+  });
+  for (const pair of pairs.values()) {
+    pair.forEach((edge, index) => {
+      const a = points.get(edge.source);
+      const b = points.get(edge.target);
+      const source = nodeById.get(edge.source);
+      const target = nodeById.get(edge.target);
+      const ra = radiusOf(source);
+      const rb = radiusOf(target);
+      const variant = edge.status === "disputed" ? "disputed" : "strong";
+      const group = graphEl("g", `g-overview-edge${edge.source === hub || edge.target === hub ? " spoke" : ""}`);
+      group.setAttribute("data-fact-id", edge.id);
+      incident.get(edge.source).add(group);
+      incident.get(edge.target).add(group);
+      const path = graphEl("path", `g-link ${variant}`);
+      let end;
+      let tangent;
+      if (a === b) {
+        const loop = ra + 15 + index * 7;
+        const offset = ra * Math.SQRT1_2;
+        end = { x: a.x + offset, y: a.y - offset };
+        const control = { x: a.x + loop, y: a.y - loop };
+        path.setAttribute("d", `M${a.x - offset},${end.y} C${a.x - loop},${control.y} ${control.x},${control.y} ${end.x},${end.y}`);
+        tangent = { x: end.x - control.x, y: end.y - control.y };
+      } else {
+        const distance = Math.hypot(b.x - a.x, b.y - a.y);
+        const ux = (b.x - a.x) / distance;
+        const uy = (b.y - a.y) / distance;
+        const spacing = Math.min(18, distance / 2);
+        const bow = (index - (pair.length - 1) / 2) * spacing * (edge.source < edge.target ? 1 : -1);
+        const control = { x: (a.x + b.x) / 2 - uy * bow, y: (a.y + b.y) / 2 + ux * bow };
+        const startLength = Math.hypot(control.x - a.x, control.y - a.y);
+        const endLength = Math.hypot(b.x - control.x, b.y - control.y);
+        const start = { x: a.x + (control.x - a.x) * ra / startLength, y: a.y + (control.y - a.y) * ra / startLength };
+        end = { x: b.x - (b.x - control.x) * rb / endLength, y: b.y - (b.y - control.y) * rb / endLength };
+        path.setAttribute("d", `M${start.x},${start.y} Q${control.x},${control.y} ${end.x},${end.y}`);
+        tangent = { x: b.x - control.x, y: b.y - control.y };
+      }
+      const title = graphEl("title");
+      title.textContent = `${source.name} — ${graphRelationLabel(edge)} → ${target.name}`;
+      group.appendChild(title);
+      group.appendChild(path);
+      const length = Math.hypot(tangent.x, tangent.y);
+      graphArrow(group, end, { x: tangent.x / length, y: tangent.y / length }, variant);
+      svg.appendChild(group);
+    });
+  }
+  nodes.forEach((node) => {
+    const { x, y } = points.get(node.id);
+    const direct = neighbours?.has(node.id);
+    const group = graphEl("g", `g-node g-overview-node${node.degree ? " linked" : ""}${node.id === hub ? " hub" : direct ? " neighbour" : ""}${node.id === state.activeEntity ? " selected" : ""}${state.graphOverviewZoom ? " zoomed" : ""}`);
+    group.setAttribute("transform", `translate(${x},${y})`);
+    group.setAttribute("tabindex", "0");
+    group.setAttribute("role", "button");
+    group.setAttribute("data-entity", node.id);
+    group.setAttribute("aria-label", `查看 ${node.name} 的详情`);
+    const shape = graphEl("circle", "g-shape");
+    shape.setAttribute("r", String(radiusOf(node)));
+    const label = graphEl("text", "g-label");
+    label.setAttribute("text-anchor", "middle");
+    const above = direct && y < canvasHeight / 2;
+    label.setAttribute("y", String(above ? -radiusOf(node) - 6 : radiusOf(node) + 14));
+    label.textContent = graphTextLabel(node.name, node.id === hub ? 24 : direct ? 15 : 10);
+    const title = graphEl("title");
+    title.textContent = node.name;
+    group.appendChild(shape);
+    group.appendChild(label);
+    group.appendChild(title);
+    const highlight = (active) => {
+      for (const edge of incident.get(node.id)) {
+        if (active) edge.setAttribute("data-highlighted", "true");
+        else edge.removeAttribute("data-highlighted");
+      }
+    };
+    group.addEventListener("pointerenter", () => highlight(true));
+    group.addEventListener("pointerleave", () => highlight(false));
+    group.addEventListener("focus", () => highlight(true));
+    group.addEventListener("blur", () => highlight(false));
+    group.addEventListener("click", () => selectEntity(node.id));
+    group.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      selectEntity(node.id);
+    });
+    svg.appendChild(group);
+  });
+  setEntitySub(nodes.length, edges.length, 0);
+}
+
+function drawGraph() {
   const svg = $("#graph-canvas");
   if (!svg) return;
-  const legend = $("#graph-legend");
-  const allNodes = state.graph?.nodes || [];
-  const allEdges = state.graph?.edges || [];
-  const width = Math.max(300, Math.round(svg.clientWidth || 600));
-  const height = Math.max(220, Math.round(svg.clientHeight || 460));
-  const NS = "http://www.w3.org/2000/svg";
+  const data = state.graph || {};
+  $(".graph-stage").classList.toggle("graph-stage-overview", Boolean(data.overview));
+  svg.style.width = "";
+  svg.style.height = "";
+  const height = Math.max(200, Math.round(svg.clientHeight || 420));
+  const allNodes = data.nodes || [];
+  const allEdges = data.edges || [];
+  const width = Math.max(300, Math.round(svg.clientWidth || 620));
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.innerHTML = "";
+  const legend = $("#graph-legend");
   if (legend) legend.innerHTML = "";
+
   if (!allNodes.length) {
-    const text = document.createElementNS(NS, "text");
+    const text = graphEl("text", "g-empty");
     text.setAttribute("x", String(width / 2));
     text.setAttribute("y", String(height / 2));
     text.setAttribute("text-anchor", "middle");
-    text.setAttribute("fill", "var(--muted)");
-    text.setAttribute("font-size", "12");
-    text.textContent = "暂无实体关系";
+    text.textContent = data.loading ? "正在加载图谱…" : data.error || "暂无实体关系";
     svg.appendChild(text);
+    setEntitySub(null);
     return;
   }
 
-  let nodes = allNodes.slice(0, 40);
-  if (!nodes.some((node) => node.id === centerId)) {
-    const active = allNodes.find((node) => node.id === centerId);
-    if (active) nodes = [...nodes.slice(0, 39), active];
+  if (data.overview) {
+    drawGraphOverview(svg, data, width, height);
+    return;
   }
-  const nodeIds = new Set(nodes.map((node) => node.id));
-  const edges = allEdges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
-  const center = nodes.find((node) => node.id === centerId) || nodes[0];
-  const degree = new Map(nodes.map((node) => [node.id, 0]));
+
+  const compact = width < 430;
+  const nodeFont = compact ? 9.5 : 11;
+  const edgeFont = compact ? 9 : 10;
+  const focusId = data.focus || state.activeEntity || allNodes[0].id;
+  const nodeById = new Map(allNodes.map((node) => [node.id, node]));
+  const radiusOf = (node) => graphNodeRadius(node, compact, focusId);
+  const drawnEdges = allEdges.filter((edge) => edge.target && nodeById.has(edge.source) && nodeById.has(edge.target));
+  const layout = graphFocusLayout(allNodes, drawnEdges, width, height, radiusOf, focusId, compact);
+  const points = layout.points;
+  const drawnNodes = allNodes.filter((node) => points.has(node.id));
+  let edges = graphMergeEdges(drawnEdges.filter((edge) => points.has(edge.source) && points.has(edge.target)));
+  // 缩略图太小，同一对实体的正反两条关系合并成一条，标上 ⇄，避免两条弧线挤在一起
+  if (compact) {
+    const seenPairs = new Map();
+    edges = edges.filter((edge) => {
+      const key = [edge.source, edge.target].sort().join("|");
+      const first = seenPairs.get(key);
+      if (first) {
+        if (first.source !== edge.source) first.twin = true;
+        return false;
+      }
+      seenPairs.set(key, edge);
+      return true;
+    });
+  }
+
+  const nodeCircles = drawnNodes.map((node) => ({ x: points.get(node.id).x, y: points.get(node.id).y, r: radiusOf(node) + 2 }));
+
+  // 同一对实体之间存在多条关系（含正反两条）时，平行弯开，否则两条线完全重叠、箭头互相抵消
+  const pairCounts = new Map();
   edges.forEach((edge) => {
-    degree.set(edge.source, (degree.get(edge.source) || 0) + 1);
-    degree.set(edge.target, (degree.get(edge.target) || 0) + 1);
+    const key = [edge.source, edge.target].sort().join("|");
+    pairCounts.set(key, (pairCounts.get(key) || 0) + 1);
   });
-  const compact = width < 420;
-  const gridMode = width < 560;
-  // 画布越大，星形排布越舒展，避免小图悬浮在大片空白里
-  const spread = compact || gridMode ? 1 : Math.max(1, Math.min(1.8, Math.min(width, height) / 520));
-  const radiusOf = (node) => {
-    if (node.id === center.id) return compact ? 19 : 24;
-    return (compact ? 8 : 9) + Math.min(compact ? 6 : 8, (degree.get(node.id) || 0) * (compact ? 1.6 : 2));
-  };
-  const points = graphLayout(nodes, edges, width, height, radiusOf, center.id, compact, gridMode, spread);
+  const pairSeen = new Map();
 
-  const types = [...new Set(nodes.map((node) => node.type).filter(Boolean))];
-  if (legend) {
-    legend.innerHTML = types.map((type) => {
-      const typeClass = String(type).replace(/[^a-z]/gi, "").toLowerCase();
-      return `<span class="graph-legend-item"><i class="graph-mark ${typeClass}"></i>${esc(nodeTypeLabel(type))}</span>`;
-    }).join("");
+  // 焦点没有实体关系时，把字面值属性画成节点下方的属性卡：值不是节点，所以不连线、不带箭头
+  const focusNode = layout.focus;
+  const focusAttrs = (focusNode && focusNode.attrs) || [];
+  const attrChips = [];
+  if (!edges.length && focusAttrs.length) {
+    const chipFont = compact ? 9 : 10.5;
+    const rowHeight = compact ? 23 : 30;
+    const focusRadius = radiusOf(focusNode);
+    const top = layout.center.y + focusRadius + (compact ? 26 : 34);
+    const maxRows = Math.max(0, Math.floor((height - top - 14) / rowHeight));
+    const shown = focusAttrs.slice(0, Math.min(compact ? 3 : 5, maxRows));
+    shown.forEach((attr, index) => {
+      const full = `${graphRelationLabel(attr)} · ${attr.value}`;
+      const text = `${graphRelationLabel(attr)} · ${graphTextLabel(attr.value, compact ? 9 : 16)}`;
+      const chipWidth = Math.min(Math.max(84, graphTextWidth(text, chipFont) + 18), width - 24);
+      const x = Math.min(Math.max(layout.center.x - chipWidth / 2, 10), width - chipWidth - 10);
+      const y = top + index * rowHeight + rowHeight / 2;
+      attrChips.push({ text, title: full, x, y, width: chipWidth, height: rowHeight });
+    });
   }
 
-  svg.innerHTML = "";
-
+  // 先画线，再画标签，最后画节点：节点永远压在标签之上，不会被文字盖住
+  const placed = [];
+  attrChips.forEach((chip) => {
+    placed.push({ x1: chip.x, x2: chip.x + chip.width, y1: chip.y - chip.height / 2, y2: chip.y + chip.height / 2 });
+  });
   edges.forEach((edge) => {
     const a = points.get(edge.source);
     const b = points.get(edge.target);
-    if (!a || !b) return;
-    const source = nodes.find((node) => node.id === edge.source);
-    const target = nodes.find((node) => node.id === edge.target);
+    const ra = radiusOf(nodeById.get(edge.source));
+    const rb = radiusOf(nodeById.get(edge.target));
     const dx = b.x - a.x;
     const dy = b.y - a.y;
-    const distance = Math.sqrt(dx * dx + dy * dy) || 1;
-    if (distance < radiusOf(source) + radiusOf(target) + 6) return;
+    const distance = Math.hypot(dx, dy) || 1;
     const ux = dx / distance;
     const uy = dy / distance;
-    const incident = edge.source === center.id || edge.target === center.id;
-    const line = document.createElementNS(NS, "line");
-    line.setAttribute("x1", String(a.x + ux * (radiusOf(source) + 1)));
-    line.setAttribute("y1", String(a.y + uy * (radiusOf(source) + 1)));
-    line.setAttribute("x2", String(b.x - ux * (radiusOf(target) + 3)));
-    line.setAttribute("y2", String(b.y - uy * (radiusOf(target) + 3)));
-    line.setAttribute("class", `g-link${incident ? " strong" : ""}${edge.status === "disputed" ? " disputed" : ""}`);
-    const title = document.createElementNS(NS, "title");
-    title.textContent = `${source.name} — ${edge.label || "关系"} → ${target.name}`;
-    line.appendChild(title);
-    svg.appendChild(line);
-  });
-
-  const labelBoxes = [];
-  const nodeLabels = new Map();
-  const sortedNodes = [...nodes].sort((a, b) => {
-    if (a.id === center.id) return -1;
-    if (b.id === center.id) return 1;
-    return (degree.get(b.id) || 0) - (degree.get(a.id) || 0);
-  });
-  sortedNodes.forEach((node) => {
-    const point = points.get(node.id);
-    const limit = node.id === center.id ? (compact ? 8 : 10) : (compact ? 6 : 8);
-    const labelText = graphTextLabel(node.name, limit);
-    const labelWidth = graphTextWidth(labelText);
-    const radius = radiusOf(node);
-    const half = labelWidth / 2 + 2;
-    const belowY = point.y + radius + 15;
-    const aboveY = point.y - radius - 8;
-    const sideY = point.y + 4;
-    const candidates = [
-      { x: point.x, y: belowY, anchor: "middle", box: { x1: point.x - half, x2: point.x + half, y1: belowY - 10, y2: belowY + 4 } },
-      { x: point.x, y: aboveY, anchor: "middle", box: { x1: point.x - half, x2: point.x + half, y1: aboveY - 10, y2: aboveY + 4 } },
-      { x: point.x + radius + 7, y: sideY, anchor: "start", box: { x1: point.x + radius + 5, x2: point.x + radius + 7 + labelWidth, y1: sideY - 10, y2: sideY + 4 } },
-      { x: point.x - radius - 7, y: sideY, anchor: "end", box: { x1: point.x - radius - 7 - labelWidth, x2: point.x - radius - 5, y1: sideY - 10, y2: sideY + 4 } },
-      { x: point.x, y: belowY + 14, anchor: "middle", box: { x1: point.x - half, x2: point.x + half, y1: belowY + 4, y2: belowY + 18 } },
-      { x: point.x, y: aboveY - 14, anchor: "middle", box: { x1: point.x - half, x2: point.x + half, y1: aboveY - 24, y2: aboveY - 10 } },
-    ];
-    let label = null;
-    for (const candidate of candidates) {
-      if (candidate.box.x1 < 6 || candidate.box.x2 > width - 6 || candidate.box.y1 < 6 || candidate.box.y2 > height - 6) continue;
-      const hitsLabel = labelBoxes.some((other) => candidate.box.x2 > other.x1 && candidate.box.x1 < other.x2 && candidate.box.y2 > other.y1 && candidate.box.y1 < other.y2);
-      const hitsNode = nodes.some((other) => {
-        if (other.id === node.id) return false;
-        const otherPoint = points.get(other.id);
-        const otherRadius = radiusOf(other) + 2;
-        return candidate.box.x2 > otherPoint.x - otherRadius && candidate.box.x1 < otherPoint.x + otherRadius && candidate.box.y2 > otherPoint.y - otherRadius && candidate.box.y1 < otherPoint.y + otherRadius;
-      });
-      if (!hitsLabel && !hitsNode) {
-        label = candidate;
-        break;
+    const incident = edge.source === focusId || edge.target === focusId;
+    const chord = a.ring !== 0 && a.ring === b.ring;
+    const pairKey = [edge.source, edge.target].sort().join("|");
+    const twinIndex = pairSeen.get(pairKey) || 0;
+    pairSeen.set(pairKey, twinIndex + 1);
+    const twin = (pairCounts.get(pairKey) || 0) > 1;
+    const midX = (a.x + b.x) / 2;
+    const midY = (a.y + b.y) / 2;
+    let controlX = midX;
+    let controlY = midY;
+    if (twin || chord) {
+      const sign = twinIndex % 2 === 0 ? 1 : -1;
+      let px = -uy * sign;
+      let py = ux * sign;
+      if (!twin && px * (midX - layout.center.x) + py * (midY - layout.center.y) < 0) {
+        px = -px;
+        py = -py;
       }
+      const bow = twin ? Math.min(distance * 0.22, compact ? 18 : 34) : Math.min(distance * 0.26, compact ? 22 : 40);
+      controlX = midX + px * bow;
+      controlY = midY + py * bow;
     }
-    if (!label) {
-      if (node.id !== center.id) return;
-      label = candidates[0];
-    }
-    labelBoxes.push(label.box);
-    nodeLabels.set(node.id, { text: labelText, x: label.x, y: label.y, anchor: label.anchor });
+    const start = { x: a.x + ux * (ra + 1), y: a.y + uy * (ra + 1) };
+    const end = { x: b.x - ux * (rb + 4), y: b.y - uy * (rb + 4) };
+    const path = graphEl("path", `g-link${incident ? " strong" : ""}${edge.status === "disputed" ? " disputed" : ""}`);
+    path.setAttribute("d", `M${start.x.toFixed(1)},${start.y.toFixed(1)} Q${controlX.toFixed(1)},${controlY.toFixed(1)} ${end.x.toFixed(1)},${end.y.toFixed(1)}`);
+    const title = graphEl("title");
+    const sourceName = nodeById.get(edge.source).name;
+    const targetName = nodeById.get(edge.target).name;
+    const predicateText = (edge.predicates || [edge.predicate]).join(" / ");
+    const statusText = edge.status === "disputed" ? "存疑" : "有效";
+    const confidenceText = edge.confidence != null ? ` · 置信度 ${edge.confidence}` : "";
+    title.textContent = `${sourceName} — ${predicateText}${edge.value ? `（${edge.value}）` : ""} → ${targetName}`
+      + `\n关系类型：${graphRelationType(edge)} · ${statusText}${confidenceText}`;
+    path.appendChild(title);
+    svg.appendChild(path);
+
+    const arrowDirection = { x: end.x - controlX, y: end.y - controlY };
+    const arrowLength = Math.hypot(arrowDirection.x, arrowDirection.y) || 1;
+    graphArrow(
+      svg,
+      end,
+      { x: arrowDirection.x / arrowLength, y: arrowDirection.y / arrowLength },
+      edge.status === "disputed" ? "disputed" : incident ? "strong" : "",
+    );
+
+    // 关系标签：短边也要显示，绕着中点换几个位置，永不丢弃
+    const labelText = graphTextLabel(graphRelationLabel(edge), compact ? 6 : 8)
+      + (edge.count > 1 ? ` ×${edge.count}` : "")
+      + (edge.twin ? " ⇄" : "");
+    const textWidth = graphTextWidth(labelText, edgeFont);
+    const curveX = (start.x + 2 * controlX + end.x) / 4;
+    const curveY = (start.y + 2 * controlY + end.y) / 4;
+    const normalX = -uy;
+    const normalY = ux;
+    const candidates = [
+      { x: curveX + normalX * 9, y: curveY + normalY * 9, anchor: "middle" },
+      { x: curveX - normalX * 9, y: curveY - normalY * 9, anchor: "middle" },
+      { x: start.x + (end.x - start.x) * 0.36 + normalX * 9, y: start.y + (end.y - start.y) * 0.36 + normalY * 9, anchor: "middle" },
+      { x: start.x + (end.x - start.x) * 0.64 - normalX * 9, y: start.y + (end.y - start.y) * 0.64 - normalY * 9, anchor: "middle" },
+      { x: curveX + normalX * 16, y: curveY + normalY * 16, anchor: "middle" },
+    ].map((candidate) => graphClampCandidate(candidate, textWidth, width, height));
+    const label = graphPlaceLabel(labelText, edgeFont, candidates, nodeCircles, placed);
+    const group = graphEl("g", "g-edge-tag");
+    const background = graphEl("rect", "g-edge-bg");
+    background.setAttribute("x", String(label.box.x1));
+    background.setAttribute("y", String(label.box.y1));
+    background.setAttribute("width", String(label.box.x2 - label.box.x1));
+    background.setAttribute("height", String(label.box.y2 - label.box.y1));
+    background.setAttribute("rx", "3");
+    group.appendChild(background);
+    const text = graphEl("text", "g-edge-label");
+    text.setAttribute("x", String(label.x));
+    text.setAttribute("y", String(label.y));
+    text.setAttribute("text-anchor", label.anchor);
+    text.setAttribute("dominant-baseline", "middle");
+    text.textContent = labelText;
+    group.appendChild(text);
+    // 标签是缩略后的谓语，悬停看完整原文：主语 — 全部谓语 → 宾语
+    const tagTitle = graphEl("title");
+    tagTitle.textContent = `${sourceName} — ${predicateText}${edge.value ? `（${edge.value}）` : ""} → ${targetName}`
+      + `\n关系类型：${graphRelationType(edge)}`;
+    group.appendChild(tagTitle);
+    svg.appendChild(group);
   });
 
-  nodes.forEach((node) => {
+  // 节点标签：一律画出，先按「径向朝外」排，挤不下就换到上下方
+  drawnNodes.forEach((node) => {
+    const point = points.get(node.id);
+    const radius = radiusOf(node);
+    const limit = node.id === focusId ? (compact ? 8 : 14) : (compact ? 6 : 9);
+    const labelText = graphTextLabel(node.name, limit);
+    const textWidth = graphTextWidth(labelText, nodeFont);
+    const ux = Math.cos(point.angle);
+    const uy = Math.sin(point.angle);
+    const anchor = Math.abs(ux) < 0.32 ? "middle" : ux > 0 ? "start" : "end";
+    const candidates = [
+      { x: point.x + ux * (radius + 8), y: point.y + uy * (radius + 8), anchor },
+      { x: point.x + ux * (radius + 20), y: point.y + uy * (radius + 20), anchor },
+      { x: point.x, y: point.y + radius + 26, anchor: "middle" },
+      { x: point.x, y: point.y - radius - 18, anchor: "middle" },
+    ].map((candidate) => graphClampCandidate(candidate, textWidth, width, height));
+    // 标签不能压在任何节点上（包括它自己的），否则等于没标
+    const label = graphPlaceLabel(labelText, nodeFont, candidates, nodeCircles, placed);
+    node.text = labelText;
+    node.textPoint = { x: label.x, y: label.y, anchor: label.anchor, size: nodeFont };
+  });
+
+  drawnNodes.forEach((node) => {
     const point = points.get(node.id);
     const radius = radiusOf(node);
     const typeClass = String(node.type || "").replace(/[^a-z]/gi, "").toLowerCase();
-    const group = document.createElementNS(NS, "g");
-    group.setAttribute("class", `g-node${node.id === center.id ? " selected" : ""}${typeClass === "literal" ? " literal" : ""}`);
+    const group = graphEl("g", `g-node${node.id === focusId ? " selected" : ""}`);
     group.setAttribute("transform", `translate(${point.x},${point.y})`);
     let shape;
-    if (typeClass === "org") {
-      shape = document.createElementNS(NS, "rect");
+    if (typeClass === "org" || typeClass === "product") {
+      shape = graphEl("rect", "g-shape");
       shape.setAttribute("x", String(-radius));
       shape.setAttribute("y", String(-radius));
       shape.setAttribute("width", String(radius * 2));
       shape.setAttribute("height", String(radius * 2));
       shape.setAttribute("rx", "4");
     } else if (typeClass === "literal") {
-      shape = document.createElementNS(NS, "path");
+      shape = graphEl("path", "g-shape");
       shape.setAttribute("d", `M0,${-radius} L${radius},0 L0,${radius} L${-radius},0 Z`);
     } else {
-      shape = document.createElementNS(NS, "circle");
+      shape = graphEl("circle", "g-shape");
       shape.setAttribute("r", String(radius));
     }
-    shape.setAttribute("class", "g-shape");
     group.appendChild(shape);
-    const label = nodeLabels.get(node.id);
-    if (label) {
-      const text = document.createElementNS(NS, "text");
-      text.setAttribute("text-anchor", label.anchor);
-      text.setAttribute("x", String(label.x - point.x));
-      text.setAttribute("y", String(label.y - point.y));
-      text.textContent = label.text;
+
+    // 关系类型字母不显示在节点里；属性数量用一个小角标提示
+    if ((node.attrs || []).length) {
+      const badge = graphEl("circle", "g-attr-badge");
+      badge.setAttribute("cx", String(radius * 0.72));
+      badge.setAttribute("cy", String(-radius * 0.72));
+      badge.setAttribute("r", "3.2");
+      group.appendChild(badge);
+    }
+
+    if (node.text && node.textPoint) {
+      const text = graphEl("text", node.id === focusId ? "g-label selected-label" : "g-label");
+      text.setAttribute("text-anchor", node.textPoint.anchor);
+      text.setAttribute("x", String(node.textPoint.x - point.x));
+      text.setAttribute("y", String(node.textPoint.y - point.y));
+      text.setAttribute("font-size", String(nodeFont));
+      text.textContent = node.text;
       group.appendChild(text);
     }
-    const title = document.createElementNS(NS, "title");
-    title.textContent = `${node.name} · ${nodeTypeLabel(node.type)}`;
+
+    const title = graphEl("title");
+    const lines = [`${node.name} · ${nodeTypeLabel(node.type)}`, `关系 ${node.degree || 0} 条 · 属性 ${(node.attrs || []).length} 条`];
+    (node.attrs || []).slice(0, 5).forEach((attr) => lines.push(`${graphRelationLabel(attr)}：${attr.value}`));
+    title.textContent = lines.join("\n");
     group.appendChild(title);
-    if (node.id !== center.id) {
+
+    if (node.id !== focusId) {
       group.setAttribute("tabindex", "0");
       group.setAttribute("role", "button");
       group.setAttribute("aria-label", `选择实体 ${node.name}`);
@@ -3171,61 +3943,93 @@ function drawGraph(centerId) {
           selectEntity(node.id);
         }
       });
-    } else {
-      group.style.cursor = "default";
     }
     svg.appendChild(group);
   });
 
-  edges.forEach((edge) => {
-    if (!edge.label) return;
-    const a = points.get(edge.source);
-    const b = points.get(edge.target);
-    if (!a || !b) return;
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const distance = Math.sqrt(dx * dx + dy * dy) || 1;
-    if (distance < 100) return;
-    const mx = (a.x + b.x) / 2;
-    const my = (a.y + b.y) / 2;
-    const textValue = graphTextLabel(edge.label, compact ? 7 : 9);
-    const textWidth = graphTextWidth(textValue);
-    const box = { x1: mx - textWidth / 2 - 5, x2: mx + textWidth / 2 + 5, y1: my - 9, y2: my + 4 };
-    const hitsLabel = labelBoxes.some((other) => box.x2 > other.x1 && box.x1 < other.x2 && box.y2 > other.y1 && box.y1 < other.y2);
-    const hitsNode = nodes.some((node) => {
-      const point = points.get(node.id);
-      const nodeRadius = radiusOf(node) + 4;
-      return box.x2 > point.x - nodeRadius && box.x1 < point.x + nodeRadius && box.y2 > point.y - nodeRadius && box.y1 < point.y + nodeRadius;
+  if (!edges.length) {
+    if (attrChips.length) {
+      const focusRadius = radiusOf(focusNode);
+      const leader = graphEl("line", "g-attr-leader");
+      leader.setAttribute("x1", String(layout.center.x));
+      leader.setAttribute("y1", String(layout.center.y + focusRadius + 2));
+      leader.setAttribute("x2", String(layout.center.x));
+      leader.setAttribute("y2", String(attrChips[0].y - attrChips[0].height / 2));
+      svg.appendChild(leader);
+      attrChips.forEach((chip) => {
+        const group = graphEl("g", "g-attr-chip");
+        const box = graphEl("rect", "g-attr-chip-bg");
+        box.setAttribute("x", String(chip.x));
+        box.setAttribute("y", String(chip.y - chip.height / 2));
+        box.setAttribute("width", String(chip.width));
+        box.setAttribute("height", String(chip.height));
+        box.setAttribute("rx", "5");
+        group.appendChild(box);
+        const text = graphEl("text", "g-attr-chip-text");
+        text.setAttribute("x", String(chip.x + 9));
+        text.setAttribute("y", String(chip.y));
+        text.setAttribute("dominant-baseline", "middle");
+        text.textContent = chip.text;
+        group.appendChild(text);
+        // 卡片里的值被截断时，悬停显示完整谓语与值
+        const chipTitle = graphEl("title");
+        chipTitle.textContent = chip.title || chip.text;
+        group.appendChild(chipTitle);
+        svg.appendChild(group);
+      });
+      const rest = focusAttrs.length - attrChips.length;
+      if (rest > 0) {
+        const text = graphEl("text", "g-hint");
+        text.setAttribute("x", String(layout.center.x));
+        text.setAttribute("y", String(attrChips[attrChips.length - 1].y + attrChips[attrChips.length - 1].height / 2 + 14));
+        text.setAttribute("text-anchor", "middle");
+        text.textContent = `还有 ${rest} 条属性，见右侧面板`;
+        svg.appendChild(text);
+      }
+    } else {
+      const text = graphEl("text", "g-hint");
+      text.setAttribute("x", String(layout.center.x));
+      text.setAttribute("y", String(layout.center.y + radiusOf(layout.focus) + (compact ? 30 : 38)));
+      text.setAttribute("text-anchor", "middle");
+      text.textContent = "该实体没有实体间关系，也没有属性";
+      svg.appendChild(text);
+    }
+  }
+
+  const hidden = (layout.hidden || 0) + ((data.hidden && data.hidden.nodes) || 0);
+  const drawnFacts = edges.reduce((sum, edge) => sum + (edge.count || 1), 0);
+  setEntitySub(drawnNodes.length, drawnFacts, hidden);
+  if (hidden > 0) {
+    const text = graphEl("text", "g-hint");
+    text.setAttribute("x", String(width - 10));
+    text.setAttribute("y", String(height - 8));
+    text.setAttribute("text-anchor", "end");
+    text.textContent = `还有 ${hidden} 个实体未显示`;
+    svg.appendChild(text);
+  }
+
+  if (legend) {
+    const types = [...new Set(drawnNodes.map((node) => node.type).filter(Boolean))];
+    const typeItems = types.map((type) => {
+      const typeClass = String(type).replace(/[^a-z]/gi, "").toLowerCase();
+      return `<span class="graph-legend-item"><i class="graph-mark ${typeClass}"></i>${esc(nodeTypeLabel(type))}</span>`;
     });
-    if (hitsLabel || hitsNode) return;
-    const group = document.createElementNS(NS, "g");
-    group.setAttribute("pointer-events", "none");
-    const bg = document.createElementNS(NS, "rect");
-    bg.setAttribute("class", "g-edge-bg");
-    bg.setAttribute("x", String(box.x1));
-    bg.setAttribute("y", String(box.y1));
-    bg.setAttribute("width", String(box.x2 - box.x1));
-    bg.setAttribute("height", String(box.y2 - box.y1));
-    bg.setAttribute("rx", "2");
-    group.appendChild(bg);
-    const text = document.createElementNS(NS, "text");
-    text.setAttribute("class", "g-edge-label");
-    text.setAttribute("x", String(mx));
-    text.setAttribute("y", String(my));
-    text.setAttribute("text-anchor", "middle");
-    text.setAttribute("dominant-baseline", "middle");
-    text.textContent = textValue;
-    group.appendChild(text);
-    svg.appendChild(group);
-  });
+    legend.innerHTML = typeItems.join("")
+      + `<span class="graph-legend-item"><i class="graph-key line strong"></i>指向宾语</span>`
+      + `<span class="graph-legend-item">边标签＝原文谓语，悬停看关系类型</span>`
+      + `<span class="graph-legend-item"><i class="graph-key line"></i>有效</span>`
+      + `<span class="graph-legend-item"><i class="graph-key line disputed"></i>存疑</span>`
+      + `<span class="graph-legend-item"><i class="graph-key dot"></i>有属性</span>`;
+  }
 }
 
 let graphResizeTimer = 0;
 window.addEventListener("resize", () => {
   if (document.body.dataset.page !== "entities") return;
   window.clearTimeout(graphResizeTimer);
-  graphResizeTimer = window.setTimeout(() => drawGraph(state.activeEntity), 180);
+  graphResizeTimer = window.setTimeout(() => drawGraph(), 180);
 });
+
 
 /* ============ 实时通道 ============ */
 let realtimeSocket = null;
@@ -3284,6 +4088,17 @@ document.addEventListener("visibilitychange", () => {
 });
 
 /* ============ Review ============ */
+function reviewQuote(quote, source) {
+  if (!quote?.trim()) return "";
+  const heading = (source?.heading || []).filter((line) => line && line !== "正文").join(" / ");
+  const where = [
+    source?.title ? `《${source.title}》` : "",
+    source?.page ? `第 ${source.page} 页` : "",
+    heading || (!source?.page && source?.seq ? `第 ${source.seq} 段` : ""),
+  ].filter(Boolean).join(" · ");
+  return `<div class="conflict-quote">原文${where ? `（${esc(where)}）` : ""}：${esc(quote)}</div>`;
+}
+
 async function loadReview() {
   const target = $("#review-list");
   target.innerHTML = loadingLines();
@@ -3298,28 +4113,21 @@ async function loadReview() {
       const isFact = Boolean(payload.subject && payload.predicate);
       const current = isFact ? factSentence(payload.subject, payload.predicate, payload.new_object) : "";
       const existing = isFact
-        ? (payload.old_objects || []).filter(Boolean).map((value) => factSentence(payload.subject, payload.predicate, value))
+        ? (payload.old_objects || []).map((value, index) => ({ value, source: item.old_sources?.[index] })).filter(({ value }) => Boolean(value))
         : [];
-      const source = item.source || null;
-      const heading = (source?.heading || []).filter((line) => line && line !== "正文").join(" / ");
-      const where = [
-        source?.title ? `《${source.title}》` : "",
-        source?.page ? `第 ${source.page} 页` : "",
-        heading || (!source?.page && source?.seq ? `第 ${source.seq} 段` : ""),
-      ].filter(Boolean).join(" · ");
-      const quote = payload.quote ? plain(payload.quote) : "";
-      const quoteLine = quote
-        ? `<div class="conflict-quote">原文${where ? `（${esc(where)}）` : ""}：${esc(quote)}</div>`
-        : "";
       const facts = isFact ? `<div class="conflict">
             <div class="conflict-cell">
               <span class="label">本次提取到的信息</span>
               <div class="conflict-value">${esc(current)}</div>
-              ${quoteLine}
+              ${reviewQuote(payload.quote, item.source)}
             </div>
             <div class="conflict-cell">
               <span class="label">知识库中已有信息</span>
-              <div class="conflict-value">${existing.length ? existing.map((line) => esc(line)).join("<br>") : "没有"}</div>
+              ${existing.length ? existing.map(({ value, source }) => `
+                <div class="conflict-record">
+                  <div class="conflict-value">${esc(factSentence(payload.subject, payload.predicate, value))}</div>
+                  ${reviewQuote(source?.quote, source)}
+                </div>`).join("") : '<div class="conflict-value">没有</div>'}
             </div>
           </div>` : `<h2 class="review-title">${esc(item.title)}</h2>`;
       const actions = item.kind === "parse_failure"
@@ -3704,6 +4512,35 @@ async function loadOps(tab) {
   if (tab === "costs") return loadCosts();
   if (tab === "gaps") return loadGaps();
   if (tab === "evals") return loadEvals();
+  if (tab === "feedback") return loadChatFeedback();
+}
+
+async function loadChatFeedback() {
+  $("#ops-body").innerHTML = `<div class="block">${loadingLines()}</div>`;
+  try {
+    const data = await api("/chat-feedback?limit=100");
+    const negative = data.items.filter((item) => item.value === -1).length;
+    $("#ops-body").innerHTML = `
+      <div class="metrics cols-3">
+        <div class="metric"><span class="metric-label">反馈</span><div class="metric-value">${num(data.items.length)}</div></div>
+        <div class="metric"><span class="metric-label">有问题的回答</span><div class="metric-value">${num(negative)}</div></div>
+        <div class="metric"><span class="metric-label">好的回答</span><div class="metric-value">${num(data.items.length - negative)}</div></div>
+      </div>
+      <div class="table-wrap" style="margin-top:16px">
+        <table class="table">
+          <thead><tr><th scope="col">评价</th><th scope="col">反馈说明</th><th scope="col">对话摘录</th><th scope="col">时间</th></tr></thead>
+          <tbody>${data.items.map((item) => `
+            <tr>
+              <td>${item.value === 1 ? '<span class="pill ok">好的回答</span>' : '<span class="pill bad">有问题的回答</span>'}</td>
+              <td><span class="truncate" style="display:block;max-width:280px">${esc(item.comment || "—")}</span></td>
+              <td><span class="truncate" style="display:block;max-width:420px">${esc(item.context || "—")}</span></td>
+              <td class="date">${shortDate(item.created_at)}</td>
+            </tr>`).join("") || `<tr><td colspan="4"><div class="empty-block">暂无对话反馈</div></td></tr>`}</tbody>
+        </table>
+      </div>`;
+  } catch (error) {
+    $("#ops-body").innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
+  }
 }
 
 async function loadTraces() {
@@ -4083,6 +4920,7 @@ async function boot() {
     state.entities = [];
     state.activeEntity = null;
     state.conversationId = null;
+    state.showArchivedConversations = false;
     resetNativeChat();
     $("#ask-result").innerHTML = askEmptyHtml();
     $(".ask-layout").classList.add("is-empty");
@@ -4096,13 +4934,14 @@ async function boot() {
     loadPage(state.page);
   });
 
-  window.addEventListener("hashchange", () => {
-    const next = location.hash.replace("#", "");
-    if (PAGE_META[next] && next !== state.page) showPage(next);
-  });
+  window.addEventListener("popstate", () => showPage(pageFromUrl()));
 
   $$(".nav-item").forEach((item) => item.addEventListener("click", () => showPage(item.dataset.page)));
-  $$("[data-goto]").forEach((button) => button.addEventListener("click", () => showPage(button.dataset.goto)));
+  $$("[data-goto]").forEach((item) => item.addEventListener("click", (event) => {
+    if (item instanceof HTMLAnchorElement && (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)) return;
+    event.preventDefault();
+    showPage(item.dataset.goto);
+  }));
 
   $("#nav-toggle").addEventListener("click", () => {
     if ($("#sidebar").classList.contains("open")) closeSidebar();
@@ -4151,14 +4990,15 @@ async function boot() {
   setupIngest();
   setupAsk();
   setupChat();
+  setupEntityView();
   setupTour();
   setupReviewConsult();
   setupOps();
 
-  const initial = (location.hash || "#chat").replace("#", "");
+  const initial = pageFromUrl();
   await refreshShell();
   await loadMetaAndHealth();
-  showPage(PAGE_META[initial] ? initial : "chat");
+  showPage(initial);
   connectRealtime();
   if (!localStorage.getItem(tourKey())) openTour();
 }

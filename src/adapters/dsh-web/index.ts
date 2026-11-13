@@ -15,8 +15,9 @@ const WELCOME_VERSION = '2026-09-28.1'
 /**
  * 关闭 DSH 自带的新手引导弹窗：
  * - ui-settings-general.welcomeNoticeVersion 标记预览版说明已读；
+ * - ui-settings-models.credentialOnboarding=false 不再自动弹出 API Key 引导。
  */
-function ensureQuietProfile(): void {
+export function ensureQuietProfile(): void {
   const profileDir = join(settings.dshWebHome, 'profiles', 'web')
   mkdirSync(profileDir, { recursive: true })
   const patchPath = join(profileDir, 'cordis.patch.yml')
@@ -29,6 +30,9 @@ function ensureQuietProfile(): void {
     appended +=
       `- id: ui-settings-general\n  config:\n    welcomeNoticeVersion: '${WELCOME_VERSION}'\n`
   }
+  if (!hasId('ui-settings-models')) {
+    appended += '- id: ui-settings-models\n  config:\n    credentialOnboarding: false\n'
+  }
   // DSH 默认工作区落在系统「文档」目录，容器/沙箱内不可写会弹出工作区选择；
   // 指向项目内目录后首次使用自动建好并直接进入对话。
   if (!hasId('workspace-controller')) {
@@ -36,6 +40,11 @@ function ensureQuietProfile(): void {
     mkdirSync(documentsDir, { recursive: true })
     appended += `- id: workspace-controller\n  config:\n    documentsDirectory: '${documentsDir}'\n`
   }
+  // 模型配置只在首次写入可编辑 profile：原生模型设置页的修改（含新增供应商）
+  // 在后续每次重启后仍然保留。
+  const modelRows = dshModelSeed()
+  if (!hasId('agent-default-model')) appended += modelRows.slice(0, 4).join('\n') + '\n'
+  if (!hasId('llm-pi-ai') && modelRows.length > 4) appended += modelRows.slice(4).join('\n') + '\n'
   if (appended) {
     const prefix = content.trim() ? `${content.trimEnd()}\n` : ''
     const body = prefix + appended
@@ -152,21 +161,14 @@ function dshBin(): string {
   return join(settings.rootDir, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 }
 
-/** The launch patch replaces any model settings saved by older profiles. */
-function dshModelPatch(): string[] {
+/** 首次写入 profile 的模型配置种子：默认模型来自 [model]，之后以原生模型设置页为准。 */
+function dshModelSeed(): string[] {
   return [
-    '- id: llm-deepseek',
-    '  disabled: true',
-    '- id: llm-deepseek-account',
-    '  disabled: true',
-    '- id: ui-settings-models',
-    '  disabled: true',
     '- id: agent-default-model',
     '  config:',
     '    provider: knowweave-model',
     `    model: ${JSON.stringify(settings.model)}`,
     '- id: llm-pi-ai',
-    '  disabled: false',
     '  config:',
     '    providers:',
     '      knowweave-model:',
@@ -236,13 +238,25 @@ function knowledgePresetPatches(): string {
 }
 
 /** 用独立补丁加载知织界面，保留用户已有的运行时配置与完整对话功能。 */
-function ensureBrandingPatch(): string {
+export function ensureBrandingPatch(): string {
   const patchPath = join(settings.dshWebHome, 'knowweave-branding.patch.yml')
   const pluginPath = join(settings.rootDir, 'src', 'adapters', 'dsh-web', 'branding', 'index.mjs')
-  const modelPluginPath = join(settings.rootDir, 'src', 'adapters', 'dsh-web', 'model.mjs')
   const content = [
     '# managed by KnoWeave',
-    ...dshModelPatch(),
+    // 官方 DeepSeek 供应商与账号登录不进入嵌入式对话；模型设置页保留，
+    // 模型配置以可编辑 profile 为准（见 ensureQuietProfile）。
+    '- id: llm-deepseek',
+    '  disabled: true',
+    '- id: llm-deepseek-account',
+    '  disabled: true',
+    // 账号 UI 提供左下角“更多”里的意见反馈与登录入口；禁用后由设置壳的
+    // 默认设置按钮接管左下角，模型设置页回退到 API Key 编辑表单。
+    '- id: ui-settings-account',
+    '  disabled: true',
+    // 上游消息反馈会把评价连同会话日志提交给 DeepSeek；禁用后由知织
+    // branding 插件在 assistant-actions 插槽提供自己的反馈按钮，记录到本系统。
+    '- id: ui-message-feedback',
+    '  disabled: true',
     '- id: tool-web',
     '  config:',
     `    search: ${settings.dshWebSearchEnabled}`,
@@ -265,8 +279,6 @@ function ensureBrandingPatch(): string {
     '          X-Knowweave-Native: "true"',
     '    - id: knowweave-branding',
     `      name: ${JSON.stringify(pluginPath)}`,
-    '    - id: knowweave-configured-model',
-    `      name: ${JSON.stringify(modelPluginPath)}`,
     '',
   ].join('\n') + '\n' + knowledgePresetPatches()
   if (!existsSync(patchPath) || readFileSync(patchPath, 'utf8') !== content) {

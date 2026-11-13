@@ -374,6 +374,11 @@ ${evidence}
     activeConversation = { id, tenant_id: principal.tenantId, user_id: principal.userId, title: question.slice(0, 80) }
   }
 
+  // 在已归档会话里继续提问算新动静，自动恢复到最近列表。
+  if (conversation) {
+    await query('UPDATE conversations SET archived_at = NULL WHERE id = $1 AND archived_at IS NOT NULL', [conversation.id])
+  }
+
   await query(
     `INSERT INTO messages (id, conversation_id, role, content, mode, latency_ms, trace_id, confidence)
      VALUES ($1, $2, 'user', $3, $4, 0, $5, 0)`,

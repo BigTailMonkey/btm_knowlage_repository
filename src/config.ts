@@ -53,6 +53,7 @@ const embedding = raw.embedding ?? {}
 const retrieval = raw.retrieval ?? {}
 const reflection = raw.reflection ?? {}
 const trash = raw.trash ?? {}
+const conversations = raw.conversations ?? {}
 const tenant = raw.tenant ?? {}
 const server = raw.server ?? {}
 const dsh = raw.dsh ?? {}
@@ -122,6 +123,8 @@ export const settings = {
   reflectionIntervalSeconds: num(reflection.interval_seconds, 21600),
   // 回收站保留天数；到期由每日维护自动彻底清除，0 表示不自动清除
   trashRetentionDays: Math.max(0, Math.trunc(num(trash.retention_days, 30))),
+  // 会话归档：超过该天数没有新消息的会话由每日维护自动归档，0 表示不自动归档
+  conversationsArchiveDays: Math.max(0, Math.trunc(num(conversations.archive_after_days, 15))),
 
   sidecarUrl: text(sidecar.url, 'http://127.0.0.1:8732'),
   sidecarEnabled: bool(sidecar.enabled, true),

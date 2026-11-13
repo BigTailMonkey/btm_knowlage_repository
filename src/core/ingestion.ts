@@ -4,11 +4,11 @@ import { settings } from '../config.js'
 import { query, queryOne, transaction } from '../db/index.js'
 import { embedder } from '../adapters/embeddings/index.js'
 import type { Embedding } from '../adapters/embeddings/index.js'
-import { parseBytes, ParsedDocument, parseHtml, parseTextContent } from '../adapters/parsing/index.js'
+import { cleanParsedText, parseBytes, ParsedDocument, parseHtml, ParseQualityError, parseTextContent } from '../adapters/parsing/index.js'
 import { chunkBlocks, MAX_TOKENS, type ChunkDraft, type ParsedBlock } from './chunking.js'
 import { newId } from './ids.js'
 import type { DocumentRow } from './rows.js'
-import { canRead, Principal } from './security.js'
+import { canRead, principalSet, Principal } from './security.js'
 import { TraceRecorder } from './tracing.js'
 import { enqueueEnrichment, processEnrichmentQueue, stopEnrichmentWorker } from './enrichment-queue.js'
 import { notifyReviewQueueChanged } from './review-events.js'
@@ -88,6 +88,7 @@ interface JobRecord {
 
 const INGEST_JOBS = new Map<string, JobRecord>()
 const ACTIVE = new Set(['pending', 'running'])
+const AWAITING_DUPLICATE = 'awaiting_duplicate'
 const KEEP_SECONDS = 3600
 
 function prune(): void {
@@ -134,6 +135,7 @@ interface IngestOptions {
   acl?: string[] | null
   progress?: (stage: string, percent: number) => void
   jobId?: string | null
+  duplicatePolicy?: 'ask' | 'continue'
 }
 
 const INGEST_LOCKS = new Map<string, Promise<void>>()
@@ -206,7 +208,14 @@ async function ingestParsedVersion(
   const existing = await existingDocument(principal, options)
   // Source identity takes precedence over content deduplication: reverting an
   // existing document to old content is still a new version of that document.
-  const duplicate = existing
+  const findReadableDuplicate = async (client: DbClient) => (await client.query<{ id: string }>(
+    `SELECT id FROM documents WHERE tenant_id = $1 AND content_hash = $2 AND status = 'active'
+       AND jsonb_typeof(acl_principals) = 'array' AND acl_principals ?| $3::text[] LIMIT 1`,
+    [principal.tenantId, contentHash, [...principalSet(principal)]],
+  ))[0]
+  const duplicatePrompt = { awaiting_duplicate: true, duplicate: true, message: '知识库已有内容相同的文档，请选择继续导入或跳过。' }
+  if (options.duplicatePolicy === 'ask' && await findReadableDuplicate({ query })) return duplicatePrompt
+  const duplicate = options.duplicatePolicy ? null : existing
     ? existing.content_hash === contentHash ? existing : null
     : options.uri ? null : await queryOne<DocumentRow>(
         `SELECT * FROM documents WHERE tenant_id = $1 AND content_hash = $2 AND status = 'active'`,
@@ -244,15 +253,17 @@ async function ingestParsedVersion(
     coordinate_system: 'normalized-text-utf16',
     chunk_spans: Object.fromEntries(chunks.map((chunk) => [chunk.id, chunk.sourceSpans])),
   }
-  let versionNumber = 1
-  await transaction(async (client) => {
+  const indexed = await transaction(async (client) => {
+    // Serialize the final content check with other writers of this hash.
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`${principal.tenantId}:${contentHash}`])
+    if (options.duplicatePolicy === 'ask' && await findReadableDuplicate(client)) return null
     await client.query('DELETE FROM knowledge_summaries WHERE tenant_id=$1', [principal.tenantId])
     const latest = existing ? (await client.query<DocumentRow>(
       `SELECT * FROM documents WHERE id = $1 AND tenant_id = $2 AND status = 'active' FOR UPDATE`,
       [documentId, principal.tenantId],
     ))[0] : null
     if (existing && !latest) throw new Error('目标文档已在回收站，请先恢复后再更新版本')
-    versionNumber = latest ? latest.current_version + 1 : 1
+    const versionNumber = latest ? latest.current_version + 1 : 1
     // Updating content does not implicitly change an existing document's ACL.
     const acl = options.acl == null && latest ? latest.acl_principals : resolveAcl(options.acl)
     const aclVersion = latest ? latest.acl_version + (JSON.stringify(acl) === JSON.stringify(latest.acl_principals) ? 0 : 1) : 1
@@ -283,11 +294,16 @@ async function ingestParsedVersion(
     await insertChunkRows(client, {
       tenantId: principal.tenantId, docId: documentId, versionId, chunks, embeddings, acl, aclVersion,
     })
+    const result = {
+      document_id: documentId, version_id: versionId, duplicate: false, version: versionNumber,
+      chunks: embeddingInputs.length, quality: parsed.quality, parser: parsed.parser, job_id: jobId,
+      message: '文档已入库',
+    }
     if (options.jobId) {
       await enqueueEnrichment(client, principal, documentId, versionNumber)
       await client.query(
         `UPDATE jobs SET input_hash = $1, payload = payload || $2::jsonb, updated_at = now() WHERE id = $3`,
-        [contentHash, JSON.stringify({ doc_id: documentId, version: versionNumber, parser: parsed.parser }), jobId],
+        [contentHash, JSON.stringify({ doc_id: documentId, version: versionNumber, parser: parsed.parser, indexed_result: result }), jobId],
       )
     } else {
       await client.query(
@@ -296,18 +312,18 @@ async function ingestParsedVersion(
         [jobId, principal.tenantId, contentHash, JSON.stringify({ doc_id: documentId, version: versionNumber, parser: parsed.parser })],
       )
     }
+    return result
   })
+  if (!indexed) return duplicatePrompt
 
   const recorder = new TraceRecorder(principal.tenantId, principal.userId, 'ingest', parsed.title)
   recorder.addSpan({ stage: 'ingest.parse', params: { parser: parsed.parser, source_type: options.sourceType },
     output: { blocks: parsed.blocks.length, quality: parsed.quality } })
   recorder.addSpan({ stage: 'ingest.chunk', params: { max_tokens: MAX_TOKENS },
     output: { chunks: embeddingInputs.length }, inputValue: fullText })
-  await recorder.finish(`${parsed.title} · v${versionNumber}`)
+  await recorder.finish(`${parsed.title} · v${indexed.version}`)
   return {
-    document_id: documentId, version_id: versionId, duplicate: false, version: versionNumber,
-    chunks: embeddingInputs.length, quality: parsed.quality, parser: parsed.parser, job_id: jobId,
-    trace_id: recorder.traceId, latency_ms: Date.now() - started, message: '文档已入库',
+    ...indexed, trace_id: recorder.traceId, latency_ms: Date.now() - started,
   }
 }
 
@@ -323,9 +339,11 @@ export async function submitIngest(
     url?: string | null
     sourceUri?: string | null
     acl?: string[] | null
+    confirmDuplicates?: boolean
   },
 ): Promise<Record<string, unknown>> {
   prune()
+  if (options.text != null) options = { ...options, text: cleanParsedText(options.text) }
   const jobId = newId('job')
   const displayTitle =
     options.title ||
@@ -376,6 +394,7 @@ async function runIngestJob(
     url?: string | null
     sourceUri?: string | null
     acl?: string[] | null
+    confirmDuplicates?: boolean
   },
 ): Promise<void> {
   const update = (fields: Partial<JobRecord>) => Object.assign(INGEST_JOBS.get(jobId) ?? {}, fields)
@@ -400,7 +419,7 @@ async function runIngestJob(
       sourceType = options.filename.includes('.') ? options.filename.split('.').pop()!.toLowerCase() : 'file'
       uri = options.sourceUri || `upload:${options.filename}`
     } else if (source === 'text') {
-      if (!options.text) throw new Error('缺少文本内容')
+      if (!options.text) throw new ParseQualityError('缺少可用正文，需人工修正')
       report('切分', 40)
       parsed = parseTextContent(options.text, options.title ?? null)
       sourceType = 'text'
@@ -417,16 +436,26 @@ async function runIngestJob(
     await query(`UPDATE jobs SET payload = payload || $1::jsonb, updated_at=now() WHERE id=$2`,
       [JSON.stringify({ checkpoint: { parsed, sourceType, uri } }), jobId])
     if (parsed.quality < settings.parseMinQuality || !parsed.blocks.some((block) => block.text.trim())) {
-      throw Object.assign(new Error('解析质量不足，需人工修正或更换解析引擎'), { statusCode: 422 })
+      throw new ParseQualityError('解析质量不足，需人工修正')
     }
-    const result = await ingestParsed(principal, parsed, {
+    const indexedResult = saved?.payload.indexed_result as Record<string, unknown> | undefined
+    const result = indexedResult ?? await ingestParsed(principal, parsed, {
       sourceType,
       uri,
       documentId: options.documentId ?? null,
       acl: options.acl ?? null,
       progress: report,
       jobId,
+      duplicatePolicy: saved?.payload.duplicate_decision === 'continue' ? 'continue' : options.confirmDuplicates ? 'ask' : undefined,
     })
+    if (result.awaiting_duplicate) {
+      update({ status: AWAITING_DUPLICATE, stage: '发现重复文档', duplicate: true, message: String(result.message) })
+      await query(
+        'UPDATE jobs SET status=$1, error=NULL, payload=payload || $2::jsonb, updated_at=now() WHERE id=$3',
+        [AWAITING_DUPLICATE, JSON.stringify({ view: INGEST_JOBS.get(jobId) }), jobId],
+      )
+      return
+    }
     update({
       status: 'done',
       stage: '完成',
@@ -447,16 +476,27 @@ async function runIngestJob(
     notifyReviewQueueChanged(principal.tenantId)
     void processEnrichmentQueue().catch(console.error)
   } catch (error) {
-    const message = (error instanceof Error ? error.message : String(error)).slice(0, 300) || '入库失败'
+    const message = cleanParsedText((error instanceof Error ? error.message : String(error)).slice(0, 300)) || '入库失败'
     update({ status: 'failed', stage: '失败', error: message })
     await query(
       `UPDATE jobs SET status = 'failed', error = $1, payload = payload || $3::jsonb, updated_at = now() WHERE id = $2`,
       [message, jobId, JSON.stringify({ view: INGEST_JOBS.get(jobId) })],
     )
-    const review = await queryOne<{ id: string }>("SELECT id FROM review_queue WHERE tenant_id=$1 AND status='open' AND payload->>'job_id'=$2", [principal.tenantId, jobId])
-    if (!review) await query(`INSERT INTO review_queue(id,tenant_id,kind,title,payload) VALUES($1,$2,'parse_failure',$3,$4::jsonb)`,
-      [newId('rev'), principal.tenantId, options.title || options.filename || options.url || '文档解析失败', JSON.stringify({ job_id: jobId, reason: message })])
-    notifyReviewQueueChanged(principal.tenantId)
+    if (error instanceof ParseQualityError) {
+      const review = await queryOne<{ id: string }>("SELECT id FROM review_queue WHERE tenant_id=$1 AND kind='parse_failure' AND status='open' AND payload->>'job_id'=$2", [principal.tenantId, jobId])
+      const payload = JSON.stringify({ job_id: jobId, reason: message })
+      if (review) await query('UPDATE review_queue SET payload=$1::jsonb WHERE id=$2', [payload, review.id])
+      else await query(`INSERT INTO review_queue(id,tenant_id,kind,title,payload) VALUES($1,$2,'parse_failure',$3,$4::jsonb)`,
+        [newId('rev'), principal.tenantId, options.title || options.filename || options.url || '文档解析失败', payload])
+      notifyReviewQueueChanged(principal.tenantId)
+    } else {
+      const closed = await query(
+        `UPDATE review_queue SET status='resolved', resolution='{"action":"ingest_error"}'::jsonb, resolved_at=now()
+         WHERE tenant_id=$1 AND kind='parse_failure' AND status='open' AND payload->>'job_id'=$2 RETURNING id`,
+        [principal.tenantId, jobId],
+      )
+      if (closed.length) notifyReviewQueueChanged(principal.tenantId)
+    }
   }
 }
 
@@ -473,7 +513,7 @@ async function fetchUrl(url: string, title: string | null): Promise<{ parsed: Pa
     const buffer = Buffer.from(await response.arrayBuffer())
     return { parsed: await parseBytes(url, buffer, title), sourceType: 'pdf' }
   }
-  return { parsed: parseHtml(await response.text(), title || url), sourceType: 'web' }
+  return { parsed: parseHtml(cleanParsedText(await response.text()), title || url), sourceType: 'web' }
 }
 
 export const ingestionConfig = { dataDir: settings.dataDir }
@@ -504,11 +544,41 @@ function restoreJob(row: SavedJob): JobRecord {
 export async function savedIngestJobs(principal: Principal, activeOnly = false): Promise<Array<Record<string, unknown>>> {
   const rows = await query<SavedJob>(
     `SELECT * FROM jobs WHERE tenant_id=$1 AND type='ingest' AND payload->>'user_id'=$2
-     ORDER BY created_at DESC LIMIT 100`, [principal.tenantId, principal.userId])
-  return rows.filter((row) => !activeOnly || ACTIVE.has(row.status)).map((row) => {
+     ORDER BY (status IN ('pending', 'running', 'awaiting_duplicate')) DESC, created_at DESC
+     LIMIT 100`, [principal.tenantId, principal.userId])
+  return rows.filter((row) => !activeOnly || ACTIVE.has(row.status) || row.status === AWAITING_DUPLICATE).map((row) => {
     const live = INGEST_JOBS.get(row.id)
     return publicJob(live?.status === row.status ? live : restoreJob(row))
   })
+}
+
+export async function decideIngestDuplicate(principal: Principal, id: string, action: 'continue' | 'skip'): Promise<Record<string, unknown>> {
+  const skip = action === 'skip'
+  const status = skip ? 'skipped' : 'pending'
+  const view = { stage: skip ? '已跳过' : '排队中', percent: skip ? 100 : 0, duplicate: skip, message: skip ? '已跳过重复文档' : '' }
+  const row = await transaction(async (client) => {
+    const [updated] = await client.query<SavedJob>(
+      `UPDATE jobs SET status=$4, attempts=0, error=NULL, updated_at=now(),
+         payload=payload || jsonb_build_object('duplicate_decision', $5::text, 'view', (payload->'view') || $6::jsonb)
+       WHERE id=$1 AND tenant_id=$2 AND type='ingest' AND payload->>'user_id'=$3 AND status='awaiting_duplicate'
+       RETURNING *`,
+      [id, principal.tenantId, principal.userId, status, action, JSON.stringify(view)],
+    )
+    if (!updated) throw Object.assign(new Error('任务不存在或已处理'), { statusCode: 409 })
+    if (skip) {
+      await client.query(`UPDATE review_queue SET status='resolved', resolution=$1::jsonb, resolved_at=now()
+        WHERE tenant_id=$2 AND status='open' AND payload->>'job_id'=$3`,
+      [JSON.stringify({ action: 'duplicate_skipped' }), principal.tenantId, id])
+    }
+    return updated
+  })
+  const record = restoreJob(row)
+  if (skip) {
+    notifyReviewQueueChanged(principal.tenantId)
+  } else {
+    void processIngestQueue().catch(() => undefined)
+  }
+  return publicJob(record)
 }
 
 export async function retryIngestJob(principal: Principal, id: string, stage: 'parse' | 'index' = 'index', correctedText?: string): Promise<Record<string, unknown>> {
@@ -521,12 +591,13 @@ export async function retryIngestJob(principal: Principal, id: string, stage: 'p
     const parsed = parseTextContent(correctedText, request.title || request.filename || '人工修正文档')
     parsed.meta.corrected_by = principal.userId
     const checkpoint = { parsed, sourceType: source === 'url' ? 'web' : source === 'file' ? request.filename?.split('.').pop() || 'file' : 'text', uri: source === 'file' ? request.sourceUri || `upload:${request.filename}` : source === 'url' ? request.url : null }
-    await query('UPDATE jobs SET payload=payload || $1::jsonb WHERE id=$2', [JSON.stringify({ checkpoint }), id])
+    await query("UPDATE jobs SET payload=(payload - 'duplicate_decision') || $1::jsonb WHERE id=$2", [JSON.stringify({ checkpoint }), id])
     stage = 'index'
   }
   const rows = await query<SavedJob>(
     `UPDATE jobs SET status='pending', error=NULL, attempts=0,
-       payload=CASE WHEN $4='parse' THEN payload - 'checkpoint' ELSE payload END, updated_at=now()
+       payload=(CASE WHEN $4='parse' THEN payload - 'checkpoint' - 'duplicate_decision' ELSE payload END)
+         - 'indexed_result', updated_at=now()
      WHERE id=$1 AND tenant_id=$2 AND type='ingest' AND payload->>'user_id'=$3
        AND status IN ('failed','done') AND payload ? 'request' RETURNING *`,
     [id, principal.tenantId, principal.userId, stage])

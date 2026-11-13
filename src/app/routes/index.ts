@@ -5,6 +5,7 @@ import { authenticate, currentPrincipal } from '../server.js'
 import { sidecarStatus } from '../../adapters/sidecar/index.js'
 import { dshWebStatus, ensureDshWeb } from '../../adapters/dsh-web/index.js'
 import { askRoutes } from './ask.js'
+import { chatFeedbackRoutes } from './chat-feedback.js'
 import { documentRoutes } from './documents.js'
 import { learnRoutes } from './learn.js'
 import { mcpRoutes } from './mcp.js'
@@ -57,6 +58,7 @@ export async function apiRoutes(app: FastifyInstance): Promise<void> {
   })
 
   await app.register(askRoutes)
+  await app.register(chatFeedbackRoutes)
   await app.register(documentRoutes, { prefix: '/documents' })
   await app.register(learnRoutes)
   await app.register(opsRoutes)

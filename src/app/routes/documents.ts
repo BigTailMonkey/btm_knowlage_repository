@@ -8,7 +8,7 @@ import { authenticate, currentPrincipal } from '../server.js'
 import { settings } from '../../config.js'
 import { query, queryOne } from '../../db/index.js'
 import { chunkDict, documentDict, entityDict, factDict } from '../../core/serializers.js'
-import { ingestParsed, savedIngestJobs, retryIngestJob, submitIngest } from '../../core/ingestion.js'
+import { decideIngestDuplicate, ingestParsed, savedIngestJobs, retryIngestJob, submitIngest } from '../../core/ingestion.js'
 import { parseBytes, parseTextContent } from '../../adapters/parsing/index.js'
 import { requireEditor, canRead } from '../../core/security.js'
 import { isEntityName } from '../../core/learning.js'
@@ -82,13 +82,15 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
     if (!data.length) throw Object.assign(new Error('文件为空'), { statusCode: 400 })
     if (data.length > 30 * 1024 * 1024) throw Object.assign(new Error('文件超过 30MB'), { statusCode: 413 })
     const fields = part.fields as Record<string, { value?: unknown }>
+    const sourceUri = typeof fields.source_uri?.value === 'string' && fields.source_uri.value.startsWith('directory:') ? fields.source_uri.value : null
     return submitIngest(principal, 'file', {
       title: typeof fields.title?.value === 'string' ? fields.title.value : null,
       filename: part.filename || 'document.txt',
       data,
       acl: parseAcl(fields.acl?.value),
       documentId: typeof fields.doc_id?.value === 'string' ? fields.doc_id.value : null,
-      sourceUri: typeof fields.source_uri?.value === 'string' && fields.source_uri.value.startsWith('directory:') ? fields.source_uri.value : null,
+      sourceUri,
+      confirmDuplicates: !sourceUri,
     })
   })
 
@@ -102,6 +104,7 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
       title: payload.title ?? null,
       acl: payload.acl ?? null,
       documentId: payload.doc_id ?? null,
+      confirmDuplicates: true,
     })
   })
 
@@ -112,7 +115,7 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
     if (!payload?.url || !/^https?:\/\//i.test(payload.url)) {
       throw Object.assign(new Error('仅支持 http/https URL'), { statusCode: 400 })
     }
-    return submitIngest(principal, 'url', { url: payload.url, title: payload.title ?? null, acl: payload.acl ?? null, documentId: payload.doc_id ?? null })
+    return submitIngest(principal, 'url', { url: payload.url, title: payload.title ?? null, acl: payload.acl ?? null, documentId: payload.doc_id ?? null, confirmDuplicates: true })
   })
 
   app.get('/jobs', { preHandler: authenticate }, async (request) => {
@@ -127,6 +130,16 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
     const stage = (request.body as { stage?: string } | undefined)?.stage ?? 'index'
     if (!['parse', 'index'].includes(stage)) throw Object.assign(new Error('stage 必须为 parse 或 index'), { statusCode: 400 })
     return retryIngestJob(principal, (request.params as { job_id: string }).job_id, stage as 'parse' | 'index', (request.body as { corrected_text?: string } | undefined)?.corrected_text)
+  })
+
+  app.post('/jobs/:job_id/duplicate', { preHandler: authenticate }, async (request) => {
+    const principal = currentPrincipal(request)
+    requireEditor(principal)
+    const action = (request.body as { action?: string } | null)?.action
+    if (action !== 'continue' && action !== 'skip') {
+      throw Object.assign(new Error('请选择继续导入或跳过'), { statusCode: 400 })
+    }
+    return decideIngestDuplicate(principal, (request.params as { job_id: string }).job_id, action)
   })
 
   app.get('/extractions', { preHandler: authenticate }, async (request) => {

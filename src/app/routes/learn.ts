@@ -5,11 +5,12 @@ import { query, queryOne } from '../../db/index.js'
 import { entityDict, factDict } from '../../core/serializers.js'
 import { factSentence, isEntityName, deleteEntity, resolveReview, runReflection } from '../../core/learning.js'
 import { processEnrichmentQueue, requestEnrichment } from '../../core/enrichment-queue.js'
+import { buildEntityGraph } from '../../core/entity-graph.js'
 import { DISPLAYABLE_FACT, ENTITY_HAS_DISPLAYABLE_FACT } from '../../core/fact-visibility.js'
 import { ingestParsed } from '../../core/ingestion.js'
 import { parseTextContent } from '../../adapters/parsing/index.js'
 import { harness, requireModelText } from '../../adapters/harness/index.js'
-import { canRead, requireAdmin, requireEditor, type Principal } from '../../core/security.js'
+import { canRead, principalSet, requireAdmin, requireEditor, type Principal } from '../../core/security.js'
 import { newId } from '../../core/ids.js'
 import { notifyReviewQueueChanged } from '../../core/review-events.js'
 import type { DocumentRow, EntityRow, FactRow } from '../../core/rows.js'
@@ -224,49 +225,13 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/graph', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
-    const limit = Math.min(300, Math.max(10, Number((request.query as { limit?: string }).limit ?? 80)))
-    const facts = await query<FactRow>(
-      `SELECT f.* FROM facts f WHERE f.tenant_id = $1 AND f.status IN ('active', 'disputed') AND ${DISPLAYABLE_FACT}
-       ORDER BY confidence DESC LIMIT ${limit * 3}`,
-      [principal.tenantId],
-    )
-    const visible = facts.filter((fact) => canRead(principal, fact.acl_principals))
-    const nodeIds = new Set<string>()
-    const edges = []
-    for (const fact of visible) {
-      if (edges.length >= limit) break
-      const subject = await queryOne<EntityRow>('SELECT * FROM entities WHERE id = $1', [fact.subject_id])
-      const target = fact.object_id
-        ? await queryOne<EntityRow>('SELECT * FROM entities WHERE id = $1', [fact.object_id])
-        : null
-      if (!subject || !isEntityName(subject.canonical_name) || !canRead(principal, subject.acl_principals)) continue
-      if (fact.object_id && (!target || !isEntityName(target.canonical_name) || !canRead(principal, target.acl_principals))) continue
-      const targetId = fact.object_id ?? `lit_${fact.id}`
-      edges.push({
-        id: fact.id,
-        source: fact.subject_id,
-        target: targetId,
-        label: fact.predicate,
-        object_literal: fact.object_literal,
-        status: fact.status,
-        confidence: fact.confidence,
-      })
-      nodeIds.add(fact.subject_id)
-      nodeIds.add(targetId)
-    }
-    const nodes = []
-    for (const nodeId of nodeIds) {
-      if (nodeId.startsWith('lit_')) {
-        const literal = edges.find((edge) => edge.target === nodeId)?.object_literal ?? ''
-        nodes.push({ id: nodeId, name: literal || nodeId, type: 'literal' })
-      } else {
-        const entity = await queryOne<EntityRow>('SELECT * FROM entities WHERE id = $1', [nodeId])
-        if (entity && canRead(principal, entity.acl_principals)) {
-          nodes.push({ id: entity.id, name: entity.canonical_name, type: entity.type })
-        }
-      }
-    }
-    return { nodes, edges }
+    const params = request.query as { limit?: string; focus?: string; hops?: string; scope?: string }
+    return buildEntityGraph(principal, {
+      overview: params.scope === 'overview',
+      focus: params.focus ? String(params.focus) : null,
+      hops: params.hops === undefined ? 1 : Number(params.hops),
+      limit: params.limit === undefined ? 80 : Number(params.limit),
+    })
   })
 
   app.get('/review', { preHandler: authenticate }, async (request) => {
@@ -284,28 +249,36 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
        WHERE tenant_id = $1 AND status = $2 ORDER BY created_at ASC, id ASC`,
       [principal.tenantId, status],
     )
-    const factIds = items
-      .map((item) => String((item.payload as { new_fact_id?: string } | null)?.new_fact_id ?? ''))
-      .filter(Boolean)
-    const sources = new Map<string, { title: string; page: number | null; heading: string[] | null; seq: number | null }>()
-    if (factIds.length) {
-      const rows = await query<{ fact_id: string; doc_title: string; page: number | null; heading_path: string[] | null; seq: number | null }>(
-        `SELECT fe.fact_id, d.title AS doc_title, c.page, c.heading_path, c.seq
+    const reviewItems = items.map((item) => ({
+      ...item,
+      payload: (item.payload ?? {}) as {
+        subject?: string; predicate?: string; new_object?: string | null; new_fact_id?: string; old_fact_ids?: string[]
+      },
+    }))
+    const factIds = new Set(reviewItems.flatMap(({ payload }) =>
+      [payload.new_fact_id, ...(payload.old_fact_ids ?? [])].filter((id): id is string => typeof id === 'string' && id !== ''),
+    ))
+    type ReviewSource = { title: string; page: number | null; heading: string[] | null; seq: number | null; quote: string }
+    const sources = new Map<string, ReviewSource>()
+    if (factIds.size) {
+      const rows = await query<ReviewSource & { fact_id: string }>(
+        `SELECT DISTINCT ON (fe.fact_id) fe.fact_id, d.title, c.page, c.heading_path AS heading, c.seq, fe.quote
          FROM fact_evidence fe
-         JOIN chunks c ON c.id = fe.chunk_id
-         JOIN documents d ON d.id = fe.doc_id
+         JOIN facts f ON f.id = fe.fact_id AND f.tenant_id = $2
+         JOIN documents d ON d.id = fe.doc_id AND d.tenant_id = $2 AND d.status = 'active'
+         LEFT JOIN chunks c ON c.id = fe.chunk_id AND c.doc_id = d.id AND c.tenant_id = $2
          WHERE fe.fact_id = ANY($1::text[])
-         ORDER BY fe.weight DESC`,
-        [factIds],
+           AND jsonb_typeof(f.acl_principals) = 'array' AND f.acl_principals ?| $3::text[]
+           AND jsonb_typeof(d.acl_principals) = 'array' AND d.acl_principals ?| $3::text[]
+           AND (fe.chunk_id IS NULL OR (jsonb_typeof(c.acl_principals) = 'array' AND c.acl_principals ?| $3::text[]))
+           AND btrim(fe.quote) <> ''
+         ORDER BY fe.fact_id, fe.weight DESC, fe.id`,
+        [[...factIds], principal.tenantId, [...principalSet(principal)]],
       )
-      for (const row of rows) {
-        if (sources.has(row.fact_id)) continue
-        sources.set(row.fact_id, { title: row.doc_title, page: row.page, heading: row.heading_path, seq: row.seq })
-      }
+      for (const { fact_id, ...source } of rows) sources.set(fact_id, source)
     }
     return {
-      items: items.map((item) => {
-        const payload = (item.payload ?? {}) as { subject?: string; predicate?: string; new_object?: string | null; new_fact_id?: string }
+      items: reviewItems.map(({ payload, ...item }) => {
         const title = payload.subject && payload.predicate
           ? factSentence(payload.subject, payload.predicate, payload.new_object)
           : item.title
@@ -313,8 +286,9 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
           id: item.id,
           kind: item.kind,
           title,
-          payload: item.payload,
+          payload,
           source: sources.get(String(payload.new_fact_id ?? '')) ?? null,
+          old_sources: (payload.old_fact_ids ?? []).map((id) => sources.get(id) ?? null),
           status: item.status,
           created_at: item.created_at,
         }

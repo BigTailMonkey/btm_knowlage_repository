@@ -72,6 +72,43 @@ test('ordinary imports extract entities and resume unfinished extraction without
   }
 })
 
+test('duplicate imports wait independently and accept one decision per job', async () => {
+  const app = await createServer()
+  app.log.level = 'silent'
+  const post = (path: string, payload: object) =>
+    app.inject({ method: 'POST', url: '/api/v1/documents' + path, payload, headers: workspace.headers })
+  try {
+    const text = '用于检查重复导入的完整内容。'
+    const first = (await post('/text', { title: '原始文档', text })).json()
+    await processIngestQueue()
+    const skip = (await post('/text', { title: '重复甲', text })).json()
+    const keep = (await post('/text', { title: '重复乙', text })).json()
+    const other = (await post('/text', { title: '其他文档', text: '这一份内容不同，可以继续入库。' })).json()
+    await processIngestQueue()
+    const jobs = await savedIngestJobs(workspace.principal)
+    const status = (id: string) => jobs.find(job => job.job_id === id)?.status
+    assert.equal(status(first.job_id), 'done')
+    assert.equal(status(skip.job_id), 'awaiting_duplicate')
+    assert.equal(status(keep.job_id), 'awaiting_duplicate')
+    assert.equal(status(other.job_id), 'done')
+    assert.equal((await query('SELECT id FROM documents')).length, 2)
+
+    assert.equal((await post(`/jobs/${skip.job_id}/duplicate`, { action: 'skip' })).json().status, 'skipped')
+    assert.equal((await post(`/jobs/${skip.job_id}/duplicate`, { action: 'continue' })).statusCode, 409)
+    assert.equal((await post(`/jobs/${keep.job_id}/duplicate`, { action: 'continue' })).statusCode, 200)
+    await processIngestQueue()
+    assert.deepEqual((await query<{ title: string }>('SELECT title FROM documents')).map(row => row.title).sort(),
+      ['其他文档', '原始文档', '重复乙'].sort())
+
+    // A worker restart after index commit must not insert another accepted copy.
+    await query("UPDATE jobs SET status='running',updated_at=now()-interval '5 minutes' WHERE id=$1", [keep.job_id])
+    await processIngestQueue()
+    assert.equal((await query('SELECT id FROM documents')).length, 3)
+  } finally {
+    await app.close()
+  }
+})
+
 test('running extraction reports batch base and request progress, then clears it', async () => {
   const complete = harness.complete
   const seen: Array<{ stage: string; batches_total: number; batches_done: number; requests: number } | null> = []
@@ -344,6 +381,7 @@ test('index retries use the persisted parse checkpoint and keep failed uploads u
   const failed = await queryOne<{ status: string; payload: any }>('SELECT status,payload FROM jobs WHERE id=$1', [job.job_id])
   assert.equal(failed!.status, 'failed')
   assert.ok(failed!.payload.checkpoint.parsed.blocks.length)
+  assert.equal((await query("SELECT id FROM review_queue WHERE status='open' AND kind='parse_failure'")).length, 0)
   assert.equal((await query('SELECT id FROM documents')).length, 0)
   embedder.embedMany = original
   await retryIngestJob(workspace.principal, String(job.job_id), 'index')
@@ -352,10 +390,50 @@ test('index retries use the persisted parse checkpoint and keep failed uploads u
   assert.equal((await query("SELECT id FROM review_queue WHERE status='open' AND kind='parse_failure'")).length, 0)
 })
 
+test('unsupported Unicode in PDF parser output does not block checkpoint persistence or indexing', async (t) => {
+  t.mock.method(globalThis, 'fetch', async (url: string) => {
+    if (url.endsWith('/health')) return Response.json({ status: 'ok' })
+    assert.ok(url.endsWith('/parse'))
+    return Response.json({
+      title: '文\u0000档📄',
+      parser: 'test-parser',
+      quality: 1,
+      blocks: [{ text: '可正常入库的\u0000正文。', headingPath: ['标\u0000题'], type: 'paragraph', order: 0, page: 1, bbox: null }],
+      meta: { nested: ['损坏\uD800字符'] },
+    })
+  })
+  settings.sidecarEnabled = true
+  try {
+    const job = await submitIngest(workspace.principal, 'file', { filename: 'unicode.pdf', data: Buffer.from('test PDF') })
+    await processIngestQueue()
+    const saved = await queryOne<{ status: string; payload: { checkpoint: { parsed: { title: string; meta: unknown } } } }>(
+      'SELECT status,payload FROM jobs WHERE id=$1', [job.job_id],
+    )
+    assert.equal(saved?.status, 'done')
+    assert.equal(saved.payload.checkpoint.parsed.title, '文档📄')
+    assert.deepEqual(saved.payload.checkpoint.parsed.meta, { nested: ['损坏\uFFFD字符'] })
+    assert.equal((await queryOne<{ text: string }>('SELECT text FROM document_versions'))?.text, '可正常入库的正文。')
+    assert.deepEqual((await queryOne<{ heading_path: string[] }>('SELECT heading_path FROM blocks'))?.heading_path, ['标题'])
+  } finally {
+    settings.sidecarEnabled = false
+  }
+})
+
+test('unusable extracted text enters review and corrected text closes the review', async () => {
+  const job = await submitIngest(workspace.principal, 'file', { filename: 'empty.txt', data: Buffer.from('\u0000') })
+  await processIngestQueue()
+  const review = await queryOne<{ id: string }>("SELECT id FROM review_queue WHERE kind='parse_failure' AND status='open' AND payload->>'job_id'=$1", [job.job_id])
+  assert.ok(review)
+  await retryIngestJob(workspace.principal, String(job.job_id), 'index', '人工核对后的完整正文。')
+  await processIngestQueue()
+  assert.equal((await queryOne<{ status: string }>('SELECT status FROM review_queue WHERE id=$1', [review.id]))?.status, 'resolved')
+})
+
 test('manual corrected text can recover an unavailable parser while preserving source identity', async () => {
   const job = await submitIngest(workspace.principal, 'file', { filename: 'scan.pdf', data: Buffer.from('not a pdf') })
   await processIngestQueue()
   assert.equal((await savedIngestJobs(workspace.principal))[0]!.status, 'failed')
+  assert.equal((await query("SELECT id FROM review_queue WHERE status='open' AND kind='parse_failure'")).length, 0)
   await retryIngestJob(workspace.principal, String(job.job_id), 'index', '人工核对后的扫描件内容。')
   await processIngestQueue()
   const doc = await queryOne<{ uri: string }>('SELECT uri FROM documents')

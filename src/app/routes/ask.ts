@@ -3,6 +3,7 @@ import { FastifyInstance } from 'fastify'
 import { authenticate, currentPrincipal } from '../server.js'
 import { query, queryOne, transaction } from '../../db/index.js'
 import { ask } from '../../core/answering.js'
+import { setConversationArchived } from '../../core/conversation-archive.js'
 import { retrieve } from '../../core/retrieval.js'
 import { newId } from '../../core/ids.js'
 import { TraceRecorder } from '../../core/tracing.js'
@@ -62,10 +63,15 @@ export async function askRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/conversations', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
-    const limit = Math.min(100, Math.max(1, Number((request.query as { limit?: string }).limit ?? 30)))
-    const conversations = await query<{ id: string; title: string; created_at: string }>(
-      `SELECT id, title, created_at FROM conversations
-       WHERE tenant_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT ${limit}`,
+    const params = request.query as { limit?: string; archived?: string }
+    const limit = Math.min(100, Math.max(1, Number(params.limit ?? 30)))
+    const archived = params.archived === '1' || params.archived === 'true'
+    const conversations = await query<{ id: string; title: string; created_at: string; last_activity_at: string; archived_at: string | null }>(
+      `SELECT c.id, c.title, c.created_at, c.archived_at,
+              COALESCE((SELECT max(m.created_at) FROM messages m WHERE m.conversation_id = c.id), c.created_at) AS last_activity_at
+       FROM conversations c
+       WHERE c.tenant_id = $1 AND c.user_id = $2 AND c.archived_at ${archived ? 'IS NOT NULL' : 'IS NULL'}
+       ORDER BY last_activity_at DESC LIMIT ${limit}`,
       [principal.tenantId, principal.userId],
     )
     const items = []
@@ -79,6 +85,8 @@ export async function askRoutes(app: FastifyInstance): Promise<void> {
         title: conversation.title,
         messages: Number(count?.count ?? 0),
         created_at: conversation.created_at,
+        last_activity_at: conversation.last_activity_at,
+        archived_at: conversation.archived_at,
       })
     }
     return { items }
@@ -87,8 +95,8 @@ export async function askRoutes(app: FastifyInstance): Promise<void> {
   app.get('/conversations/:conversation_id', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
     const { conversation_id: conversationId } = request.params as { conversation_id: string }
-    const conversation = await queryOne<{ id: string; tenant_id: string; user_id: string; title: string }>(
-      'SELECT id, tenant_id, user_id, title FROM conversations WHERE id = $1',
+    const conversation = await queryOne<{ id: string; tenant_id: string; user_id: string; title: string; archived_at: string | null }>(
+      'SELECT id, tenant_id, user_id, title, archived_at FROM conversations WHERE id = $1',
       [conversationId],
     )
     if (!conversation || conversation.tenant_id !== principal.tenantId || conversation.user_id !== principal.userId) {
@@ -145,7 +153,19 @@ export async function askRoutes(app: FastifyInstance): Promise<void> {
         citation.doc_title = titles.get(String(citation.doc_id)) ?? ''
       }
     }
-    return { id: conversation.id, title: conversation.title, messages: items }
+    return { id: conversation.id, title: conversation.title, archived_at: conversation.archived_at, messages: items }
+  })
+
+  app.post('/conversations/:conversation_id/archive', { preHandler: authenticate }, async (request) => {
+    const principal = currentPrincipal(request)
+    const { conversation_id: conversationId } = request.params as { conversation_id: string }
+    return setConversationArchived(principal, conversationId, true)
+  })
+
+  app.post('/conversations/:conversation_id/unarchive', { preHandler: authenticate }, async (request) => {
+    const principal = currentPrincipal(request)
+    const { conversation_id: conversationId } = request.params as { conversation_id: string }
+    return setConversationArchived(principal, conversationId, false)
   })
 
   app.post('/feedback', { preHandler: authenticate }, async (request) => {

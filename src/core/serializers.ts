@@ -1,6 +1,7 @@
 import { query, queryOne } from '../db/index.js'
 import { continuationSummary } from './continuation.js'
 import { iso } from './ids.js'
+import { relationRef } from './relation-types.js'
 import type { ChunkRow, DocumentRow, EntityRow, FactRow } from './rows.js'
 import { aclLabel } from './security.js'
 
@@ -78,6 +79,7 @@ export async function factDict(fact: FactRow): Promise<Record<string, unknown>> 
     subject: subject?.canonical_name ?? fact.subject_id,
     subject_type: subject?.type ?? 'concept',
     predicate: fact.predicate,
+    relation: relationRef(fact.predicate),
     object_id: fact.object_id,
     object: object?.canonical_name ?? fact.object_literal,
     object_literal: fact.object_literal,

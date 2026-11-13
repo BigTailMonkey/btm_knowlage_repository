@@ -50,19 +50,29 @@ test('low-confidence candidates stay in review and out of the document and graph
       VALUES ('legacy-evidence','legacy',$1,'请在所提供服务对应的选项上划“√”'),
              ('valid-evidence','valid',$1,'协和医院提供随访服务')`, [source.document_id])
     await query(`INSERT INTO review_queue(id,tenant_id,kind,payload)
-      VALUES ('review-legacy',$1,'fact_validation','{"new_fact_id":"legacy"}'::jsonb)`, [tenant])
+      VALUES ('review-legacy',$1,'fact_validation','{"new_fact_id":"legacy","old_fact_ids":["valid","missing"]}'::jsonb)`, [tenant])
     const get = async (path: string) => (await app.inject({ url: '/api/v1' + path, headers: workspace.headers })).json()
     assert.deepEqual((await get('/entities')).items.map((entity: { name: string }) => entity.name), ['协和医院'])
-    assert.deepEqual((await get('/graph')).edges.map((edge: { id: string }) => edge.id), ['valid'])
+    // 字面值事实不再造节点、也不画连线，只作为主语属性出现
+    const graph = await get('/graph')
+    assert.deepEqual(graph.edges.map((edge: { id: string }) => edge.id), [])
+    assert.deepEqual(Object.values(graph.nodes).flatMap((node: any) => node.attrs.map((attr: { fact_id: string }) => attr.fact_id)), ['valid'])
     const doc = await get('/documents/' + source.document_id)
     assert.deepEqual(doc.entities.map((entity: { name: string }) => entity.name), ['协和医院'])
     assert.deepEqual(doc.facts.map((fact: { id: string }) => fact.id), ['valid'])
     assert.equal(doc.review_only_facts, 1)
     assert.equal((await get('/stats')).entities, 1)
     assert.deepEqual((await get('/facts')).items.map((fact: { id: string }) => fact.id), ['valid'])
-    assert.equal((await get('/review')).items[0].payload.new_fact_id, 'legacy')
+    const review = (await get('/review')).items[0]
+    assert.equal(review.payload.new_fact_id, 'legacy')
+    assert.deepEqual(review.old_sources, [
+      { title: '抽取样例', page: null, heading: null, seq: null, quote: '协和医院提供随访服务' },
+      null,
+    ])
+    await query("UPDATE facts SET acl_principals = '[]'::jsonb WHERE id = 'valid'")
+    assert.deepEqual((await get('/review')).items[0].old_sources, [null, null])
     await query("UPDATE facts SET status='active' WHERE id='legacy'")
-    assert.ok((await get('/graph')).edges.some((edge: { id: string }) => edge.id === 'legacy'))
+    assert.ok((await get('/graph')).nodes.some((node: any) => node.attrs.some((attr: { fact_id: string }) => attr.fact_id === 'legacy')))
   } finally { await app.close(); await workspace.close() }
 })
 

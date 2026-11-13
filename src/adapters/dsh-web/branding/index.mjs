@@ -10,6 +10,10 @@ const style = `
 [class~="pXSMma_previewBadge"] { display: none !important; }
 /* KnoWeave's outer navigation supplies the wordmark when embedded. */
 html[data-knowweave-embedded] [class~="hHd-Xa_brand"] { display: none; }
+/* Hide local directory opening in the conversation header, including direct access to DSH. */
+header[data-window-drag] [data-open-target="directory"] {
+  display: none !important;
+}
 html[data-knowweave-embedded] [class~="hHd-Xa_logoRow"] {
   height: 36px;
   margin-bottom: 4px;

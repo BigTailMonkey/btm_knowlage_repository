@@ -26,7 +26,7 @@ web_port = 3081
 web_home = "data/dsh-web-home"
 
 [model]
-# 生成、抽取、校验和原生对话共用此处配置的 OpenAI 兼容接口。
+# 生成、抽取、校验共用此处配置的 OpenAI 兼容接口；原生对话以此为初始默认，可在原生“设置 → 模型”修改
 provider = "volcengine-ark"
 model = "deepseek-v4.1-flash"
 api_key = ""
@@ -97,6 +97,11 @@ interval_seconds = 21600
 # 移入回收站的文档保留天数；到期由每日维护彻底删除，原始文件与派生内容一并清除
 # 0 表示不自动清除，只能手动彻底删除
 retention_days = 30
+
+[conversations]
+# 研究台会话超过该天数没有新消息时，由每日维护自动归档；消息与引用完整保留
+# 归档会话可在最近会话栏的“已归档”查看，继续提问会自动恢复；0 表示不自动归档
+archive_after_days = 15
 
 [tenant]
 default_id = "tn_knowweave"

@@ -9,7 +9,7 @@
 <body data-page="chat">
   <div class="frame">
     <aside class="sidebar" id="sidebar">
-      <a class="brand" href="#" data-goto="dashboard" aria-label="知织 KnoWeave">
+      <a class="brand" href="/?page=dashboard" data-goto="dashboard" aria-label="知织 KnoWeave">
         <span class="brand-mark" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none">
             <path d="M3 9c4.5 0 4.5-5 9-5s4.5 5 9 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -285,8 +285,8 @@
 
           <!-- 实体图谱 -->
           <section class="page" id="page-entities">
-            <div class="entities-layout">
-              <section class="block entity-panel">
+            <div class="entities-layout" id="entities-layout" data-view="entity">
+              <section class="block entity-panel" id="entity-panel">
                 <div class="block-head"><h2>实体</h2><span class="muted" id="entity-count"></span></div>
                 <div class="search-field compact">
                   <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.2 10.2 3 3"/></svg>
@@ -295,14 +295,30 @@
                 <div class="rows scroll-rows" id="entity-list"></div>
               </section>
 
-              <section class="block graph-panel">
+              <section class="block graph-panel" id="graph-panel">
                 <div class="graph-head">
-                  <h2>关系图谱</h2>
-                  <div class="graph-legend" id="graph-legend"></div>
+                  <h2>关系图谱<span class="graph-count" id="graph-count"></span></h2>
+                  <div class="graph-tools">
+                    <div class="graph-legend" id="graph-legend"></div>
+                    <div class="graph-scopes" role="group" aria-label="图谱范围">
+                      <button class="graph-toggle" type="button" data-graph-scope="overview" aria-pressed="false">全景</button>
+                      <button class="graph-toggle" type="button" data-graph-scope="local" aria-pressed="true">局部</button>
+                    </div>
+                    <button class="graph-toggle" id="graph-overview-size" type="button" aria-pressed="false" hidden>放大节点</button>
+                    <button class="graph-toggle entity-rail-btn" id="entity-rail-toggle" type="button" aria-pressed="true" title="显示/隐藏实体列表">
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M3 8h10M3 11.5h10"/></svg>
+                      <span>实体列表</span>
+                    </button>
+                    <button class="graph-toggle" id="graph-toggle" type="button" aria-pressed="false" title="展开关系图谱">
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2.6H2.6v3.4M10 13.4h3.4v-3.4M13.4 6V2.6H10M2.6 10v3.4H6"/></svg>
+                      <span>查看关系图谱</span>
+                    </button>
+                  </div>
                 </div>
                 <div class="graph-stage">
                   <svg id="graph-canvas" role="group" aria-label="实体关系图"></svg>
                 </div>
+                <div class="graph-attrs" id="graph-attrs" hidden></div>
               </section>
 
               <aside class="block entity-detail" id="entity-detail">
@@ -323,6 +339,7 @@
               <button class="tab" data-ops="costs" role="tab" aria-selected="false">成本</button>
               <button class="tab" data-ops="gaps" role="tab" aria-selected="false">缺口</button>
               <button class="tab" data-ops="evals" role="tab" aria-selected="false">评测</button>
+              <button class="tab" data-ops="feedback" role="tab" aria-selected="false">对话反馈</button>
             </div>
             <div id="ops-body"></div>
           </section>
@@ -562,6 +579,21 @@
       <div class="dialog-actions">
         <button class="btn" type="button" data-close>取消</button>
         <button class="btn danger" type="button" id="entity-delete-confirm">确认删除</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog class="dialog" id="chat-feedback-dialog" aria-labelledby="chat-feedback-title">
+    <div class="dialog-head">
+      <h2 id="chat-feedback-title">反馈这条回答</h2>
+      <button class="icon-btn" data-close aria-label="关闭"><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button>
+    </div>
+    <div class="dialog-body">
+      <p class="chat-feedback-note">反馈只记录在知织本系统，不会发送给模型服务商。可补充说明（可选）。</p>
+      <textarea id="chat-feedback-comment" class="chat-feedback-comment" rows="4" maxlength="2000" placeholder="哪里有问题？例如：引用不对、结论错误、答非所问…"></textarea>
+      <div class="dialog-actions">
+        <button class="btn" type="button" data-close>取消</button>
+        <button class="btn primary" type="button" id="chat-feedback-submit">提交反馈</button>
       </div>
     </div>
   </dialog>

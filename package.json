@@ -19,7 +19,8 @@
     "eval:live": "node --import tsx scripts/evaluate.ts --live",
     "test:browser": "node --import tsx scripts/browser-smoke.ts",
     "test:sidecar": "knowweave/.venv/bin/python -m unittest sidecar.test_parsing sidecar.test_models",
-    "sync:directory": "node --import tsx scripts/sync-directory.ts"
+    "sync:directory": "node --import tsx scripts/sync-directory.ts",
+    "repair:facts": "tsx scripts/repair-facts.ts"
   },
   "dependencies": {
     "@deepseek-ai/dsh": "0.2.2-alpha.3",

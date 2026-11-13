@@ -1,5 +1,6 @@
 import { settings } from '../config.js'
 import { query } from '../db/index.js'
+import { archiveStaleConversations } from './conversation-archive.js'
 import { runReflection } from './learning.js'
 import { purgeExpiredTrash } from './trash.js'
 
@@ -18,6 +19,7 @@ export async function runDailyReflection(now = new Date()): Promise<number> {
     if (!claimed.length) continue
     try {
       await purgeExpiredTrash(tenant.id)
+      await archiveStaleConversations(tenant.id)
       await runReflection(tenant.id)
       await query("UPDATE jobs SET status='done',updated_at=now(),error=NULL WHERE id=$1", [id])
       count += 1
@@ -29,10 +31,11 @@ export async function runDailyReflection(now = new Date()): Promise<number> {
   return count
 }
 
-/** 间隔模式（未配置 reflection.run_at）下的维护：先清理过期回收站，再运行反思。 */
+/** 间隔模式（未配置 reflection.run_at）下的维护：先清理过期回收站、归档闲置会话，再运行反思。 */
 export async function runIntervalMaintenance(): Promise<void> {
   for (const tenant of await query<{ id: string }>('SELECT id FROM tenants')) {
     await purgeExpiredTrash(tenant.id)
+    await archiveStaleConversations(tenant.id)
     await runReflection(tenant.id)
   }
 }

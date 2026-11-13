@@ -18,6 +18,23 @@ export interface ParsedBlock {
   order: number
 }
 
+export class ParseQualityError extends Error {
+  readonly statusCode = 422
+}
+
+export function cleanParsedText(text: string): string {
+  return text.replaceAll('\u0000', '').replace(/[\uD800-\uDFFF]/gu, '\uFFFD')
+}
+
+function cleanParserOutput(value: unknown): unknown {
+  if (typeof value === 'string') return cleanParsedText(value)
+  if (Array.isArray(value)) return value.map(cleanParserOutput)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [cleanParsedText(key), cleanParserOutput(item)]))
+  }
+  return value
+}
+
 const HEADING = /^(#{1,6})\s+(.*)$/
 const CJK_SPACE = /(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])/g
 
@@ -179,7 +196,7 @@ export function parseHtml(html: string, title: string, parserName = 'html'): Par
   const titleMatch = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)
   const documentTitle = titleMatch ? stripTags(titleMatch[1]!) : title
   const bodyText = blocks.map((item) => item.text).join('\n')
-  return { title: documentTitle || title, blocks, parser: parserName, quality: quality(bodyText), meta: {} }
+  return { title: cleanParsedText(documentTitle || title), blocks, parser: parserName, quality: quality(bodyText), meta: {} }
 }
 
 export function normalizeCjkSpaces(text: string): string {
@@ -199,8 +216,17 @@ async function sidecarParse(filename: string, data: Buffer, title: string | null
       body: JSON.stringify({ filename, data: data.toString('base64'), title, engine: settings.parseEngine }),
       signal: AbortSignal.timeout(120_000),
     })
-    if (!response.ok) throw new Error(`解析边车返回 ${response.status}: ${(await response.text()).slice(0, 300)}`)
-    const document = (await response.json()) as ParsedDocument
+    if (!response.ok) {
+      if (response.status === 422) {
+        const report = await response.clone().json().catch(() => null) as { detail?: { attempts?: Array<{ status: string }> } } | null
+        if (Array.isArray(report?.detail?.attempts) && report.detail.attempts.some((attempt) => attempt?.status === 'low_quality')) {
+          throw new ParseQualityError('解析质量不足，需人工修正')
+        }
+      }
+      const message = `解析边车返回 ${response.status}: ${(await response.text()).slice(0, 300)}`
+      throw new Error(message)
+    }
+    const document = cleanParserOutput(await response.json()) as ParsedDocument
     if (document.meta.format === 'markdown') {
       const parsed = parseMarkdown(document.blocks.map((item) => item.text).join('\n\n'), document.title)
       return { ...parsed, parser: document.parser, meta: document.meta }
@@ -210,6 +236,7 @@ async function sidecarParse(filename: string, data: Buffer, title: string | null
   try {
     return await parseOnce()
   } catch (error) {
+    if (error instanceof ParseQualityError) throw error
     // 边缘故障：边车可能刚退出，重试前再确保一次。
     if (!(await ensureSidecar())) throw error
     return parseOnce()
@@ -218,16 +245,18 @@ async function sidecarParse(filename: string, data: Buffer, title: string | null
 
 export async function parseBytes(filename: string, data: Buffer, title?: string | null): Promise<ParsedDocument> {
   const suffix = filename.includes('.') ? `.${filename.split('.').pop()!.toLowerCase()}` : ''
-  const baseTitle = title || (filename.includes('.') ? filename.slice(0, filename.lastIndexOf('.')) : filename) || '未命名文档'
-  if (['.md', '.markdown'].includes(suffix)) return parseMarkdown(data.toString('utf8'), baseTitle)
-  if (['.html', '.htm'].includes(suffix)) return parseHtml(data.toString('utf8'), baseTitle)
-  if (['.txt', '.log', '.csv', '.json', '.yaml', '.yml'].includes(suffix)) return parseMarkdown(data.toString('utf8'), baseTitle)
+  const baseTitle = cleanParsedText(title || (filename.includes('.') ? filename.slice(0, filename.lastIndexOf('.')) : filename)) || '未命名文档'
   if (['.pdf', '.docx', '.png', '.jpg', '.jpeg', '.tif', '.tiff', '.webp', '.bmp', '.wav', '.mp3', '.m4a', '.mp4', '.webm', '.ogg', '.flac'].includes(suffix)) return sidecarParse(filename, data, title ?? null)
   if (suffix === '.doc') throw new Error('暂不支持 .doc，请转换为 .docx 或 PDF')
-  return parseText(data.toString('utf8'), baseTitle)
+  const text = cleanParsedText(data.toString('utf8'))
+  if (['.html', '.htm'].includes(suffix)) return parseHtml(text, baseTitle)
+  if (['.md', '.markdown', '.txt', '.log', '.csv', '.json', '.yaml', '.yml'].includes(suffix)) return parseMarkdown(text, baseTitle)
+  return parseText(text, baseTitle)
 }
 
 export function parseTextContent(text: string, title?: string | null): ParsedDocument {
+  text = cleanParsedText(text)
+  title = title ? cleanParsedText(title) : title
   if (/^(?:#{1,6}\s|\s*(?:`{3,}|~{3,}|\$\$|\|))|^.*\|.*\n\s*\|?\s*:?-{3,}/m.test(text ?? '')) return parseMarkdown(text, title || '粘贴的文本')
   return parseText(text, title || '粘贴的文本')
 }
