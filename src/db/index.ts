@@ -27,6 +27,11 @@ async function createDriver(): Promise<Driver> {
   // DATE 保持原始 YYYY-MM-DD 字符串，避免本地时区 Date 回写后偏移一天。
   pg.types.setTypeParser(pg.types.builtins.DATE, (value) => value)
   const pool = new pg.Pool({ connectionString: url, max: 20 })
+  // 数据库重启或 pg_terminate_backend 会断开池里的空闲连接，pg 把这类错误抛给 pool 的 'error' 事件；
+  // 不监听就会变成 unhandled 'error' 直接崩掉进程。这里只记录，连接由 pool 自动重建。
+  pool.on('error', (error: Error) => {
+    console.warn('[db] 空闲连接被断开，等待池重建连接：', error.message)
+  })
   return {
     async query(text, params) {
       return pool.query(text, params)
