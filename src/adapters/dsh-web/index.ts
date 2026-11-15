@@ -11,11 +11,14 @@ import {
 } from '../../core/security.js'
 
 const WELCOME_VERSION = '2026-09-28.1'
+/** 对话正文字号（px）：DSH 默认 14px，中文阅读偏小，默认调大一档。 */
+const DEFAULT_CHAT_FONT_SIZE = 18
 
 /**
- * 关闭 DSH 自带的新手引导弹窗：
+ * 关闭 DSH 自带的新手引导弹窗，并把对话正文默认调大一号：
  * - ui-settings-general.welcomeNoticeVersion 标记预览版说明已读；
- * - ui-settings-models.credentialOnboarding=false 不再自动弹出 API Key 引导。
+ * - ui-settings-models.credentialOnboarding=false 不再自动弹出 API Key 引导；
+ * - ui-theme.fontSize 对话正文字号（DSH 默认 14px，正文、标题、表格按同一差值缩放）。
  */
 export function ensureQuietProfile(): void {
   const profileDir = join(settings.dshWebHome, 'profiles', 'web')
@@ -32,6 +35,11 @@ export function ensureQuietProfile(): void {
   }
   if (!hasId('ui-settings-models')) {
     appended += '- id: ui-settings-models\n  config:\n    credentialOnboarding: false\n'
+  }
+  // 对话正文默认字号调大一档，标题与表格随差值一起放大；只写首次默认值，
+  // 之后由原生「外观」字号控件接管（10–22px 整数）。
+  if (!hasId('ui-theme')) {
+    appended += `- id: ui-theme\n  config:\n    fontSize: ${DEFAULT_CHAT_FONT_SIZE}\n`
   }
   // DSH 默认工作区落在系统「文档」目录，容器/沙箱内不可写会弹出工作区选择；
   // 指向项目内目录后首次使用自动建好并直接进入对话。

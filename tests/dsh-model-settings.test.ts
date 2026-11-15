@@ -39,16 +39,22 @@ test('model settings are seeded once into the editable profile and native edits 
     const seeded = await readFile(profilePath(home), 'utf8')
     // 原生模型设置页保持可用，且不再自动弹出 API Key 引导。
     assert.match(seeded, /- id: ui-settings-models\n  config:\n    credentialOnboarding: false/)
+    // 对话正文字号默认 18px，之后的调整以原生「外观」设置为准。
+    assert.match(seeded, /- id: ui-theme\n  config:\n    fontSize: 18/)
     assert.match(seeded, /- id: agent-default-model\n  config:\n    provider: knowweave-model\n    model: "test-model"/)
     assert.match(seeded, /apiKeyEnv: KNOWWEAVE_CONFIGURED_MODEL_API_KEY/)
     assert.match(seeded, /baseURL: "http:\/\/model\.invalid\/v1"/)
 
-    // 模拟用户在原生模型设置页改模型：重启（再次 ensureQuietProfile）不得覆盖。
-    const edited = seeded.replace('model: "test-model"', 'model: "user-chosen-model"')
+    // 模拟用户在原生模型设置页改模型、在原生外观设置页改字号：
+    // 重启（再次 ensureQuietProfile）不得覆盖。
+    const edited = seeded
+      .replace('model: "test-model"', 'model: "user-chosen-model"')
+      .replace('fontSize: 18', 'fontSize: 20')
     await writeFile(profilePath(home), edited, 'utf8')
     ensureQuietProfile()
     const afterRestart = await readFile(profilePath(home), 'utf8')
     assert.equal(afterRestart, edited)
+    assert.match(afterRestart, /- id: ui-theme\n  config:\n    fontSize: 20/)
     assert.match(afterRestart, /- id: agent-default-model\n  config:\n    provider: knowweave-model\n    model: "user-chosen-model"/)
   })
 })
@@ -69,6 +75,7 @@ test('an existing profile without model entries receives the seed on upgrade', a
     assert.match(upgraded, /- id: agent-default-model/)
     assert.match(upgraded, /- id: llm-pi-ai/)
     assert.match(upgraded, /- id: ui-settings-models/)
+    assert.match(upgraded, /- id: ui-theme\n  config:\n    fontSize: 18/)
   })
 })
 
