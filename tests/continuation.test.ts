@@ -6,6 +6,7 @@ import { query } from '../src/db/index.js'
 import { settings } from '../src/config.js'
 import { createServer } from '../src/app/server.js'
 import { sparseVector, tokenize } from '../src/adapters/embeddings/index.js'
+import type { ContinuationRelation, ContinuationView } from '../src/core/continuation.js'
 import { retrieve } from '../src/core/retrieval.js'
 
 let workspace: Awaited<ReturnType<typeof testWorkspace>>
@@ -134,6 +135,87 @@ test('a continuation chain selects exactly one in-force generation per date', as
   assert.equal(view.in_force, false, 'the 2026 generation is the one in force today')
 })
 
+for (const [current, relation] of [['earlier', 'continued_by'], ['later', 'continues']] as const) {
+  test(`inserting via ${relation} preserves the neighboring effective dates and continuation metadata`, async () => {
+    for (const id of ['first', 'earlier', 'inserted', 'later']) {
+      await document(id, id)
+      await versionAndChunk(id, `Aurora policy ${id}`)
+    }
+    assert.equal((await link('earlier', { other_doc_id: 'first', relation: 'continues', effective_date: '2024-01-01' })).statusCode, 200)
+    assert.equal((await link('later', { other_doc_id: 'earlier', relation: 'continues', effective_date: '2026-01-01', note: '原登记备注' })).statusCode, 200)
+    const edges = () => query('SELECT * FROM document_continuations ORDER BY effective_date')
+    const original = await edges()
+    const insert = (effective_date: string) => link(current, { other_doc_id: 'inserted', relation, effective_date, note: '插入文档备注' })
+    assert.equal((await insert('2024-01-01')).statusCode, 409)
+    assert.equal((await insert('2026-01-01')).statusCode, 409)
+    const hiddenNeighbor = relation === 'continues' ? 'earlier' : 'later'
+    await query(`UPDATE documents SET acl_principals = '["user:private"]' WHERE id = $1`, [hiddenNeighbor])
+    assert.equal((await insert('2025-01-01')).statusCode, 404)
+    await query(`UPDATE documents SET acl_principals = '["tenant:public"]' WHERE id = $1`, [hiddenNeighbor])
+    assert.deepEqual(await edges(), original)
+
+    const inserted = await insert('2025-01-01')
+    assert.equal(inserted.statusCode, 200, inserted.body)
+    const view = inserted.json<ContinuationView>()
+    assert.deepEqual(view.chain.map(({ id, effective_date }) => [id, effective_date]), [
+      ['first', null], ['earlier', '2024-01-01'], ['inserted', '2025-01-01'], ['later', '2026-01-01'],
+    ])
+    assert.equal((relation === 'continues' ? view.predecessor : view.successor)?.id, 'inserted')
+    const [firstEdge, newEdge, preservedEdge] = await edges()
+    assert.deepEqual(firstEdge, original[0])
+    assert.deepEqual(preservedEdge, { ...original[1], predecessor_doc_id: 'inserted' })
+    assert.equal(newEdge?.note, '插入文档备注')
+    assert.equal((await insert('2025-01-01')).statusCode, 409)
+    for (const [asOf, expected] of [['2024-12-31', 'earlier'], ['2025-01-01', 'inserted'], ['2026-01-01', 'later']] as const) {
+      assert.deepEqual((await retrieve(workspace.principal, 'Aurora policy', { asOf })).hits.map((hit) => hit.document.id), [expected])
+    }
+  })
+}
+
+test('concurrent insertions at the same date leave one consistent continuation chain', async () => {
+  for (const id of ['a', 'b', 'c', 'd']) await document(id, id)
+  assert.equal((await link('d', { other_doc_id: 'a', relation: 'continues', effective_date: '2026-01-01' })).statusCode, 200)
+  const insert = (docId: string, other_doc_id: string, relation: ContinuationRelation) => link(docId, {
+    other_doc_id, relation, effective_date: '2025-01-01',
+  })
+  const [forward, backward] = await Promise.all([insert('a', 'b', 'continued_by'), insert('d', 'c', 'continues')])
+  assert.deepEqual([forward.statusCode, backward.statusCode].sort(), [200, 409])
+  const winner = forward.statusCode === 200 ? 'b' : 'c'
+  assert.deepEqual(await query('SELECT predecessor_doc_id, successor_doc_id FROM document_continuations ORDER BY effective_date'), [
+    { predecessor_doc_id: 'a', successor_doc_id: winner },
+    { predecessor_doc_id: winner, successor_doc_id: 'd' },
+  ])
+})
+
+for (const reconnect of [true, false]) {
+  test(`detaching the middle document with reconnect=${reconnect} leaves the expected chains`, async () => {
+    for (const id of ['a', 'b', 'c', 'd']) await document(id, id)
+    assert.equal((await link('b', { other_doc_id: 'a', relation: 'continues', effective_date: '2024-01-01' })).statusCode, 200)
+    assert.equal((await link('c', { other_doc_id: 'b', relation: 'continues', effective_date: '2025-01-01', note: '后续备注' })).statusCode, 200)
+    assert.equal((await link('d', { other_doc_id: 'c', relation: 'continues', effective_date: '2026-01-01' })).statusCode, 200)
+    const edges = () => query('SELECT * FROM document_continuations ORDER BY effective_date')
+    const original = await edges()
+    const detach = (predecessorId: string) => app.inject({
+      method: 'DELETE', url: `/api/v1/documents/b/continuation?reconnect=${reconnect}&predecessor_id=${predecessorId}&successor_id=c`, headers: workspace.headers,
+    })
+    assert.equal((await detach('d')).statusCode, 409)
+    await query(`UPDATE documents SET acl_principals = '["user:private"]' WHERE id = 'c'`)
+    assert.equal((await detach('a')).statusCode, 404)
+    await query(`UPDATE documents SET acl_principals = '["tenant:public"]' WHERE id = 'c'`)
+    assert.deepEqual(await edges(), original)
+
+    const removed = await detach('a')
+    assert.equal(removed.statusCode, 200, removed.body)
+    const view = removed.json<ContinuationView>()
+    assert.equal(view.predecessor, null)
+    assert.equal(view.successor, null)
+    assert.deepEqual(view.chain.map(({ id }) => id), ['b'])
+    assert.deepEqual(await edges(), reconnect
+      ? [{ ...original[1], predecessor_doc_id: 'a' }, original[2]]
+      : [original[2]])
+  })
+}
+
 test('continuation links reject self reference, duplicates, invalid dates and non-linear chains', async () => {
   await document('a', 'A')
   await document('b', 'B')
@@ -147,8 +229,8 @@ test('continuation links reject self reference, duplicates, invalid dates and no
 
   assert.equal((await link('b', { other_doc_id: 'a', relation: 'continues', effective_date: '2024-01-01' })).statusCode, 200)
   assert.equal((await link('c', { other_doc_id: 'b', relation: 'continues', effective_date: '2025-01-01' })).statusCode, 200)
-  assert.equal((await link('b', { other_doc_id: 'c', relation: 'continues', effective_date: '2026-01-01' })).statusCode, 409, 'B already has a successor')
-  assert.equal((await link('a', { other_doc_id: 'c', relation: 'continued_by', effective_date: '2026-01-01' })).statusCode, 409, 'A already has a successor')
+  assert.equal((await link('b', { other_doc_id: 'c', relation: 'continues', effective_date: '2026-01-01' })).statusCode, 409, 'C is already linked after B')
+  assert.equal((await link('a', { other_doc_id: 'c', relation: 'continued_by', effective_date: '2023-01-01' })).statusCode, 409, 'C already belongs to the chain')
 
   const removed = await app.inject({
     method: 'DELETE', url: '/api/v1/documents/a/continuation?relation=continued_by', headers: workspace.headers,

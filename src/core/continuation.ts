@@ -1,5 +1,5 @@
 import { settings } from '../config.js'
-import { query, queryOne, transaction } from '../db/index.js'
+import { query, queryOne, transaction, type DbClient } from '../db/index.js'
 import { newId, todayLocal } from './ids.js'
 import type { ContinuationRow, DocumentRow } from './rows.js'
 import { canRead, requireEditor, type Principal } from './security.js'
@@ -208,10 +208,11 @@ function noteText(value: unknown): string | null {
   return text || null
 }
 
-/**
- * 建立一条延续边。relation=continues 表示当前文档接续 other；
- * relation=continued_by 表示 other 接续当前文档。两者最终都写成 predecessor → successor。
- */
+function lockContinuationChain(client: DbClient, tenantId: string) {
+  return client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`document-continuations:${tenantId}`])
+}
+
+/** 建立延续关系。目标方向已有邻接文档时，按给定日期插入所选文档，保留原后续的生效日期。 */
 export async function linkContinuation(
   principal: Principal,
   docId: string,
@@ -227,66 +228,73 @@ export async function linkContinuation(
   const note = noteText(input.note)
   if (otherDocId === docId) throw Object.assign(new Error('文档不能接续自身'), { statusCode: 400 })
 
-  const documents = await query<DocumentRow>(
-    'SELECT * FROM documents WHERE tenant_id = $1 AND id = ANY($2::text[]) AND status = $3',
-    [principal.tenantId, [docId, otherDocId], 'active'],
-  )
-  const current = documents.find((document) => document.id === docId)
-  const other = documents.find((document) => document.id === otherDocId)
+  const beforeCurrent = input.relation === 'continues'
+  const tenantId = principal.tenantId
   const unavailable = () => Object.assign(new Error('文档不存在、在回收站或无权访问'), { statusCode: 404 })
-  if (!current || !other) throw unavailable()
-  if (!canRead(principal, current.acl_principals) || !canRead(principal, other.acl_principals)) throw unavailable()
-
-  const successor = input.relation === 'continues' ? current : other
-  const predecessor = input.relation === 'continues' ? other : current
   try {
-    await transaction(async (client) => {
-      await client.query('SELECT id FROM documents WHERE id = ANY($1::text[]) FOR UPDATE', [[predecessor.id, successor.id]])
-      const outgoing = (await client.query<ContinuationRow>(
-        'SELECT * FROM document_continuations WHERE tenant_id = $1 AND predecessor_doc_id = $2',
-        [principal.tenantId, predecessor.id],
-      ))[0]
-      if (outgoing) throw Object.assign(new Error('该文档已有后续文档，请先解除原有延续关系'), { statusCode: 409 })
-      const incoming = (await client.query<ContinuationRow>(
-        'SELECT * FROM document_continuations WHERE tenant_id = $1 AND successor_doc_id = $2',
-        [principal.tenantId, successor.id],
-      ))[0]
-      if (incoming) throw Object.assign(new Error('该文档已接续自其他文档，请先解除原有延续关系'), { statusCode: 409 })
-
-      const all = await client.query<ContinuationRow>('SELECT * FROM document_continuations WHERE tenant_id = $1', [principal.tenantId])
+    const current = await transaction(async (client) => {
+      await lockContinuationChain(client, tenantId)
+      const all = await client.query<ContinuationRow>('SELECT * FROM document_continuations WHERE tenant_id = $1', [tenantId])
       const byPredecessor = new Map(all.map((relation) => [relation.predecessor_doc_id, relation]))
       const bySuccessor = new Map(all.map((relation) => [relation.successor_doc_id, relation]))
-      const previous = bySuccessor.get(predecessor.id)
+      const existingEdge = beforeCurrent ? bySuccessor.get(docId) : byPredecessor.get(docId)
+      const ids = new Set([docId, otherDocId])
+      if (existingEdge) ids.add(beforeCurrent ? existingEdge.predecessor_doc_id : existingEdge.successor_doc_id)
+      const documents = await client.query<DocumentRow>(
+        'SELECT * FROM documents WHERE tenant_id = $1 AND id = ANY($2::text[]) ORDER BY id FOR NO KEY UPDATE',
+        [tenantId, [...ids]],
+      )
+      if (documents.length !== ids.size || documents.some((document) => !canRead(principal, document.acl_principals))) throw unavailable()
+      const current = documents.find((document) => document.id === docId)
+      const other = documents.find((document) => document.id === otherDocId)
+      if (current?.status !== 'active' || other?.status !== 'active') throw unavailable()
+
+      const otherIncoming = bySuccessor.get(otherDocId)
+      const otherOutgoing = byPredecessor.get(otherDocId)
+      if (existingEdge && (otherIncoming || otherOutgoing)) {
+        throw Object.assign(new Error('所选文档已登记沿革，无法插入当前沿革'), { statusCode: 409 })
+      }
+      if (beforeCurrent ? otherOutgoing : otherIncoming) {
+        throw Object.assign(new Error('所选文档在该方向已有延续关系'), { statusCode: 409 })
+      }
+
+      const predecessorId = beforeCurrent ? (existingEdge?.predecessor_doc_id ?? otherDocId) : docId
+      const successorId = beforeCurrent && !existingEdge ? docId : otherDocId
+      const previous = bySuccessor.get(predecessorId)
       if (previous && previous.effective_date >= effectiveDate) {
         throw Object.assign(new Error('延续生效日期必须晚于前序文档自身的生效日期'), { statusCode: 409 })
       }
-      const next = byPredecessor.get(successor.id)
+      const next = existingEdge ?? byPredecessor.get(successorId)
       if (next && next.effective_date <= effectiveDate) {
         throw Object.assign(new Error('延续生效日期必须早于后续文档自身的生效日期'), { statusCode: 409 })
       }
-      // 不允许成环：从 successor 沿后续方向走，若遇到 predecessor 则拒绝。
-      let cursor: string | undefined = successor.id
+      let cursor: string | undefined = successorId
       const seen = new Set<string>()
       while (cursor && !seen.has(cursor)) {
-        if (cursor === predecessor.id) throw Object.assign(new Error('延续关系不能形成环'), { statusCode: 409 })
+        if (cursor === predecessorId) throw Object.assign(new Error('延续关系不能形成环'), { statusCode: 409 })
         seen.add(cursor)
         cursor = byPredecessor.get(cursor)?.successor_doc_id
       }
 
+      if (existingEdge) {
+        // 保留原后续文档的生效日期、备注与登记信息，只更新它的直接前序。
+        await client.query('UPDATE document_continuations SET predecessor_doc_id = $1 WHERE id = $2', [otherDocId, existingEdge.id])
+      }
       await client.query(
         `INSERT INTO document_continuations
            (id, tenant_id, predecessor_doc_id, successor_doc_id, effective_date, note, created_by)
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [newId('cont'), principal.tenantId, predecessor.id, successor.id, effectiveDate, note, principal.userId],
+        [newId('cont'), tenantId, predecessorId, successorId, effectiveDate, note, principal.userId],
       )
+      return current
     })
+    return continuationView(principal, current)
   } catch (error) {
     if ((error as { code?: string }).code === '23505') {
       throw Object.assign(new Error('该文档已有延续关系，请刷新后重试'), { statusCode: 409 })
     }
     throw error
   }
-  return continuationView(principal, current)
 }
 
 export async function unlinkContinuation(
@@ -298,28 +306,73 @@ export async function unlinkContinuation(
   if (relation !== 'continues' && relation !== 'continued_by') {
     throw Object.assign(new Error('relation 必须为 continues 或 continued_by'), { statusCode: 400 })
   }
-  const document = await queryOne<DocumentRow>(
-    'SELECT * FROM documents WHERE tenant_id = $1 AND id = $2',
-    [principal.tenantId, docId],
-  )
-  if (!document || !canRead(principal, document.acl_principals)) {
-    throw Object.assign(new Error('文档不存在或无权访问'), { statusCode: 404 })
-  }
-  const removed = relation === 'continues'
-    ? await query<{ id: string }>(
-      'DELETE FROM document_continuations WHERE tenant_id = $1 AND successor_doc_id = $2 RETURNING id',
-      [principal.tenantId, docId],
+  const tenantId = principal.tenantId
+  const document = await transaction(async (client) => {
+    await lockContinuationChain(client, tenantId)
+    const [document] = await client.query<DocumentRow>(
+      'SELECT * FROM documents WHERE tenant_id = $1 AND id = $2 FOR NO KEY UPDATE', [tenantId, docId],
     )
-    : await query<{ id: string }>(
-      'DELETE FROM document_continuations WHERE tenant_id = $1 AND predecessor_doc_id = $2 RETURNING id',
-      [principal.tenantId, docId],
+    if (!document || !canRead(principal, document.acl_principals)) {
+      throw Object.assign(new Error('文档不存在或无权访问'), { statusCode: 404 })
+    }
+    const column = relation === 'continues' ? 'successor_doc_id' : 'predecessor_doc_id'
+    const removed = await client.query<{ id: string }>(
+      `DELETE FROM document_continuations WHERE tenant_id = $1 AND ${column} = $2 RETURNING id`, [tenantId, docId],
     )
-  if (!removed.length) throw Object.assign(new Error('没有可解除的延续关系'), { statusCode: 404 })
+    if (!removed.length) throw Object.assign(new Error('没有可解除的延续关系'), { statusCode: 404 })
+    return document
+  })
   return continuationView(principal, document)
 }
 
-/** 彻底删除文档前清理相关沿革边，避免留下指向不存在文档的引用。 */
-export async function removeContinuationLinks(client: { query<T = Record<string, unknown>>(text: string, params?: unknown[]): Promise<T[]> }, tenantId: string, docId: string): Promise<void> {
+/** 移出当前文档，并按用户选择续接原前序和原后继。 */
+export async function detachContinuation(
+  principal: Principal,
+  docId: string,
+  reconnect: boolean,
+  expected?: { predecessorId: string; successorId: string },
+): Promise<ContinuationView> {
+  requireEditor(principal)
+  const tenantId = principal.tenantId
+  const document = await transaction(async (client) => {
+    await lockContinuationChain(client, tenantId)
+    const edges = await client.query<ContinuationRow>(
+      'SELECT * FROM document_continuations WHERE tenant_id = $1 AND (predecessor_doc_id = $2 OR successor_doc_id = $2)',
+      [tenantId, docId],
+    )
+    const incoming = edges.find((edge) => edge.successor_doc_id === docId)
+    const outgoing = edges.find((edge) => edge.predecessor_doc_id === docId)
+    const predecessorId = incoming?.predecessor_doc_id ?? ''
+    const successorId = outgoing?.successor_doc_id ?? ''
+    const ids = [docId, predecessorId, successorId].filter(Boolean)
+    const documents = await client.query<DocumentRow>(
+      'SELECT * FROM documents WHERE tenant_id = $1 AND id = ANY($2::text[]) ORDER BY id FOR NO KEY UPDATE',
+      [tenantId, ids],
+    )
+    const current = documents.find((row) => row.id === docId)
+    if (!current || documents.length !== ids.length || documents.some((row) => !canRead(principal, row.acl_principals))) {
+      throw Object.assign(new Error('文档不存在或无权访问'), { statusCode: 404 })
+    }
+    if (expected && (expected.predecessorId !== predecessorId || expected.successorId !== successorId)) {
+      throw Object.assign(new Error('沿革已变更，请重新打开文档后再解除'), { statusCode: 409 })
+    }
+    if (!edges.length) throw Object.assign(new Error('没有可解除的延续关系'), { statusCode: 404 })
+    if (reconnect) {
+      if (!incoming || !outgoing) {
+        throw Object.assign(new Error('续接需要同时存在前序和后继文档'), { statusCode: 409 })
+      }
+      await client.query('DELETE FROM document_continuations WHERE id = $1', [incoming.id])
+      await client.query('UPDATE document_continuations SET predecessor_doc_id = $1 WHERE id = $2', [predecessorId, outgoing.id])
+    } else {
+      await removeContinuationLinks(client, tenantId, docId)
+    }
+    return current
+  })
+  return continuationView(principal, document)
+}
+
+/** 清除指向当前文档的两侧沿革边。 */
+export async function removeContinuationLinks(client: DbClient, tenantId: string, docId: string): Promise<void> {
   await client.query(
     'DELETE FROM document_continuations WHERE tenant_id = $1 AND (predecessor_doc_id = $2 OR successor_doc_id = $2)',
     [tenantId, docId],

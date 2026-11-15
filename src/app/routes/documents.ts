@@ -15,7 +15,7 @@ import { isEntityName } from '../../core/learning.js'
 import { enrichmentTasks, processEnrichmentQueue, requestEnrichment } from '../../core/enrichment-queue.js'
 import { DISPLAYABLE_FACT } from '../../core/fact-visibility.js'
 import { reindexDocument } from '../../core/reindexing.js'
-import { continuationView, linkContinuation, unlinkContinuation } from '../../core/continuation.js'
+import { continuationView, detachContinuation, linkContinuation, unlinkContinuation } from '../../core/continuation.js'
 import { purgeDocument, restoreDocument, trashDocument, trashDocuments } from '../../core/trash.js'
 import { evidenceWeight } from '../../core/source-policy.js'
 import type { ChunkRow, DocumentRow, EntityRow, FactRow, VersionRow } from '../../core/rows.js'
@@ -362,8 +362,15 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
   app.delete('/:doc_id/continuation', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
     const { doc_id: docId } = request.params as { doc_id: string }
-    const relation = (request.query as { relation?: string }).relation
-    return unlinkContinuation(principal, docId, relation)
+    const { relation, reconnect, predecessor_id, successor_id } = request.query as Record<string, string | undefined>
+    if (reconnect === undefined) return unlinkContinuation(principal, docId, relation)
+    if (reconnect !== 'true' && reconnect !== 'false') {
+      throw Object.assign(new Error('reconnect 必须为 true 或 false'), { statusCode: 400 })
+    }
+    const expected = predecessor_id !== undefined || successor_id !== undefined
+      ? { predecessorId: predecessor_id ?? '', successorId: successor_id ?? '' }
+      : undefined
+    return detachContinuation(principal, docId, reconnect === 'true', expected)
   })
 
   app.post('/:doc_id/reprocess', { preHandler: authenticate }, async (request) => {

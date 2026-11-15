@@ -50,6 +50,7 @@ GET   /documents/trash           回收站列表，含 deleted_at 与自动清�
 GET   /documents/{id}            ?version_id=... 返回对应规范化原文和区间，并附延续链
 POST  /documents/{id}/continuation  other_doc_id, relation=continues|continued_by, effective_date, note?
 DELETE /documents/{id}/continuation ?relation=continues|continued_by
+DELETE /documents/{id}/continuation ?reconnect=true|false&predecessor_id=...&successor_id=...
 DELETE /documents/{id}           移入回收站（软删除，可恢复）
 POST  /documents/{id}/restore    恢复：重切分、重新向量化、重新抽取事实与实体
 DELETE /documents/{id}/permanent 彻底删除，不可恢复
@@ -68,6 +69,10 @@ POST  /evals/cases/{id}/approve
 POST  /evals/run                  mode=answer（默认）|retrieval
 POST  /mcp                       JSON-RPC tools/list、tools/call
 ```
+
+登记延续关系时，`continues` 将所选文档设为当前文档的前序，`continued_by` 将它设为后续。若这一侧已有邻接文档，所选文档须尚未登记沿革，`effective_date` 为所选文档的生效日期，必须早于排序在其后的文档，并晚于排序在其前且已登记了生效日期的文档。原有文档的生效日期和备注保留。直接接续时，`effective_date` 仍表示接续后生效的那篇文档的日期。
+
+解除延续时，`reconnect=false` 将当前文档从沿革中移出，前后两段分别保留。`reconnect=true` 还会将原后续接到原前序之后，保留原后续的生效日期和备注。提交 `predecessor_id` 和 `successor_id` 可校验确认时看到的两侧文档，缺少的一侧传空字符串。按 `relation` 解除单条边的接口仍可使用。
 
 `source_uri` 是目录 CLI 的 `directory:` 来源标识，需置于 multipart 文件字段之前。`source.text` 是规范化原文；区间 start/end 是 UTF-16 偏移，末尾不含，coordinate_system 为 `normalized-text-utf16`，不是原文件二进制位置。
 
