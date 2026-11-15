@@ -258,15 +258,19 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
     const factIds = new Set(reviewItems.flatMap(({ payload }) =>
       [payload.new_fact_id, ...(payload.old_fact_ids ?? [])].filter((id): id is string => typeof id === 'string' && id !== ''),
     ))
-    type ReviewSource = { title: string; page: number | null; heading: string[] | null; seq: number | null; quote: string }
+    type ReviewSource = {
+      doc_id: string; version_id: string | null; chunk_id: string | null
+      title: string; page: number | null; heading: string[] | null; seq: number | null; quote: string
+    }
     const sources = new Map<string, ReviewSource>()
     if (factIds.size) {
       const rows = await query<ReviewSource & { fact_id: string }>(
-        `SELECT DISTINCT ON (fe.fact_id) fe.fact_id, d.title, c.page, c.heading_path AS heading, c.seq, fe.quote
+        `SELECT DISTINCT ON (fe.fact_id) fe.fact_id, d.id AS doc_id, c.version_id, c.id AS chunk_id,
+           d.title, c.page, c.heading_path AS heading, c.seq, fe.quote
          FROM fact_evidence fe
          JOIN facts f ON f.id = fe.fact_id AND f.tenant_id = $2
          JOIN documents d ON d.id = fe.doc_id AND d.tenant_id = $2 AND d.status = 'active'
-         LEFT JOIN chunks c ON c.id = fe.chunk_id AND c.doc_id = d.id AND c.tenant_id = $2
+         LEFT JOIN chunks c ON c.id = fe.chunk_id AND c.doc_id = d.id AND c.tenant_id = $2 AND c.is_parent = false
          WHERE fe.fact_id = ANY($1::text[])
            AND jsonb_typeof(f.acl_principals) = 'array' AND f.acl_principals ?| $3::text[]
            AND jsonb_typeof(d.acl_principals) = 'array' AND d.acl_principals ?| $3::text[]

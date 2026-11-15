@@ -139,8 +139,8 @@ test('running extraction reports batch base and request progress, then clears it
 })
 
 test('failed extraction resumes from the last finished batch instead of re-extracting it', async () => {
-  // 9000+ 字 → 2 批；第 2 批首次失败，重试只补第 2 批
-  const sentences = Array.from({ length: 900 }, (_, index) => `知织使用库${String(index).padStart(4, '0')}号`)
+  // 6000+ 字 → 2 批；第 2 批首次失败，重试只补第 2 批
+  const sentences = Array.from({ length: 600 }, (_, index) => `知织使用库${String(index).padStart(4, '0')}号`)
   const complete = harness.complete
   const ok = (text: string) => ({ text, tokensIn: 0, tokensOut: 0, latencyMs: 0, model: 'test-model', provider: 'test', error: null, ok: true })
   let batch1Calls = 0
@@ -195,7 +195,7 @@ test('failed extraction resumes from the last finished batch instead of re-extra
 })
 
 test('forcing a fresh extraction drops the checkpoint and re-runs finished batches', async () => {
-  const sentences = Array.from({ length: 900 }, (_, index) => `知织使用库${String(index).padStart(4, '0')}号`)
+  const sentences = Array.from({ length: 600 }, (_, index) => `知织使用库${String(index).padStart(4, '0')}号`)
   const complete = harness.complete
   const ok = (text: string) => ({ text, tokensIn: 0, tokensOut: 0, latencyMs: 0, model: 'test-model', provider: 'test', error: null, ok: true })
   let batch1Calls = 0

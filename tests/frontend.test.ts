@@ -147,22 +147,58 @@ test('the library offers both decisions for an import awaiting duplicate confirm
   assert.equal(box.hidden, true)
 })
 
-test('review keeps each existing fact next to its own verbatim source', async () => {
-  const page = frontend(() => ({ items: [{
+test('review compares the new source with the selected existing fact and can switch existing records', async () => {
+  const oldPath = '/documents/clinic/citation/old?chunk_id=day'
+  const currentPath = '/documents/clinic/citation/current?chunk_id=night'
+  const page = frontend((url) => url.endsWith(oldPath) ? {
+    title: '门诊须知', version: 1, page: 3,
+    source: { text: '排班\n日诊 *仅限工作日*\n补充说明 <甲>' },
+    chunks: [{ id: 'day', spans: [{ start: 3, end: 13 }] }],
+  } : url.endsWith(currentPath) ? {
+    title: '新通知', version: 2, page: 1,
+    source: { text: '本院新增夜诊\n自次月开始' },
+    chunks: [{ id: 'night', spans: [{ start: 0, end: 6 }] }],
+  } : { items: [{
     id: 'review', kind: 'fact_conflict', created_at: '2026-01-01',
     payload: { subject: '医院', predicate: '提供', new_object: '夜诊', old_objects: ['日诊', null, '急诊'], quote: '本院新增夜诊' },
-    source: { title: '新通知', page: 1 },
+    source: { doc_id: 'clinic', version_id: 'current', chunk_id: 'night', title: '新通知', page: 1, quote: '本院新增夜诊' },
     old_sources: [
-      { title: '门诊须知', page: 3, quote: '日诊 *仅限工作日*' },
+      { doc_id: 'clinic', version_id: 'old', chunk_id: 'day', title: '门诊须知', page: 3, quote: '日诊 *仅限工作日*' },
       null,
       { title: '值班表', heading: ['正文', '急诊'], quote: '急诊 <全天>\n节假日照常' },
     ],
-  }] }))
+  }] })
+  const list = page.element('#review-list')
+  const oldSourceButton = Object.assign(page.element('old-review-source'), { dataset: { reviewSource: 'review', oldIndex: '0' } })
+  list.querySelectorAll = (selector: string) => selector === '[data-review-source]' ? [oldSourceButton] : []
+  const panes = Object.fromEntries(['current', 'existing'].map((side) => {
+    const pane = page.element(`[data-review-pane="${side}"]`)
+    pane.querySelector = (selector: string) => page.element(`${side} ${selector}`)
+    return [side, pane]
+  }))
+  let switchRecord: (value: string) => Promise<void> = async () => {}
+  page.context.KnowWeavePickers.choice = (_root: unknown, config: { value: string; onChange: typeof switchRecord }) => {
+    assert.equal(config.value, '0')
+    switchRecord = config.onChange
+  }
   await page.run('loadReview()')
-  const html = page.element('#review-list').innerHTML
-  assert.match(html, /原文（《新通知》 · 第 1 页）：本院新增夜诊/)
-  assert.match(html, /医院提供日诊<\/div>\s*<div class="conflict-quote">原文（《门诊须知》 · 第 3 页）：日诊 \*仅限工作日\*<\/div>/)
+  const html = list.innerHTML
+  assert.match(html, /data-review-source="review"[^>]*>原文（《新通知》 · 第 1 页）：本院新增夜诊/)
+  assert.match(html, /医院提供日诊<\/div>\s*<button[^>]*data-review-source="review"[^>]*>原文（《门诊须知》 · 第 3 页）：日诊 \*仅限工作日\*<span>对照原文<\/span><\/button>/)
   assert.match(html, /医院提供急诊<\/div>\s*<div class="conflict-quote">原文（《值班表》 · 急诊）：急诊 &lt;全天&gt;\n节假日照常<\/div>/)
+  await oldSourceButton.handlers.click()
+  assert.deepEqual(page.calls.slice(1).map(call => call.url), ['/api/v1' + currentPath, '/api/v1' + oldPath])
+  assert.equal(page.element('#doc-dialog').open, true)
+  assert.equal(page.element('#doc-dialog-title').textContent, '新旧原文对照')
+  assert.equal(panes.current.querySelector('[data-review-location]').textContent, '《新通知》 · v2 · 第 1 页')
+  assert.equal(panes.existing.querySelector('[data-review-location]').textContent, '《门诊须知》 · v1 · 第 3 页')
+  const newText = panes.current.querySelector('[data-review-text]').innerHTML
+  assert.match(newText, /<mark[^>]*id="review-source-highlight-current"[^>]*>本院新增夜诊<\/mark>\n自次月开始/)
+  assert.match(panes.existing.querySelector('[data-review-text]').innerHTML, /排班\n<mark[^>]*id="review-source-highlight-existing"[^>]*>日诊 \*仅限工作日\*<\/mark>\n补充说明 &lt;甲&gt;/)
+  await switchRecord('1')
+  assert.equal(panes.current.querySelector('[data-review-text]').innerHTML, newText)
+  assert.match(panes.existing.querySelector('[data-review-text]').innerHTML, /仅有引文摘录.*急诊 &lt;全天&gt;\n节假日照常/s)
+  assert.equal(page.calls.length, 3)
 })
 
 test('default chat mounts the complete native DSH UI and keeps it alive across navigation', async () => {
@@ -611,6 +647,136 @@ function centerOf(group: any) {
   const match = String(group.attrs.transform).match(/translate\(([-\d.]+),([-\d.]+)\)/)
   return match ? { x: Number(match[1]), y: Number(match[2]) } : { x: NaN, y: NaN }
 }
+
+function mountGraph(page: ReturnType<typeof frontend>, overview = false) {
+  const canvas = page.element('#graph-canvas')
+  canvas.setAttribute = (key: string, value: string) => {
+    assert.equal(key, 'viewBox')
+    const [x, y, width, height] = value.split(' ').map(Number)
+    canvas.viewBox = { baseVal: { x, y, width, height } }
+  }
+  const cursorInGraph = (clientX: number, clientY: number) => {
+    const { x, y, width } = canvas.viewBox.baseVal
+    const scale = 310 / width
+    return { x: x + (clientX - 140) / scale, y: y + (clientY - 220) / scale }
+  }
+  canvas.getScreenCTM = () => ({ inverse() {
+    const svgUnitsPerPixel = canvas.viewBox.baseVal.width / 310
+    return { a: svgUnitsPerPixel, b: 0, c: 0, d: svgUnitsPerPixel, project: cursorInGraph }
+  } })
+  canvas.createSVGPoint = () => ({
+    x: 0, y: 0,
+    matrixTransform(inverse: { project: typeof cursorInGraph }) { return inverse.project(this.x, this.y) },
+  })
+  page.context.graphProbe = { ...graphFixture(), overview }
+  page.run('setupEntityView(); state.graph = graphProbe; drawGraph()')
+  return { canvas, cursorInGraph }
+}
+
+test('relation graph wheel zoom keeps each cursor position anchored in SVG coordinates', () => {
+  const { canvas, cursorInGraph } = mountGraph(frontend())
+  const nodes = canvas.children
+
+  for (const [clientX, clientY, deltaY] of [[350, 260, -120], [180, 370, 120]] as const) {
+    const before = cursorInGraph(clientX, clientY)
+    const { width } = canvas.viewBox.baseVal
+    let canceled = false
+    canvas.handlers.wheel({
+      currentTarget: canvas, clientX, clientY, deltaY, deltaMode: 0,
+      preventDefault() { canceled = true },
+    })
+    const after = cursorInGraph(clientX, clientY)
+    assert.ok(canceled)
+    assert.ok((canvas.viewBox.baseVal.width - width) * deltaY > 0)
+    assert.ok(Math.hypot(before.x - after.x, before.y - after.y) < 1e-8)
+    assert.equal(canvas.children, nodes)
+  }
+})
+
+test('dragging the zoomed graph canvas pans it without turning the gesture into a click', () => {
+  const page = frontend()
+  const { canvas } = mountGraph(page)
+  const captured = new Set<number>()
+  canvas.closest = () => null
+  canvas.setPointerCapture = (id: number) => captured.add(id)
+  canvas.hasPointerCapture = (id: number) => captured.has(id)
+  canvas.releasePointerCapture = (id: number) => captured.delete(id)
+  const start = { target: canvas, pointerId: 1, isPrimary: true, pointerType: 'mouse', button: 0, buttons: 1, clientX: 350, clientY: 260 }
+  const move = (clientX: number, clientY: number) => page.dispatch('window', 'pointermove', { ...start, clientX, clientY })
+  canvas.handlers.wheel({ ...start, currentTarget: canvas, deltaY: -120, deltaMode: 0, preventDefault() {} })
+  const before = canvas.viewBox.baseVal
+  const node = allWithClass(canvas, 'g-node')[0]
+  const nodePosition = node.attrs.transform
+  canvas.handlers.pointerdown(start)
+  move(351, 261)
+  assert.equal(canvas.viewBox.baseVal, before)
+  assert.equal(captured.size, 0)
+  move(380, 245)
+  const units = before.width / 310
+  assert.deepEqual(canvas.viewBox.baseVal, { ...before, x: before.x - 30 * units, y: before.y + 15 * units })
+  assert.equal(node.attrs.transform, nodePosition)
+  assert.ok(captured.has(1))
+  page.dispatch('window', 'pointerup', { pointerId: 1 })
+  assert.equal(captured.size, 0)
+  let stopped = false
+  const click = { target: canvas, detail: 1, stopImmediatePropagation() { stopped = true } }
+  canvas.handlers.click(click)
+  assert.ok(stopped)
+  assert.equal(page.run('state.entityView'), 'entity')
+
+  canvas.handlers.pointerdown(start)
+  move(351, 261)
+  page.dispatch('window', 'pointerup', { pointerId: 1 })
+  canvas.handlers.click(click)
+  assert.equal(page.run('state.entityView'), 'graph')
+})
+
+test('dragging an entity moves its links, arrows, and labels in both graph views', () => {
+  for (const overview of [false, true]) {
+    const page = frontend()
+    const { canvas } = mountGraph(page, overview)
+    canvas.setPointerCapture = () => {}
+    canvas.hasPointerCapture = () => false
+    const [focus, node] = allWithClass(canvas, 'g-node')
+    const lines = overview ? allWithClass(canvas, 'g-overview-edge') : null
+    const [path] = overview ? withClass(lines![0], 'path', 'g-link') : withClass(canvas, 'path', 'g-link')
+    const [arrow] = overview ? withClass(lines![0], 'path', 'g-arrow') : withClass(canvas, 'path', 'g-arrow')
+    const unrelated = overview ? lines![2].children[0] : withClass(canvas, 'path', 'g-link')[2]
+    const [tag] = withClass(canvas, 'g', 'g-edge-tag')
+    const before = { focus: focus.attrs.transform, path: path.attrs.d, arrow: arrow.attrs.d, unrelated: unrelated.attrs.d, tag: tag?.attrs.transform }
+    const nodeCenter = centerOf(node)
+    const viewBox = canvas.viewBox.baseVal
+    const units = viewBox.width / 310
+    const start = { target: { closest: () => node }, pointerId: 1, isPrimary: true, pointerType: 'mouse', button: 0, buttons: 1, clientX: 350, clientY: 260 }
+    canvas.handlers.pointerdown(start)
+    page.dispatch('window', 'pointermove', { ...start, clientX: 332, clientY: 290 })
+    page.dispatch('window', 'pointerup', { pointerId: 1 })
+    assert.deepEqual(centerOf(node), { x: nodeCenter.x - 18 * units, y: nodeCenter.y + 30 * units })
+    assert.equal(canvas.viewBox.baseVal, viewBox)
+    assert.equal(focus.attrs.transform, before.focus)
+    assert.notEqual(path.attrs.d, before.path)
+    assert.notEqual(arrow.attrs.d, before.arrow)
+    assert.equal(unrelated.attrs.d, before.unrelated)
+    if (!overview) assert.notEqual(tag.attrs.transform, before.tag)
+  }
+})
+
+test('dragging a local graph attribute card moves it with its entity', () => {
+  const page = frontend()
+  const { canvas } = mountGraph(page)
+  page.run('state.graph.nodes = state.graph.nodes.slice(0, 1); state.graph.edges = []; drawGraph()')
+  canvas.setPointerCapture = () => {}
+  canvas.hasPointerCapture = () => false
+  const [node] = allWithClass(canvas, 'g-node')
+  const [annotations] = allWithClass(canvas, 'g-focus-annotations')
+  const { x, y } = centerOf(node)
+  const start = { target: { closest: () => annotations }, pointerId: 1, isPrimary: true, pointerType: 'mouse', button: 0, buttons: 1, clientX: 350, clientY: 260 }
+  canvas.handlers.pointerdown(start)
+  page.dispatch('window', 'pointermove', { ...start, clientX: 365, clientY: 250 })
+  page.dispatch('window', 'pointercancel', { pointerId: 1 })
+  assert.deepEqual(centerOf(node), { x: x + 30, y: y - 20 })
+  assert.deepEqual(centerOf(annotations), { x: 30, y: -20 })
+})
 
 test('relation graph draws every node and edge label with directed arrows', () => {
   const page = frontend()

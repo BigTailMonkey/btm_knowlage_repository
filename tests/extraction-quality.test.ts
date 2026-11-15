@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { after, before, beforeEach, test } from 'node:test'
 
 import { harness } from '../src/adapters/harness/index.js'
+import { buildEntityGraph } from '../src/core/entity-graph.js'
 import { extractFactsForDocument, runReflection } from '../src/core/learning.js'
 import { relationOf } from '../src/core/relation-types.js'
 import { isValueLike, predicateStem, yearsIn } from '../src/core/value-shapes.js'
@@ -89,6 +90,53 @@ test('duplicate wording of one assertion is stored once, not three times', async
   assert.equal(fact?.predicate, '等于')
   assert.equal(fact?.object_id, null, '公式是字面值，不建实体')
   assert.equal((await query('SELECT id FROM entities')).length, 1, '只为指标本身建实体')
+})
+
+test('one quote can support separate graph edges for each explicitly assigned institution and service', async () => {
+  const quote = '乡镇卫生院和社区卫生服务中心均应开展居民健康档案管理和公众健康咨询。'
+  const doc = await document(quote)
+  const institutions = ['乡镇卫生院', '社区卫生服务中心']
+  const services = ['居民健康档案管理', '公众健康咨询']
+  const items = services.map((object) => candidate({
+    subject: institutions.join('、'), subject_type: 'org', predicate: '应开展', object, object_literal: '', quote,
+  }))
+  harness.complete = async (prompt, system) => {
+    if (system?.includes('事实校验器')) {
+      assert.doesNotMatch(prompt, /主语=乡镇卫生院、社区卫生服务中心/)
+      return KEEP_ALL()
+    }
+    assert.match(system ?? '', /每个机构分别做主语/)
+    assert.match(system ?? '', /每项服务分别做宾语/)
+    return modelResult(items)
+  }
+
+  await extractFactsForDocument(workspace.principal, doc)
+  await extractFactsForDocument(workspace.principal, doc)
+
+  const graph = await buildEntityGraph(workspace.principal, { overview: true })
+  assert.deepEqual(graph.nodes.map(({ name }) => name).sort(), [...institutions, ...services].sort())
+  for (const institution of institutions) {
+    const node = graph.nodes.find(({ name }) => name === institution)!
+    const targets = graph.edges.filter(({ source }) => source === node.id).map(({ target }) => target)
+    assert.deepEqual(graph.nodes.filter(({ id }) => targets.includes(id)).map(({ name }) => name).sort(), [...services].sort())
+  }
+  assert.equal(graph.edges.length, 4)
+  const evidence = await query<{ quote: string }>('SELECT quote FROM fact_evidence WHERE doc_id=$1', [doc])
+  assert.deepEqual(evidence.map((row) => row.quote), Array(4).fill(quote))
+})
+
+test('a collective indicator does not become separate facts about each institution', async () => {
+  const subject = '乡镇卫生院、社区卫生服务中心'
+  const quote = `${subject}达到服务能力标准的比例合计为95%。`
+  const doc = await document(quote)
+  harness.complete = extractionStub([candidate({
+    subject, subject_type: 'org', predicate: '服务能力达标比例合计为', object_literal: '95%', quote,
+  })])
+  await extractFactsForDocument(workspace.principal, doc)
+
+  const graph = await buildEntityGraph(workspace.principal, { overview: true })
+  assert.deepEqual(graph.nodes.map(({ name }) => name), [subject])
+  assert.equal(graph.nodes[0]?.attrs[0]?.value, '95%')
 })
 
 test('a value-shaped subject never becomes a fact', async () => {

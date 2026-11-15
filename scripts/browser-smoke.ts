@@ -374,7 +374,46 @@ try {
   const screenshot=await call('Page.captureScreenshot',{format:'png'})
   const artifact=join(directory,'knowledge-chat.png')
   await writeFile(artifact,Buffer.from(screenshot.data,'base64'))
-  console.log(JSON.stringify({browser:'Chrome headless',directoryCli:true,nativeChatDisabledState:true,nativeChatCitation:true,researchChat:true,citation:true,sourceHighlight:true,reindex:true,sourcePolicy:true,evaluationImport:true,javascriptErrors:errors,artifact}))
+
+  const newQuote = '新版知织仅为引用提供摘要。'
+  const latest = await ingestParsed(workspace.principal, parseText(newQuote, '浏览器验收文档'), { sourceType: 'text', documentId: String(source.document_id) })
+  const latestChunk = await queryOne<{ id: string }>('SELECT id FROM chunks WHERE version_id=$1 AND is_parent=false', [latest.version_id])
+  const tenant = workspace.principal.tenantId
+  await query(`INSERT INTO entities(id,tenant_id,canonical_name,normalized_name,acl_principals)
+    VALUES ('browser-subject',$1,'知织','知织','["tenant:public"]')`, [tenant])
+  await query(`INSERT INTO facts(id,tenant_id,subject_id,predicate,object_literal,acl_principals) VALUES
+    ('browser-old',$1,'browser-subject','提供','原文引用','["tenant:public"]'),
+    ('browser-new',$1,'browser-subject','提供','摘要','["tenant:public"]')`, [tenant])
+  await query(`INSERT INTO fact_evidence(id,fact_id,doc_id,chunk_id,quote) VALUES
+    ('browser-old-evidence','browser-old',$1,$2,'为回答提供原文引用'),
+    ('browser-new-evidence','browser-new',$1,$3,$4)`, [source.document_id, chunk!.id, latestChunk!.id, newQuote])
+  await query(`INSERT INTO review_queue(id,tenant_id,kind,payload) VALUES ('browser-review',$1,'fact_conflict',$2::jsonb)`, [tenant, JSON.stringify({
+    subject: '知织', predicate: '提供', new_object: '摘要', new_fact_id: 'browser-new', old_objects: ['原文引用'], old_fact_ids: ['browser-old'],
+  })])
+  await evaluate("document.querySelector('#doc-dialog').close(); document.querySelector('.nav-item[data-page=review]').click()")
+  await until("document.querySelector('[data-review-source=browser-review]')")
+  await evaluate("document.querySelector('[data-review-source=browser-review]').click()")
+  await until("document.querySelector('#review-source-highlight-current') && document.querySelector('#review-source-highlight-existing')")
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.review-source-pane [data-review-location]')].map(node => node.textContent)"), ['《浏览器验收文档》 · v2', '《浏览器验收文档》 · v1'])
+  assert.equal(await evaluate("document.querySelector('#review-source-highlight-current').textContent"), newQuote)
+  assert.match(await evaluate("document.querySelector('#review-source-highlight-existing').textContent"), /为回答提供原文引用/)
+  const panes = "[...document.querySelectorAll('.review-source-pane')].map(pane => pane.getBoundingClientRect())"
+  assert.equal(await evaluate(`(() => { const [current, old] = ${panes}; return current.top === old.top && current.right <= old.left; })()`), true)
+  await call('Emulation.setDeviceMetricsOverride', { width: 420, height: 840, deviceScaleFactor: 1, mobile: false })
+  await until(`(() => { const [current, old] = ${panes}; return current.left === old.left && current.bottom <= old.top; })()`)
+  await evaluate(`document.querySelector('#doc-dialog').close();
+    document.querySelector('[data-review=browser-review][data-action=reject_new]').click()`)
+  const centeredNotice = `(() => {
+    const notice = document.querySelector('#toast.show');
+    if (notice?.textContent !== '审阅项已处理') return false;
+    const { left, width, top, height } = notice.getBoundingClientRect();
+    return Math.abs(left + width / 2 - innerWidth / 2) < 1 && Math.abs(top + height / 2 - innerHeight / 2) < 1;
+  })()`
+  await until(centeredNotice)
+  await call('Emulation.clearDeviceMetricsOverride')
+  await until(centeredNotice)
+  assert.deepEqual(errors, [])
+  console.log(JSON.stringify({browser:'Chrome headless',directoryCli:true,nativeChatDisabledState:true,nativeChatCitation:true,researchChat:true,citation:true,sourceHighlight:true,reindex:true,sourcePolicy:true,evaluationImport:true,reviewComparison:true,javascriptErrors:errors,artifact}))
 } finally {
   socket?.close()
   if(browser && browser.exitCode===null)browser.kill('SIGKILL')

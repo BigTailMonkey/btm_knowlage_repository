@@ -3,6 +3,7 @@ import { before, beforeEach, after, test } from 'node:test'
 import { testWorkspace, clearKnowledge } from './helpers.js'
 import { query, queryOne } from '../src/db/index.js'
 import { settings } from '../src/config.js'
+import { embedder } from '../src/adapters/embeddings/index.js'
 import { harness } from '../src/adapters/harness/index.js'
 import { semanticRerank } from '../src/adapters/reranking/index.js'
 import { getOrCreateEntity, runReflection } from '../src/core/learning.js'
@@ -31,12 +32,24 @@ test('semantic rerank validates index completeness and uses returned relevance, 
 test('semantic entity alignment requires an in-roster high-confidence identity decision', async () => {
   const first = await getOrCreateEntity(workspace.principal.tenantId, 'International Business Machines', 'org')
   settings.semanticEntities = true
-  harness.complete = async () => ({ text: JSON.stringify({ same_entity: true, entity_id: first.id, confidence: 0.99 }), tokensIn: 0, tokensOut: 0, latencyMs: 0, model: 'stub', provider: 'stub', ok: true, error: null })
-  const aligned = await getOrCreateEntity(workspace.principal.tenantId, 'IBM', 'org')
-  assert.equal(aligned.id, first.id)
-  assert.equal((await query("SELECT id FROM entity_aliases WHERE source='semantic-confirmed'")).length, 1)
-  harness.complete = async () => ({ text: JSON.stringify({ same_entity: true, entity_id: 'foreign-id', confidence: 1 }), tokensIn: 0, tokensOut: 0, latencyMs: 0, model: 'stub', provider: 'stub', ok: true, error: null })
-  assert.notEqual((await getOrCreateEntity(workspace.principal.tenantId, 'Different entity', 'org')).id, first.id)
+  const embedMany = embedder.embedMany
+  const embedded: string[][] = []
+  const vectors = new Map<string, number[]>()
+  embedder.embedMany = async (texts) => {
+    embedded.push(texts)
+    return embedMany(texts)
+  }
+  try {
+    harness.complete = async () => ({ text: JSON.stringify({ same_entity: true, entity_id: first.id, confidence: 0.99 }), tokensIn: 0, tokensOut: 0, latencyMs: 0, model: 'stub', provider: 'stub', ok: true, error: null })
+    const aligned = await getOrCreateEntity(workspace.principal.tenantId, 'IBM', 'org', undefined, vectors)
+    assert.equal(aligned.id, first.id)
+    assert.equal((await query("SELECT id FROM entity_aliases WHERE source='semantic-confirmed'")).length, 1)
+    harness.complete = async () => ({ text: JSON.stringify({ same_entity: true, entity_id: 'foreign-id', confidence: 1 }), tokensIn: 0, tokensOut: 0, latencyMs: 0, model: 'stub', provider: 'stub', ok: true, error: null })
+    assert.notEqual((await getOrCreateEntity(workspace.principal.tenantId, 'Different entity', 'org', undefined, vectors)).id, first.id)
+    assert.deepEqual(embedded, [['IBM', 'International Business Machines'], ['Different entity']])
+  } finally {
+    embedder.embedMany = embedMany
+  }
 })
 
 test('reflection builds evidence-backed entity and community summaries, clusters gaps and decays only once per period', async () => {

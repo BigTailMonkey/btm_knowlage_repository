@@ -23,8 +23,10 @@ const EXTRACT_SYSTEM = `你是 KnoWeave 的事实抽取器。只抽取原文明�
 subject, subject_type(product|org|person|concept|event), predicate, object,
 object_type, object_literal, valid_from(YYYY-MM-DD 或 null), valid_to(YYYY-MM-DD 或 null),
 confidence(0-1), quote(必须逐字来自原文，不超过120字)。
-规则：最多 8 条，优先抽取有明确主体和对象的重要关系。谓词用简短动词短语，同一句原文只产出一条事实，不要用近义谓语（等于/计算方式为/计算为、达到/目标为）重复同一条关系。
+规则：每批最多 16 条。优先覆盖原文有明确主体和对象的服务职责、业务活动及其他重要关系。每个独立断言输出一项，同一句含多个不同断言时可以共用同一引文。不要用近义谓语（等于/计算方式为/计算为、达到/目标为）重复同一断言。
 主语和实体型宾语必须是可独立指代、之后还能被反复提到的名词性实体，保留引文中的写法。排除动作片段、连词结尾的残句、代词、跨句拼接。
+原文明确将同一职责分别赋予多个机构时，每个机构分别做主语；同一机构明确开展多个可独立指代的服务时，每项服务分别做宾语。对分别成立的断言，不要把并列机构或整串服务写成一个实体，也不要只抽第一项。如果原文表达共同协作、择一、整体统计或各自的适用范围不同，必须保留这个限制，不能改写成各成员分别无条件承担。
+例如“每个乡镇卫生院和社区卫生服务中心每月至少举办1次健康知识讲座”应生成两条，主语分别为“乡镇卫生院”和“社区卫生服务中心”，谓语均为“每月至少举办1次”，宾语均为“健康知识讲座”，均引用这段原文。服务名称可独立指代时做实体型宾语，把时间、频次和义务强度等限定保留在谓语中，不要将整个带数值的服务短语塞进字面值。
 宾语是数值、比例、金额、百分比、期限、频次、日期、编号或计算公式时，object 留空，把原文写进 object_literal，不要为这种值编造实体（例如“20%”“6 个月”“每年至少 4 次”“按照规范要求进行…×100％”）。
 数值和公式不能当主语；主语和宾语不能是同一个事物。同一对主语宾语不要拆成多条事实。
 没有明确主语时跳过，例如“收集和提供风险信息”不产生事实。数字、日期、版本必须保留。没有符合条件的事实时返回 []。`
@@ -38,8 +40,9 @@ const CHECK_SYSTEM = `你是 KnoWeave 的事实校验器。输入是若干条候
 - 主语和宾语指向同一个事物；
 - 谓语与宾语语义重复，宾语里已经含了谓语的动词含义；
 - 主语或宾语是动作片段、残句、代词，而不是完整名称或名词短语；
+- 把原文明示分别承担的多个机构或独立服务合成一个节点，或把共同协作、择一、整体统计、带条件的职责改写成没有这些限制的单独断言；
 - 引文是跨句拼接，或读起来不像原文在陈述主谓宾关系。
-判断从严：只要拼出来的句子像病句或语义重复，就不要保留。`
+同一引文可以支持多条不同断言。若引文明确说明每个机构各自承担某项服务，单独列出其中一个机构是完整断言。逐条核对原文是否支持该关系及其限定条件。`
 
 const DATE_RE = /(20\d{2})[-年/.](\d{1,2})[-月/.](\d{1,2})?/
 
@@ -114,6 +117,7 @@ export async function getOrCreateEntity(
   name: string,
   entityType = 'concept',
   acl?: string[] | null,
+  semanticVectors?: Map<string, number[]>,
 ): Promise<EntityRow> {
   const normalized = normalizeName(name)
   const existing = await queryOne<EntityRow>(
@@ -130,7 +134,7 @@ export async function getOrCreateEntity(
     const aliased = await queryOne<EntityRow>('SELECT * FROM entities WHERE id = $1', [alias.entity_id])
     if (aliased) return aliased
   }
-  const semantic = await resolveSemanticEntity(tenantId, name, entityType, acl?.length ? acl : ['tenant:public'])
+  const semantic = await resolveSemanticEntity(tenantId, name, entityType, acl?.length ? acl : ['tenant:public'], semanticVectors)
   if (semantic) {
     await query(`INSERT INTO entity_aliases (id,entity_id,alias,normalized_alias,source) VALUES ($1,$2,$3,$4,'semantic-confirmed')`, [newId('ali'), semantic.id, name.trim(), normalized])
     return semantic
@@ -225,7 +229,7 @@ interface ExtractionCheckpoint {
   requests: { model: number; embedding: number }
 }
 
-const CHECKPOINT_VERSION = 1
+const CHECKPOINT_VERSION = 2
 const CHECKPOINT_PROMPT = createHash('sha256').update(`${EXTRACT_SYSTEM}\n${CHECK_SYSTEM}`).digest('hex').slice(0, 16)
 /** 合并阶段每处理这么多个候选落一次盘，避免每次写整份检查点 */
 const MERGE_CHECKPOINT_EVERY = 5
@@ -265,7 +269,7 @@ async function clearExtractionCheckpoint(tenantId: string, docId: string, versio
     [enrichJobId(docId, version), tenantId])
 }
 
-const EXTRACTION_BATCH_CHARS = 7000
+const EXTRACTION_BATCH_CHARS = 4000
 const EXTRACTION_OVERLAP = 180
 
 function quotedChunk(chunks: ChunkRow[], quote: string): ChunkRow | null {
@@ -318,6 +322,20 @@ function quoteContains(quote: string, term: string): boolean {
     return true
   }
   return false
+}
+
+const organizationSeparator = /、|以及|和|与|及/u
+const organizationName = /^\p{Script=Han}+(?:卫生院|医院|卫生室|中心|服务站|委员会|政府|学校|大学|研究院|研究所|公司|机构)$/u
+
+/** 只有引文明示各机构分别适用时，才把合写的主语拆开交给事实校验。 */
+function individualSubjects(subject: string, type: string, quote: string): string[] {
+  if (type !== 'org') return [subject]
+  const names = subject.replace(/\s+/g, '').split(organizationSeparator)
+  if (names.length < 2 || names.some((name) => !organizationName.test(name) || name.includes('或'))) return [subject]
+  const separator = `(?:${organizationSeparator.source})`
+  const list = names.join(separator)
+  const distribution = new RegExp(`每一?个${list}(?!${separator}|的|共同|联合|协同)|${list}(?:均|都)`, 'u')
+  return distribution.test(quote.replace(/\s+/g, '')) ? names : [subject]
 }
 
 const entityWords = new Intl.Segmenter('zh', { granularity: 'word' })
@@ -386,6 +404,7 @@ async function extractCandidates(
     const items = parseJsonArray(requireModelText(result, operation))
     if (items === null) throw modelUnavailable(operation, '模型未返回完整的 JSON 数组')
     const fresh: Candidate[] = []
+    const expanded: Candidate[] = []
     for (const item of items) {
       const subject = String(item.subject ?? '').trim()
       const predicate = String(item.predicate ?? '').trim()
@@ -401,7 +420,6 @@ async function extractCandidates(
       // A nearby sentence, fuzzy token overlap or matching quote prefix is not
       // evidence for an extracted assertion. Keep the entire verbatim quote.
       if (!chunk || !batch.text.includes(quote)) continue
-      if (!quoteContains(quote, subject)) continue
       if (!quoteContains(quote, object || literal)) continue
       const validFrom = parseDate(item.valid_from)
       const validTo = parseDate(item.valid_to)
@@ -423,17 +441,26 @@ async function extractCandidates(
         quote,
         chunkId: chunk.id,
       }
-      const key = candidateKey(candidate)
-      if (seen.has(key)) continue
-      seen.add(key)
-      fresh.push(candidate)
+      const subjects = individualSubjects(subject, candidate.subjectType, quote)
+      const destination = subjects.length > 1 ? expanded : fresh
+      for (const name of subjects) {
+        if (!quoteContains(quote, name) || (object && normalizeName(name) === normalizeName(object))) continue
+        destination.push({ ...candidate, subject: name.slice(0, 120) })
+      }
     }
+    // 模型直接抽出的单机构断言优先于从合写主语拆出的断言。
+    const distinct = [...fresh, ...expanded].filter((candidate) => {
+      const key = candidateKey(candidate)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
     // 结构是否成立（是否只是把引文复述一遍、主语谓语重复、宾语与谓语同义）
-    // 不做规则猜测，交给模型逐条判断；通不过的直接丢弃，不进入知识库也不进审阅队列。
+    // 交给模型逐条判断，通不过的直接丢弃，不进入知识库也不进审阅队列。
     setExtractionStage(meter, `${resumed ? '续抽' : ''}第 ${index + 1}/${batches.length} 批校验`)
-    const keep = await checkCandidates(fresh)
-    const accepted = fresh.filter((candidate, position) => keep[position])
-    discarded += fresh.length - accepted.length
+    const keep = await checkCandidates(distinct)
+    const accepted = distinct.filter((candidate, position) => keep[position])
+    discarded += distinct.length - accepted.length
     candidates.push(...accepted)
     store.state.batches[index] = accepted
     store.state.total = batches.length
@@ -724,7 +751,9 @@ async function queueFactReview(
   notifyReviewQueueChanged(principal.tenantId)
 }
 
-async function mergeOrArbitrate(principal: Principal, document: DocumentRow, candidate: Candidate): Promise<string> {
+async function mergeOrArbitrate(
+  principal: Principal, document: DocumentRow, candidate: Candidate, semanticVectors: Map<string, number[]>,
+): Promise<string> {
   await query('DELETE FROM knowledge_summaries WHERE tenant_id=$1', [principal.tenantId])
   if (!candidate.chunkId) return 'rejected'
   const chunk = await queryOne<ChunkRow>(
@@ -736,9 +765,9 @@ async function mergeOrArbitrate(principal: Principal, document: DocumentRow, can
   )
   if (!chunk || !chunk.text.includes(candidate.quote)) return 'rejected'
   const acl = document.acl_principals?.length ? document.acl_principals : ['tenant:public']
-  const subject = await getOrCreateEntity(principal.tenantId, candidate.subject, candidate.subjectType, acl)
+  const subject = await getOrCreateEntity(principal.tenantId, candidate.subject, candidate.subjectType, acl, semanticVectors)
   const objectEntity = candidate.objectName
-    ? await getOrCreateEntity(principal.tenantId, candidate.objectName, candidate.objectType, acl)
+    ? await getOrCreateEntity(principal.tenantId, candidate.objectName, candidate.objectType, acl, semanticVectors)
     : null
   const subjectFacts = await query<ComparableFact>(
     `SELECT ${comparableFactColumns} FROM facts f ${comparableFactJoins}
@@ -892,10 +921,11 @@ async function extractDocument(principal: Principal, document: DocumentRow): Pro
       if (!current || current.status !== 'active' || current.current_version !== document.current_version) return null
       const counts: Record<string, number> = { created: 0, merged: 0, superseded: 0, disputed: 0, rejected: 0 }
       const startMerged = Math.min(state.merged, candidates.length)
+      const semanticVectors = new Map<string, number[]>()
       for (const [index, candidate] of candidates.entries()) {
         if (index < startMerged) continue
         setExtractionStage(meter, `合并事实 ${index + 1}/${candidates.length}`)
-        const outcome = await mergeOrArbitrate(principal, document, candidate)
+        const outcome = await mergeOrArbitrate(principal, document, candidate, semanticVectors)
         counts[outcome] = (counts[outcome] ?? 0) + 1
         if ((index + 1) % MERGE_CHECKPOINT_EVERY === 0) {
           state.merged = index + 1

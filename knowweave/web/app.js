@@ -209,10 +209,11 @@ function factPill(status) {
 }
 
 let toastTimer = null;
-function toast(message) {
+function toast(message, { centered = false } = {}) {
   const el = $("#toast");
   if (!el) return;
   el.textContent = runtimeText(message);
+  el.classList.toggle("is-centered", centered);
   el.classList.add("show");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove("show"), 3600);
@@ -888,13 +889,13 @@ function sourceRanges(data, citation) {
   return merged;
 }
 
-function sourceHtml(text, ranges = []) {
+function sourceHtml(text, ranges = [], targetId = "source-highlight-target") {
   const source = String(text ?? "");
   let cursor = 0;
   const output = [];
   ranges.forEach(([start, end], index) => {
     output.push(esc(source.slice(cursor, start)));
-    output.push(`<mark class="source-highlight"${index === 0 ? ' id="source-highlight-target" tabindex="-1"' : ""}>${esc(source.slice(start, end))}</mark>`);
+    output.push(`<mark class="source-highlight"${index === 0 ? ` id="${esc(targetId)}" tabindex="-1"` : ""}>${esc(source.slice(start, end))}</mark>`);
     cursor = end;
   });
   output.push(esc(source.slice(cursor)));
@@ -939,15 +940,21 @@ function docTabPanel(id, content, active) {
   return `<div class="doc-panel" id="doc-panel-${id}" role="tabpanel" aria-labelledby="doc-tab-${id}" data-doc-panel="${id}"${active ? "" : " hidden"}>${content}</div>`;
 }
 
-async function openDoc(docId, citation = null) {
-  const request = ++docOpenRequest;
+function showDocDialog(title, sourceOnly = false) {
   const dialog = $("#doc-dialog");
-  const badges = $("#doc-dialog-badges");
-  $("#doc-dialog-title").textContent = "文档";
-  badges.innerHTML = "";
+  $("#doc-dialog-title").textContent = title;
+  $("#doc-dialog-badges").innerHTML = "";
   $("#doc-dialog-meta").innerHTML = "";
   $("#doc-dialog-body").innerHTML = loadingLines();
+  $("[data-doc-info]", dialog).hidden = sourceOnly;
   if (!dialog.open) dialog.showModal();
+  return dialog;
+}
+
+async function openDoc(docId, citation = null) {
+  const request = ++docOpenRequest;
+  const dialog = showDocDialog("文档");
+  const badges = $("#doc-dialog-badges");
   try {
     const selectedVersion = citation?.version_id;
     const data = await api(`/documents/${encodeURIComponent(docId)}${selectedVersion ? `?version_id=${encodeURIComponent(selectedVersion)}` : ""}`);
@@ -2089,10 +2096,14 @@ async function showChatCitationFile(preview) {
   }
 }
 
+function documentCitationPath(docId, versionId, chunkId) {
+  const params = new URLSearchParams({ chunk_id: chunkId ?? "" });
+  return `/documents/${encodeURIComponent(docId)}/citation/${encodeURIComponent(versionId)}?${params}`;
+}
+
 async function openChatCitation(docId, versionId, chunkId) {
   closeChatCitation();
-  const params = new URLSearchParams({ chunk_id: chunkId ?? "" });
-  const path = `/documents/${docId}/citation/${versionId}?${params}`;
+  const path = documentCitationPath(docId, versionId, chunkId);
   const preview = chatCitation = { controller: new AbortController(), path };
   const body = $("#chat-citation-body");
   $("#chat-citation").hidden = false;
@@ -3050,17 +3061,8 @@ function setupEntityView() {
       drawGraph();
     });
   }
-  // 缩略图状态下点击图谱空白处直接展开
   const canvas = $("#graph-canvas");
-  if (canvas) {
-    canvas.addEventListener("click", (event) => {
-      if (state.entityView !== "entity") return;
-      // 空白处或边标签上都可以展开：标签现在可悬停（为了看完整原文），不再穿透到画布
-      const onTag = Boolean(event.target && event.target.closest && event.target.closest(".g-edge-tag"));
-      if (event.target !== canvas && !onTag) return;
-      setEntityView("graph");
-    });
-  }
+  if (canvas) setupGraphInteraction(canvas);
 }
 
 function setGraphScope(scope) {
@@ -3350,6 +3352,128 @@ async function loadGraph() {
  *   位置不是装饰：同一关系类型的邻居相邻排列，肉眼能看出「这一类关系」。
  */
 const GRAPH_NS = "http://www.w3.org/2000/svg";
+let graphWheelScale = 1;
+let graphDrag;
+const graphNodeMoves = new WeakMap();
+
+function stopGraphDrag(svg) {
+  if (!graphDrag) return;
+  const { pointerId, active } = graphDrag;
+  graphDrag = null;
+  if (!active) return;
+  svg.classList.remove("is-dragging");
+  if (svg.hasPointerCapture(pointerId)) svg.releasePointerCapture(pointerId);
+}
+
+function setupGraphInteraction(svg) {
+  let suppressClick = false;
+  svg.addEventListener("wheel", zoomGraphAtPointer, { passive: false });
+  svg.addEventListener("pointerdown", (event) => {
+    if (!event.isPrimary) return;
+    suppressClick = false;
+    if (event.button !== 0 || event.pointerType === "touch" || !state.graph?.nodes?.length) return;
+    stopGraphDrag(svg);
+    graphDrag = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      moveNode: graphNodeMoves.get(event.target.closest(".g-node, .g-focus-annotations")),
+      active: false,
+    };
+  });
+
+  window.addEventListener("pointermove", (event) => {
+    const drag = graphDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!(event.buttons & 1)) {
+      stopGraphDrag(svg);
+      return;
+    }
+    const screenDx = event.clientX - drag.x;
+    const screenDy = event.clientY - drag.y;
+    if (!drag.active && Math.hypot(screenDx, screenDy) < 4) return;
+    const matrix = svg.getScreenCTM()?.inverse();
+    if (!matrix) return;
+    if (!drag.active) {
+      svg.setPointerCapture(event.pointerId);
+      svg.classList.add("is-dragging");
+      drag.active = true;
+      suppressClick = true;
+      if (hoverTooltipTarget) hideHoverTooltip();
+    }
+    drag.x = event.clientX;
+    drag.y = event.clientY;
+    const dx = matrix.a * screenDx + matrix.c * screenDy;
+    const dy = matrix.b * screenDx + matrix.d * screenDy;
+    if (drag.moveNode) {
+      drag.moveNode(dx, dy);
+    } else {
+      const { x, y, width, height } = svg.viewBox.baseVal;
+      svg.setAttribute("viewBox", `${x - dx} ${y - dy} ${width} ${height}`);
+    }
+  });
+
+  const finish = (event) => {
+    if (graphDrag?.pointerId === event.pointerId) stopGraphDrag(svg);
+  };
+  window.addEventListener("pointerup", finish);
+  window.addEventListener("pointercancel", finish);
+  svg.addEventListener("lostpointercapture", finish);
+  window.addEventListener("blur", () => stopGraphDrag(svg));
+  svg.addEventListener("click", (event) => {
+    if (suppressClick && event.detail > 0) {
+      suppressClick = false;
+      event.stopImmediatePropagation();
+      return;
+    }
+    // 缩略图的空白和关系标签仍可单击展开。
+    if (state.entityView === "entity" && (event.target === svg || event.target.closest?.(".g-edge-tag"))) {
+      setEntityView("graph");
+    }
+  }, true);
+}
+
+function positionGraphNode(group, point) {
+  group.setAttribute("transform", `translate(${point.x},${point.y})`);
+}
+
+function bindGraphNodeMove(group, point, updateEdges) {
+  const move = (dx, dy) => {
+    point.x += dx;
+    point.y += dy;
+    positionGraphNode(group, point);
+    for (const update of updateEdges) update();
+  };
+  graphNodeMoves.set(group, move);
+  positionGraphNode(group, point);
+  return move;
+}
+
+function zoomGraphAtPointer(event) {
+  if (!state.graph?.nodes?.length || event.ctrlKey || event.shiftKey) return;
+  const { currentTarget: svg, deltaMode, deltaY } = event;
+  if (!deltaY) return;
+
+  const matrix = svg.getScreenCTM();
+  if (!matrix) return;
+  event.preventDefault();
+
+  const pixelsPerUnit = deltaMode === 1 ? 16 : deltaMode === 2 ? svg.clientHeight : 1;
+  const scale = Math.min(6, Math.max(0.5, graphWheelScale * Math.exp(-deltaY * pixelsPerUnit * 0.002)));
+  if (scale === graphWheelScale) return;
+
+  const { x, y, width, height } = svg.viewBox.baseVal;
+  const point = svg.createSVGPoint();
+  point.x = event.clientX;
+  point.y = event.clientY;
+  // 用当前 SVG 坐标定位鼠标，缩放时保持该点在画布里的相对位置。
+  const anchor = point.matrixTransform(matrix.inverse());
+  const ratio = graphWheelScale / scale;
+  const left = anchor.x - (anchor.x - x) * ratio;
+  const top = anchor.y - (anchor.y - y) * ratio;
+  svg.setAttribute("viewBox", `${left} ${top} ${width * ratio} ${height * ratio}`);
+  graphWheelScale = scale;
+}
 
 function graphTextLabel(text, limit) {
   const chars = Array.from(String(text || ""));
@@ -3443,7 +3567,7 @@ function graphPlaceLabel(text, size, candidates, blockers, placed) {
     });
     if (score < bestScore) {
       bestScore = score;
-      best = { x: candidate.x, y: candidate.y, anchor, box };
+      best = { x: candidate.x, y: candidate.y, anchor, box, index };
     }
   });
   placed.push(best.box);
@@ -3582,19 +3706,17 @@ function graphFocusLayout(nodes, edges, width, height, radiusOf, focusId, compac
   return { focus, points, center, hidden: nodes.length - points.size };
 }
 
-function graphArrow(svg, tip, direction, variant) {
+function positionGraphArrow(arrow, tip, direction) {
   const length = 6.5;
   const half = 3.4;
   const baseX = tip.x - direction.x * length;
   const baseY = tip.y - direction.y * length;
   const perpendicularX = -direction.y * half;
   const perpendicularY = direction.x * half;
-  const arrow = graphEl("path", `g-arrow${variant ? ` ${variant}` : ""}`);
   arrow.setAttribute(
     "d",
     `M${tip.x.toFixed(1)},${tip.y.toFixed(1)} L${(baseX + perpendicularX).toFixed(1)},${(baseY + perpendicularY).toFixed(1)} L${(baseX - perpendicularX).toFixed(1)},${(baseY - perpendicularY).toFixed(1)} Z`,
   );
-  svg.appendChild(arrow);
 }
 
 let hoverTooltipTimer;
@@ -3822,6 +3944,7 @@ function drawGraphOverview(svg, data, width, height) {
   const radiusOf = (node) => node.id === hub ? 15 : node.degree ? 5 + Math.min(node.degree, 4) : 3.5;
   const pairs = new Map();
   const incident = new Map(nodes.map((node) => [node.id, new Set()]));
+  const edgeUpdates = new Map(nodes.map((node) => [node.id, new Set()]));
   edges.forEach((edge) => {
     const key = JSON.stringify([edge.source, edge.target].sort());
     if (!pairs.has(key)) pairs.set(key, []);
@@ -3841,41 +3964,48 @@ function drawGraphOverview(svg, data, width, height) {
       incident.get(edge.source).add(group);
       incident.get(edge.target).add(group);
       const path = graphEl("path", `g-link ${variant}`);
-      let end;
-      let tangent;
-      if (a === b) {
-        const loop = ra + 15 + index * 7;
-        const offset = ra * Math.SQRT1_2;
-        end = { x: a.x + offset, y: a.y - offset };
-        const control = { x: a.x + loop, y: a.y - loop };
-        path.setAttribute("d", `M${a.x - offset},${end.y} C${a.x - loop},${control.y} ${control.x},${control.y} ${end.x},${end.y}`);
-        tangent = { x: end.x - control.x, y: end.y - control.y };
-      } else {
-        const distance = Math.hypot(b.x - a.x, b.y - a.y);
-        const ux = (b.x - a.x) / distance;
-        const uy = (b.y - a.y) / distance;
-        const spacing = Math.min(18, distance / 2);
-        const bow = (index - (pair.length - 1) / 2) * spacing * (edge.source < edge.target ? 1 : -1);
-        const control = { x: (a.x + b.x) / 2 - uy * bow, y: (a.y + b.y) / 2 + ux * bow };
-        const startLength = Math.hypot(control.x - a.x, control.y - a.y);
-        const endLength = Math.hypot(b.x - control.x, b.y - control.y);
-        const start = { x: a.x + (control.x - a.x) * ra / startLength, y: a.y + (control.y - a.y) * ra / startLength };
-        end = { x: b.x - (b.x - control.x) * rb / endLength, y: b.y - (b.y - control.y) * rb / endLength };
-        path.setAttribute("d", `M${start.x},${start.y} Q${control.x},${control.y} ${end.x},${end.y}`);
-        tangent = { x: b.x - control.x, y: b.y - control.y };
-      }
+      const arrow = graphEl("path", `g-arrow ${variant}`);
+      const update = () => {
+        let end;
+        let tangent;
+        if (a === b) {
+          const loop = ra + 15 + index * 7;
+          const offset = ra * Math.SQRT1_2;
+          end = { x: a.x + offset, y: a.y - offset };
+          const control = { x: a.x + loop, y: a.y - loop };
+          path.setAttribute("d", `M${a.x - offset},${end.y} C${a.x - loop},${control.y} ${control.x},${control.y} ${end.x},${end.y}`);
+          tangent = { x: end.x - control.x, y: end.y - control.y };
+        } else {
+          const distance = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+          const ux = (b.x - a.x) / distance;
+          const uy = (b.y - a.y) / distance;
+          const spacing = Math.min(18, distance / 2);
+          const bow = (index - (pair.length - 1) / 2) * spacing * (edge.source < edge.target ? 1 : -1);
+          const control = { x: (a.x + b.x) / 2 - uy * bow, y: (a.y + b.y) / 2 + ux * bow };
+          const startLength = Math.hypot(control.x - a.x, control.y - a.y) || 1;
+          const endLength = Math.hypot(b.x - control.x, b.y - control.y) || 1;
+          const start = { x: a.x + (control.x - a.x) * ra / startLength, y: a.y + (control.y - a.y) * ra / startLength };
+          end = { x: b.x - (b.x - control.x) * rb / endLength, y: b.y - (b.y - control.y) * rb / endLength };
+          path.setAttribute("d", `M${start.x},${start.y} Q${control.x},${control.y} ${end.x},${end.y}`);
+          tangent = { x: b.x - control.x, y: b.y - control.y };
+        }
+        const length = Math.hypot(tangent.x, tangent.y) || 1;
+        positionGraphArrow(arrow, end, { x: tangent.x / length, y: tangent.y / length });
+      };
+      edgeUpdates.get(edge.source).add(update);
+      edgeUpdates.get(edge.target).add(update);
+      update();
       group.setAttribute("data-hover-tip", `${source.name} — ${graphRelationLabel(edge)} → ${target.name}`);
       group.appendChild(path);
-      const length = Math.hypot(tangent.x, tangent.y);
-      graphArrow(group, end, { x: tangent.x / length, y: tangent.y / length }, variant);
+      group.appendChild(arrow);
       svg.appendChild(group);
     });
   }
   nodes.forEach((node) => {
-    const { x, y } = points.get(node.id);
+    const point = points.get(node.id);
     const direct = neighbours?.has(node.id);
     const group = graphEl("g", `g-node g-overview-node${node.degree ? " linked" : ""}${node.id === hub ? " hub" : direct ? " neighbour" : ""}${node.id === state.activeEntity ? " selected" : ""}${state.graphOverviewZoom ? " zoomed" : ""}`);
-    group.setAttribute("transform", `translate(${x},${y})`);
+    bindGraphNodeMove(group, point, edgeUpdates.get(node.id));
     group.setAttribute("tabindex", "0");
     group.setAttribute("role", "button");
     group.setAttribute("data-entity", node.id);
@@ -3884,7 +4014,7 @@ function drawGraphOverview(svg, data, width, height) {
     shape.setAttribute("r", String(radiusOf(node)));
     const label = graphEl("text", "g-label");
     label.setAttribute("text-anchor", "middle");
-    const above = direct && y < canvasHeight / 2;
+    const above = direct && point.y < canvasHeight / 2;
     label.setAttribute("y", String(above ? -radiusOf(node) - 6 : radiusOf(node) + 14));
     label.textContent = graphTextLabel(node.name, node.id === hub ? 24 : direct ? 15 : 10);
     group.setAttribute("data-hover-tip", node.name);
@@ -3915,13 +4045,16 @@ function drawGraph() {
   const svg = $("#graph-canvas");
   if (!svg) return;
   const data = state.graph || {};
+  stopGraphDrag(svg);
   if (hoverTooltipTarget && svg.contains(hoverTooltipTarget)) hideHoverTooltip();
   $(".graph-stage").classList.toggle("graph-stage-overview", Boolean(data.overview));
   svg.style.width = "";
   svg.style.height = "";
+  graphWheelScale = 1;
   const height = Math.max(200, Math.round(svg.clientHeight || 420));
   const allNodes = data.nodes || [];
   const allEdges = data.edges || [];
+  svg.classList.toggle("is-pannable", allNodes.length > 0);
   const width = Math.max(300, Math.round(svg.clientWidth || 620));
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.innerHTML = "";
@@ -3954,6 +4087,7 @@ function drawGraph() {
   const layout = graphFocusLayout(allNodes, drawnEdges, width, height, radiusOf, focusId, compact);
   const points = layout.points;
   const drawnNodes = allNodes.filter((node) => points.has(node.id));
+  const edgeUpdates = new Map(drawnNodes.map((node) => [node.id, new Set()]));
   let edges = graphMergeEdges(drawnEdges.filter((edge) => points.has(edge.source) && points.has(edge.target)));
   // 缩略图太小，同一对实体的正反两条关系合并成一条，标上 ⇄，避免两条弧线挤在一起
   if (compact) {
@@ -3984,6 +4118,7 @@ function drawGraph() {
   const focusNode = layout.focus;
   const focusAttrs = (focusNode && focusNode.attrs) || [];
   const attrChips = [];
+  let moveFocus;
   if (!edges.length && focusAttrs.length) {
     const chipFont = compact ? 9 : 10.5;
     const rowHeight = compact ? 23 : 30;
@@ -4011,37 +4146,41 @@ function drawGraph() {
     const b = points.get(edge.target);
     const ra = radiusOf(nodeById.get(edge.source));
     const rb = radiusOf(nodeById.get(edge.target));
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const distance = Math.hypot(dx, dy) || 1;
-    const ux = dx / distance;
-    const uy = dy / distance;
     const incident = edge.source === focusId || edge.target === focusId;
     const chord = a.ring !== 0 && a.ring === b.ring;
     const pairKey = [edge.source, edge.target].sort().join("|");
     const twinIndex = pairSeen.get(pairKey) || 0;
     pairSeen.set(pairKey, twinIndex + 1);
     const twin = (pairCounts.get(pairKey) || 0) > 1;
-    const midX = (a.x + b.x) / 2;
-    const midY = (a.y + b.y) / 2;
-    let controlX = midX;
-    let controlY = midY;
-    if (twin || chord) {
-      const sign = twinIndex % 2 === 0 ? 1 : -1;
-      let px = -uy * sign;
-      let py = ux * sign;
-      if (!twin && px * (midX - layout.center.x) + py * (midY - layout.center.y) < 0) {
-        px = -px;
-        py = -py;
+    const edgeGeometry = () => {
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const distance = Math.hypot(dx, dy) || 1;
+      const ux = dx / distance;
+      const uy = dy / distance;
+      const midX = (a.x + b.x) / 2;
+      const midY = (a.y + b.y) / 2;
+      let controlX = midX;
+      let controlY = midY;
+      if (twin || chord) {
+        const sign = twinIndex % 2 === 0 ? 1 : -1;
+        let px = -uy * sign;
+        let py = ux * sign;
+        if (!twin && px * (midX - layout.center.x) + py * (midY - layout.center.y) < 0) {
+          px = -px;
+          py = -py;
+        }
+        const bow = twin ? Math.min(distance * 0.22, compact ? 18 : 34) : Math.min(distance * 0.26, compact ? 22 : 40);
+        controlX = midX + px * bow;
+        controlY = midY + py * bow;
       }
-      const bow = twin ? Math.min(distance * 0.22, compact ? 18 : 34) : Math.min(distance * 0.26, compact ? 22 : 40);
-      controlX = midX + px * bow;
-      controlY = midY + py * bow;
-    }
-    const start = { x: a.x + ux * (ra + 1), y: a.y + uy * (ra + 1) };
-    const end = { x: b.x - ux * (rb + 4), y: b.y - uy * (rb + 4) };
+      const start = { x: a.x + ux * (ra + 1), y: a.y + uy * (ra + 1) };
+      const end = { x: b.x - ux * (rb + 4), y: b.y - uy * (rb + 4) };
+      return { start, end, controlX, controlY, ux, uy };
+    };
     const path = graphEl("path", `g-link${incident ? " strong" : ""}${edge.status === "disputed" ? " disputed" : ""}`);
-    path.setAttribute("d", `M${start.x.toFixed(1)},${start.y.toFixed(1)} Q${controlX.toFixed(1)},${controlY.toFixed(1)} ${end.x.toFixed(1)},${end.y.toFixed(1)}`);
+    const arrowVariant = edge.status === "disputed" ? " disputed" : incident ? " strong" : "";
+    const arrow = graphEl("path", `g-arrow${arrowVariant}`);
     const sourceName = nodeById.get(edge.source).name;
     const targetName = nodeById.get(edge.target).name;
     const predicateText = (edge.predicates || [edge.predicate]).join(" / ");
@@ -4051,32 +4190,29 @@ function drawGraph() {
       + `\n关系类型：${graphRelationType(edge)} · ${statusText}${confidenceText}`;
     path.setAttribute("data-hover-tip", description);
     svg.appendChild(path);
-
-    const arrowDirection = { x: end.x - controlX, y: end.y - controlY };
-    const arrowLength = Math.hypot(arrowDirection.x, arrowDirection.y) || 1;
-    graphArrow(
-      svg,
-      end,
-      { x: arrowDirection.x / arrowLength, y: arrowDirection.y / arrowLength },
-      edge.status === "disputed" ? "disputed" : incident ? "strong" : "",
-    );
+    svg.appendChild(arrow);
 
     // 关系标签：短边也要显示，绕着中点换几个位置，永不丢弃
     const labelText = graphTextLabel(graphRelationLabel(edge), compact ? 6 : 8)
       + (edge.count > 1 ? ` ×${edge.count}` : "")
       + (edge.twin ? " ⇄" : "");
     const textWidth = graphTextWidth(labelText, edgeFont);
-    const curveX = (start.x + 2 * controlX + end.x) / 4;
-    const curveY = (start.y + 2 * controlY + end.y) / 4;
-    const normalX = -uy;
-    const normalY = ux;
-    const candidates = [
-      { x: curveX + normalX * 9, y: curveY + normalY * 9, anchor: "middle" },
-      { x: curveX - normalX * 9, y: curveY - normalY * 9, anchor: "middle" },
-      { x: start.x + (end.x - start.x) * 0.36 + normalX * 9, y: start.y + (end.y - start.y) * 0.36 + normalY * 9, anchor: "middle" },
-      { x: start.x + (end.x - start.x) * 0.64 - normalX * 9, y: start.y + (end.y - start.y) * 0.64 - normalY * 9, anchor: "middle" },
-      { x: curveX + normalX * 16, y: curveY + normalY * 16, anchor: "middle" },
-    ].map((candidate) => graphClampCandidate(candidate, textWidth, width, height));
+    const labelCandidates = ({ start, end, controlX, controlY, ux, uy }) => {
+      const curveX = (start.x + 2 * controlX + end.x) / 4;
+      const curveY = (start.y + 2 * controlY + end.y) / 4;
+      const normalX = -uy;
+      const normalY = ux;
+      return [
+        { x: curveX + normalX * 9, y: curveY + normalY * 9 },
+        { x: curveX - normalX * 9, y: curveY - normalY * 9 },
+        { x: start.x + (end.x - start.x) * 0.36 + normalX * 9, y: start.y + (end.y - start.y) * 0.36 + normalY * 9 },
+        { x: start.x + (end.x - start.x) * 0.64 - normalX * 9, y: start.y + (end.y - start.y) * 0.64 - normalY * 9 },
+        { x: curveX + normalX * 16, y: curveY + normalY * 16 },
+      ];
+    };
+    const initialGeometry = edgeGeometry();
+    const initialCandidates = labelCandidates(initialGeometry);
+    const candidates = initialCandidates.map((candidate) => graphClampCandidate(candidate, textWidth, width, height));
     const label = graphPlaceLabel(labelText, edgeFont, candidates, nodeCircles, placed);
     const group = graphEl("g", "g-edge-tag");
     const background = graphEl("rect", "g-edge-bg");
@@ -4096,6 +4232,21 @@ function drawGraph() {
     // 标签是缩略后的谓语，悬停看完整原文：主语 — 全部谓语 → 宾语
     group.setAttribute("data-hover-tip", description);
     svg.appendChild(group);
+
+    const initialAnchor = initialCandidates[label.index];
+    const update = (geometry = edgeGeometry()) => {
+      const { start, end, controlX, controlY } = geometry;
+      path.setAttribute("d", `M${start.x.toFixed(1)},${start.y.toFixed(1)} Q${controlX.toFixed(1)},${controlY.toFixed(1)} ${end.x.toFixed(1)},${end.y.toFixed(1)}`);
+      const arrowX = end.x - controlX;
+      const arrowY = end.y - controlY;
+      const arrowLength = Math.hypot(arrowX, arrowY) || 1;
+      positionGraphArrow(arrow, end, { x: arrowX / arrowLength, y: arrowY / arrowLength });
+      const anchor = labelCandidates(geometry)[label.index];
+      group.setAttribute("transform", `translate(${anchor.x - initialAnchor.x},${anchor.y - initialAnchor.y})`);
+    };
+    edgeUpdates.get(edge.source).add(update);
+    edgeUpdates.get(edge.target).add(update);
+    update(initialGeometry);
   });
 
   // 节点标签：一律画出，先按「径向朝外」排，挤不下就换到上下方
@@ -4125,7 +4276,8 @@ function drawGraph() {
     const radius = radiusOf(node);
     const typeClass = String(node.type || "").replace(/[^a-z]/gi, "").toLowerCase();
     const group = graphEl("g", `g-node${node.id === focusId ? " selected" : ""}`);
-    group.setAttribute("transform", `translate(${point.x},${point.y})`);
+    const move = bindGraphNodeMove(group, point, edgeUpdates.get(node.id));
+    if (node === focusNode) moveFocus = move;
     let shape;
     if (typeClass === "org" || typeClass === "product") {
       shape = graphEl("rect", "g-shape");
@@ -4182,6 +4334,12 @@ function drawGraph() {
   });
 
   if (!edges.length) {
+    const annotations = graphEl("g", "g-focus-annotations");
+    const point = points.get(focusNode.id);
+    graphNodeMoves.set(annotations, moveFocus);
+    edgeUpdates.get(focusNode.id).add(() => {
+      annotations.setAttribute("transform", `translate(${point.x - layout.center.x},${point.y - layout.center.y})`);
+    });
     if (attrChips.length) {
       const focusRadius = radiusOf(focusNode);
       const leader = graphEl("line", "g-attr-leader");
@@ -4189,7 +4347,7 @@ function drawGraph() {
       leader.setAttribute("y1", String(layout.center.y + focusRadius + 2));
       leader.setAttribute("x2", String(layout.center.x));
       leader.setAttribute("y2", String(attrChips[0].y - attrChips[0].height / 2));
-      svg.appendChild(leader);
+      annotations.appendChild(leader);
       attrChips.forEach((chip) => {
         const group = graphEl("g", "g-attr-chip");
         const box = graphEl("rect", "g-attr-chip-bg");
@@ -4207,7 +4365,7 @@ function drawGraph() {
         group.appendChild(text);
         // 卡片里的值被截断时，悬停显示完整谓语与值
         group.setAttribute("data-hover-tip", chip.title || chip.text);
-        svg.appendChild(group);
+        annotations.appendChild(group);
       });
       const rest = focusAttrs.length - attrChips.length;
       if (rest > 0) {
@@ -4216,7 +4374,7 @@ function drawGraph() {
         text.setAttribute("y", String(attrChips[attrChips.length - 1].y + attrChips[attrChips.length - 1].height / 2 + 14));
         text.setAttribute("text-anchor", "middle");
         text.textContent = `还有 ${rest} 条属性，见右侧面板`;
-        svg.appendChild(text);
+        annotations.appendChild(text);
       }
     } else {
       const text = graphEl("text", "g-hint");
@@ -4224,8 +4382,9 @@ function drawGraph() {
       text.setAttribute("y", String(layout.center.y + radiusOf(layout.focus) + (compact ? 30 : 38)));
       text.setAttribute("text-anchor", "middle");
       text.textContent = "该实体没有实体间关系，也没有属性";
-      svg.appendChild(text);
+      annotations.appendChild(text);
     }
+    svg.appendChild(annotations);
   }
 
   const hidden = (layout.hidden || 0) + ((data.hidden && data.hidden.nodes) || 0);
@@ -4320,15 +4479,103 @@ document.addEventListener("visibilitychange", () => {
 });
 
 /* ============ Review ============ */
-function reviewQuote(quote, source) {
-  if (!quote?.trim()) return "";
+function reviewSourcePane(side, label, choose = false) {
+  return `<section class="review-source-pane" data-review-pane="${side}" aria-labelledby="review-source-${side}">
+    <header class="review-source-heading">
+      <h3 id="review-source-${side}">${label}</h3>
+      ${choose ? '<div data-review-old-picker></div>' : ""}
+      <p class="conflict-value" data-review-statement${choose ? " hidden" : ""}></p>
+      <p class="doc-head-meta" data-review-location></p>
+    </header>
+    <div class="review-source-text" data-review-text tabindex="0" role="region" aria-label="${label}正文"></div>
+  </section>`;
+}
+
+async function openReviewSource(current, existing, selected = 0) {
+  const comparison = existing.length > 0;
+  const request = ++docOpenRequest;
+  const dialog = showDocDialog(comparison ? "新旧原文对照" : "审阅原文", true);
+  const body = $("#doc-dialog-body");
+  body.innerHTML = `<div class="review-source-grid${comparison ? " is-comparison" : ""}">
+    ${reviewSourcePane("current", comparison ? "新提取的原文" : "审阅原文")}
+    ${comparison ? reviewSourcePane("existing", "库内已有的原文", existing.length > 1) : ""}
+  </div>`;
+
+  const paneRequests = { current: 0, existing: 0 };
+  async function showSource(side, record) {
+    const paneRequest = ++paneRequests[side];
+    const active = () => dialog.open && request === docOpenRequest && paneRequest === paneRequests[side];
+    const pane = $(`[data-review-pane="${side}"]`, body);
+    const content = $("[data-review-text]", pane);
+    const location = $("[data-review-location]", pane);
+    $("[data-review-statement]", pane).textContent = record.statement;
+    location.textContent = record.location;
+    content.scrollTop = 0;
+    if (!record.path) {
+      content.removeAttribute("aria-busy");
+      content.innerHTML = record.quote?.trim()
+        ? `<p class="doc-hint">仅有引文摘录</p><pre class="doc-source">${esc(record.quote)}</pre>`
+        : '<p class="empty-block">暂无可查看的原文</p>';
+      return;
+    }
+
+    content.setAttribute("aria-busy", "true");
+    content.innerHTML = loadingLines();
+    try {
+      const data = await api(record.path);
+      if (!active()) return;
+      const { title, version, page } = data;
+      const versionLabel = page ? `v${version} · 第 ${page} 页` : `v${version}`;
+      if (comparison) location.textContent = `《${title}》 · ${versionLabel}`;
+      else {
+        $("#doc-dialog-title").textContent = title;
+        $("#doc-dialog-meta").textContent = versionLabel;
+      }
+      const chunk = data.chunks[0];
+      const ranges = sourceRanges(data, { chunk_id: chunk?.id, quote: chunk?.text });
+      const targetId = `review-source-highlight-${side}`;
+      content.innerHTML = `<pre class="doc-source">${sourceHtml(data.source.text, ranges, targetId) || "暂无原文"}</pre>`;
+      const highlight = $(`#${targetId}`, content);
+      highlight?.scrollIntoView({ block: "center" });
+      if (!comparison) highlight?.focus({ preventScroll: true });
+    } catch (error) {
+      if (active()) content.innerHTML = `<p class="empty-block">${esc(error.message)}</p>`;
+    } finally {
+      if (active()) content.removeAttribute("aria-busy");
+    }
+  }
+
+  if (existing.length > 1) {
+    KnowWeavePickers.choice($("[data-review-old-picker]", body), {
+      label: "库内记录", value: String(selected),
+      options: existing.map((record, index) => ({ value: String(index), label: record.statement })),
+      onChange: (value) => showSource("existing", existing[Number(value)]),
+    });
+  }
+  await Promise.all([
+    showSource("current", current),
+    comparison && showSource("existing", existing[selected]),
+  ]);
+}
+
+function reviewEvidence(statement, source, quote = source?.quote) {
   const heading = (source?.heading || []).filter((line) => line && line !== "正文").join(" / ");
-  const where = [
+  const location = [
     source?.title ? `《${source.title}》` : "",
     source?.page ? `第 ${source.page} 页` : "",
     heading || (!source?.page && source?.seq ? `第 ${source.seq} 段` : ""),
   ].filter(Boolean).join(" · ");
-  return `<div class="conflict-quote">原文${where ? `（${esc(where)}）` : ""}：${esc(quote)}</div>`;
+  const path = source?.doc_id && source.version_id && source.chunk_id
+    ? documentCitationPath(source.doc_id, source.version_id, source.chunk_id) : "";
+  return { statement, quote, location, path };
+}
+
+function reviewQuote(record, itemId, comparison, oldIndex = 0) {
+  const { quote, location, path } = record;
+  if (!quote?.trim()) return "";
+  const excerpt = `原文${location ? `（${esc(location)}）` : ""}：${esc(quote)}`;
+  if (!path) return `<div class="conflict-quote">${excerpt}</div>`;
+  return `<button class="conflict-quote review-source-link" type="button" data-review-source="${esc(itemId)}" data-old-index="${oldIndex}" aria-haspopup="dialog">${excerpt}<span>${comparison ? "对照原文" : "查看原文"}</span></button>`;
 }
 
 async function loadReview() {
@@ -4347,28 +4594,34 @@ async function loadReview() {
         </div>`;
       return;
     }
+    const records = new Map();
     target.innerHTML = data.items.map((item) => {
       const payload = item.payload || {};
       const isFact = Boolean(payload.subject && payload.predicate);
-      const current = isFact ? factSentence(payload.subject, payload.predicate, payload.new_object) : "";
+      const current = reviewEvidence(isFact ? factSentence(payload.subject, payload.predicate, payload.new_object) : item.title,
+        item.source, item.source?.quote ?? payload.quote);
       const existing = isFact
-        ? (payload.old_objects || []).map((value, index) => ({ value, source: item.old_sources?.[index] })).filter(({ value }) => Boolean(value))
+        ? (payload.old_objects || []).flatMap((value, index) => value
+          ? [reviewEvidence(factSentence(payload.subject, payload.predicate, value), item.old_sources?.[index])] : [])
         : [];
+      records.set(item.id, { current, existing });
+      const comparison = existing.length > 0;
+      const source = reviewQuote(current, item.id, comparison);
       const facts = isFact ? `<div class="conflict">
             <div class="conflict-cell">
               <span class="label">本次提取到的信息</span>
-              <div class="conflict-value">${esc(current)}</div>
-              ${reviewQuote(payload.quote, item.source)}
+              <div class="conflict-value">${esc(current.statement)}</div>
+              ${source}
             </div>
             <div class="conflict-cell">
               <span class="label">知识库中已有信息</span>
-              ${existing.length ? existing.map(({ value, source }) => `
+              ${comparison ? existing.map((record, index) => `
                 <div class="conflict-record">
-                  <div class="conflict-value">${esc(factSentence(payload.subject, payload.predicate, value))}</div>
-                  ${reviewQuote(source?.quote, source)}
+                  <div class="conflict-value">${esc(record.statement)}</div>
+                  ${reviewQuote(record, item.id, comparison, index)}
                 </div>`).join("") : '<div class="conflict-value">没有</div>'}
             </div>
-          </div>` : `<h2 class="review-title">${esc(item.title)}</h2>`;
+          </div>` : `<h2 class="review-title">${esc(item.title)}</h2>${source}`;
       const actions = item.kind === "parse_failure"
         ? `<button class="btn primary" data-review-job="${esc(payload.job_id)}">修正文并重试</button>`
         : existing.length
@@ -4395,6 +4648,10 @@ async function loadReview() {
         <div class="review-actions">${actions}</div>
       </article>`;
     }).join("");
+    $$("[data-review-source]", target).forEach((button) => {
+      const { current, existing } = records.get(button.dataset.reviewSource);
+      button.addEventListener("click", () => openReviewSource(current, existing, Number(button.dataset.oldIndex)));
+    });
     $$("[data-review]").forEach((button) => {
       button.addEventListener("click", () => resolveReview(button.dataset.review, button.dataset.action, button));
     });
@@ -4420,7 +4677,8 @@ async function resolveReview(reviewId, action, button) {
   setBusy(button, true, labels[action] || "处理中");
   try {
     const result = await api(`/review/${reviewId}/resolve`, { method: "POST", body: { action, note: "" } });
-    toast(result.status === "queued" ? "已提交抽取，可在知识库查看进度" : "审阅项已处理");
+    if (result.status === "queued") toast("已提交抽取，可在知识库查看进度");
+    else toast("审阅项已处理", { centered: true });
     loadReview();
     loadDashboard();
   } catch (error) {

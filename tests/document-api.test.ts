@@ -39,6 +39,9 @@ test('low-confidence candidates stay in review and out of the document and graph
   app.log.level = 'silent'
   try {
     const source = await ingestParsed(workspace.principal, parseText('请在所提供服务对应的选项上划“√”。协和医院提供随访服务。', '抽取样例'), { sourceType: 'text' })
+    const chunk = await queryOne<{ id: string; heading_path: string[]; seq: number }>(
+      'SELECT id, heading_path, seq FROM chunks WHERE version_id = $1 AND is_parent = false', [source.version_id],
+    )
     const tenant = workspace.principal.tenantId
     const acl = '["tenant:public"]'
     await query(`INSERT INTO entities(id,tenant_id,canonical_name,normalized_name,acl_principals)
@@ -46,9 +49,9 @@ test('low-confidence candidates stay in review and out of the document and graph
     await query(`INSERT INTO facts(id,tenant_id,subject_id,predicate,object_literal,status,confidence,acl_principals)
       VALUES ('legacy',$1,'fragment','提供','服务对应的选项上划“√”','disputed',0.52,$2::jsonb),
              ('valid',$1,'hospital','提供','随访服务','disputed',0.8,$2::jsonb)`, [tenant, acl])
-    await query(`INSERT INTO fact_evidence(id,fact_id,doc_id,quote)
-      VALUES ('legacy-evidence','legacy',$1,'请在所提供服务对应的选项上划“√”'),
-             ('valid-evidence','valid',$1,'协和医院提供随访服务')`, [source.document_id])
+    await query(`INSERT INTO fact_evidence(id,fact_id,doc_id,chunk_id,quote)
+      VALUES ('legacy-evidence','legacy',$1,NULL,'请在所提供服务对应的选项上划“√”'),
+             ('valid-evidence','valid',$1,$2,'协和医院提供随访服务')`, [source.document_id, chunk!.id])
     await query(`INSERT INTO review_queue(id,tenant_id,kind,payload)
       VALUES ('review-legacy',$1,'fact_validation','{"new_fact_id":"legacy","old_fact_ids":["valid","missing"]}'::jsonb)`, [tenant])
     const get = async (path: string) => (await app.inject({ url: '/api/v1' + path, headers: workspace.headers })).json()
@@ -65,10 +68,16 @@ test('low-confidence candidates stay in review and out of the document and graph
     assert.deepEqual((await get('/facts')).items.map((fact: { id: string }) => fact.id), ['valid'])
     const review = (await get('/review')).items[0]
     assert.equal(review.payload.new_fact_id, 'legacy')
+    assert.equal(review.source.version_id, null)
+    assert.equal(review.source.chunk_id, null)
     assert.deepEqual(review.old_sources, [
-      { title: '抽取样例', page: null, heading: null, seq: null, quote: '协和医院提供随访服务' },
+      { doc_id: source.document_id, version_id: source.version_id, chunk_id: chunk!.id,
+        title: '抽取样例', page: null, heading: chunk!.heading_path, seq: chunk!.seq, quote: '协和医院提供随访服务' },
       null,
     ])
+    const { doc_id, version_id, chunk_id } = review.old_sources[0]
+    const preview = await get(`/documents/${doc_id}/citation/${version_id}?chunk_id=${chunk_id}`)
+    assert.match(preview.source.text, /请在所提供服务对应的选项上划“√”。协和医院提供随访服务。/)
     await query("UPDATE facts SET acl_principals = '[]'::jsonb WHERE id = 'valid'")
     assert.deepEqual((await get('/review')).items[0].old_sources, [null, null])
     await query("UPDATE facts SET status='active' WHERE id='legacy'")
