@@ -53,6 +53,10 @@ function frontend(respond: (url: string, options: Record<string, unknown>) => un
   const context = vm.createContext({
     console,
     FormData: Form,
+    KnowWeavePickers: {
+      choice: (_root: unknown, config: { options: Array<{ value: string }> }) => ({ trigger: { value: config.options[0]?.value ?? '' } }),
+      date: () => ({ trigger: { value: '' } }),
+    },
     URL,
     URLSearchParams,
     document: {
@@ -90,21 +94,37 @@ function frontend(respond: (url: string, options: Record<string, unknown>) => un
   return { context, nodes, calls, element, dispatch, run: (code: string) => vm.runInContext(code, context) }
 }
 
-test('navigation removes old page fragments and keeps page links reloadable', () => {
+test('navigation restores path URLs and migrates old bookmarks without adding history entries', () => {
   const page = frontend();
-  page.context.location.href += '?source=bookmark#library';
+  const entries: string[] = [];
+  const replacements: string[] = [];
+  const origin = page.context.location.origin;
+  page.context.location.href = `${origin}/?source=bookmark&page=review`;
   page.context.history = {
     state: null,
+    pushState(_state: unknown, _title: string, url: URL) {
+      entries.push(url.href);
+      page.context.location.href = url.href;
+    },
     replaceState(_state: unknown, _title: string, url: URL) {
+      replacements.push(url.href);
       page.context.location.href = url.href;
     },
   };
-  page.run('loadPage = () => {}; showPage(pageFromUrl())');
+  page.run('loadPage = () => {}; restorePageFromUrl()');
+  assert.equal(page.run('state.page'), 'review');
+  assert.deepEqual(replacements, [`${origin}/review?source=bookmark`]);
+  page.run('navigateToPage("library"); navigateToPage("library"); navigateToPage("chat")');
+  assert.deepEqual(entries, [`${origin}/library?source=bookmark`, `${origin}/?source=bookmark`]);
+  assert.equal(page.run('state.page'), 'chat');
+  page.context.location.href = entries[0];
+  page.run('restorePageFromUrl()');
   assert.equal(page.run('state.page'), 'library');
-  assert.equal(page.context.location.href, 'http://127.0.0.1:8730/?source=bookmark&page=library');
-  assert.equal(page.run('pageFromUrl()'), 'library');
-  page.run('showPage("chat")');
-  assert.equal(page.context.location.href, 'http://127.0.0.1:8730/?source=bookmark');
+  assert.equal(replacements.length, 1);
+  page.context.location.href = `${origin}/#entities`;
+  page.run('restorePageFromUrl()');
+  assert.equal(page.run('state.page'), 'entities');
+  assert.equal(page.context.location.href, `${origin}/entities`);
 });
 
 test('the library offers both decisions for an import awaiting duplicate confirmation', async () => {
@@ -159,7 +179,7 @@ test('default chat mounts the complete native DSH UI and keeps it alive across n
   const html = readFileSync(new URL('../knowweave/web/index.html', import.meta.url), 'utf8');
   assert.match(html, /<iframe[^>]*id="native-chat-frame"/);
   assert.ok(!html.includes('id="chat-form"'));
-  assert.match(html, /data-page="chat"[^>]*>[\s\S]*?<span>对话<\/span>[\s\S]*?<\/button>/);
+  assert.match(html, /<a class="nav-item active" href="\/" data-page="chat"[^>]*>[\s\S]*?<span>对话<\/span>[\s\S]*?<\/a>/);
 });
 
 test('native chat shows startup, disabled and error states with retry', async () => {
@@ -577,19 +597,18 @@ test('relation graph draws every node and edge label with directed arrows', () =
   assert.ok(!labelTexts.includes('定义/口径'), '边标签用原文谓语，不再用归类名')
 
   // 缩略标签悬停可看完整原文；缩略的节点名也能在节点提示里看全
-  const tagTitles = edgeLabels.map((group: any) => group.children.find((child: any) => child.tag === 'title')?.textContent)
+  const tagTitles = edgeLabels.map((group: any) => group.attrs['data-hover-tip'])
   assert.ok(tagTitles.every((text: string) => text && text.includes('→')), '每个边标签都要带完整三元组提示')
   assert.ok(tagTitles.some((text: string) => text.includes('由乡镇卫生院负责')), '悬停可读到未截断的谓语')
   nodeGroups.forEach((group: any) => {
-    const title = group.children.find((child: any) => child.tag === 'title')
-    assert.ok(title && title.textContent.length > 0, '节点提示里保留完整名称')
+    const title = group.attrs['data-hover-tip']
+    assert.ok(title?.length > 0, '节点提示里保留完整名称')
   })
 
   // 归类名退到悬停提示，原文谓语与类别都能看到
   const pathTitles = svgChildren(canvas)
     .filter((child: any) => child.tag === 'path' && String(child.attrs?.class ?? '').startsWith('g-link'))
-    .flatMap((path: any) => (path.children || []).filter((child: any) => child.tag === 'title'))
-    .map((title: any) => title.textContent)
+    .map((path: any) => path.attrs['data-hover-tip'])
   assert.ok(pathTitles.some((text: string) => text.includes('关系类型：实施主体')), '悬停提示保留关系类型')
   assert.ok(pathTitles.some((text: string) => text.includes('由乡镇卫生院负责')), '悬停提示保留原文谓语')
 
@@ -611,7 +630,7 @@ test('relation graph draws every node and edge label with directed arrows', () =
   // 字面值不进图，改挂在焦点的属性条上；属性条被 CSS 抳断时，悬停可看完整谓语与值
   assert.match(page.element('#graph-attrs').innerHTML, /属性/)
   assert.match(page.element('#graph-attrs').innerHTML, /按照规范要求进行…×100％/)
-  assert.match(page.element('#graph-attrs').innerHTML, /title="等于：按照规范要求进行…×100％"/)
+  assert.match(page.element('#graph-attrs').innerHTML, /data-hover-tip="等于：按照规范要求进行…×100％"/)
   assert.equal(page.element('#graph-attrs').hidden, false)
 })
 
@@ -654,11 +673,11 @@ test('graph overview keeps the selected node in view until local mode is request
   assert.equal(lines.length, 4)
   const forward = lines.find((line: any) => line.attrs['data-fact-id'] === 'e1')
   const reverse = lines.find((line: any) => line.attrs['data-fact-id'] === 'reverse')
-  assert.equal(forward.children[0].textContent, '高血压患者规范管理率 — 计算方式为 → 指标口径')
-  assert.equal(reverse.children[0].textContent, '指标口径 — 用于计算 → 高血压患者规范管理率')
+  assert.equal(forward.attrs['data-hover-tip'], '高血压患者规范管理率 — 计算方式为 → 指标口径')
+  assert.equal(reverse.attrs['data-hover-tip'], '指标口径 — 用于计算 → 高血压患者规范管理率')
   assert.ok(lines.every((line: any) => withClass(line, 'path', 'g-arrow').length === 1))
-  assert.notEqual(forward.children[1].attrs.d.split(' Q')[1].split(' ')[0],
-    reverse.children[1].attrs.d.split(' Q')[1].split(' ')[0])
+  assert.notEqual(forward.children[0].attrs.d.split(' Q')[1].split(' ')[0],
+    reverse.children[0].attrs.d.split(' Q')[1].split(' ')[0])
   const metric = allWithClass(canvas, 'g-node').find((item: any) => item.attrs['aria-label'].includes('高血压'))
   assert.match(metric.attrs.class, /\bhub\b/)
   const [, , width, height] = canvas.viewBox.split(' ').map(Number)

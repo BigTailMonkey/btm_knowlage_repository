@@ -4,12 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>知织 KnoWeave</title>
+  <link rel="stylesheet" href="/assets/pickers.css" />
   <link rel="stylesheet" href="/assets/styles.css" />
 </head>
 <body data-page="chat">
   <div class="frame">
     <aside class="sidebar" id="sidebar">
-      <a class="brand" href="/?page=dashboard" data-goto="dashboard" aria-label="知织 KnoWeave">
+      <a class="brand" href="/dashboard" data-goto="dashboard" aria-label="知织 KnoWeave">
         <span class="brand-mark" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none">
             <path d="M3 9c4.5 0 4.5-5 9-5s4.5 5 9 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -23,48 +24,46 @@
       </a>
 
       <nav class="nav" aria-label="主导航">
-        <button class="nav-item active" data-page="chat" aria-current="page" aria-label="对话">
+        <a class="nav-item active" href="/" data-page="chat" aria-current="page" aria-label="对话">
           <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M13.5 8.6a5.2 5.2 0 0 1-5.6 5.1L3 15l.9-3.4A5.2 5.2 0 1 1 13.5 8.6Z"/></svg></span>
           <span>对话</span>
-        </button>
-        <button class="nav-item" data-page="dashboard">
+        </a>
+        <a class="nav-item" href="/dashboard" data-page="dashboard">
           <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg></span>
           <span>概览</span>
-        </button>
-        <button class="nav-item" data-page="library">
+        </a>
+        <a class="nav-item" href="/library" data-page="library">
           <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3 3.5h6.5A3.5 3.5 0 0 1 13 7v5.5H6.5A3.5 3.5 0 0 1 3 9V3.5Z"/><path d="M3 9a3.5 3.5 0 0 1 3.5-3.5H13"/></svg></span>
           <span>知识库</span>
-        </button>
-        <button class="nav-item" data-page="ask">
+        </a>
+        <a class="nav-item" href="/ask" data-page="ask">
           <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M3 12.5V9a5 5 0 1 1 10 0v3.5"/><path d="M5.5 13h5"/></svg></span>
           <span>研究台</span>
-        </button>
-        <button class="nav-item" data-page="entities">
+        </a>
+        <a class="nav-item" href="/entities" data-page="entities">
           <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><circle cx="4" cy="4" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="8" cy="12" r="2"/><path d="M5.6 5.1 10.4 5.6M4.6 5.9l2.8 4.3M11.4 6.7l-2.6 3.5"/></svg></span>
           <span>实体图谱</span>
-        </button>
-        <button class="nav-item" data-page="review">
+        </a>
+        <a class="nav-item" href="/review" data-page="review">
           <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M2.5 4.5h11v7h-11z"/><path d="M2.5 9.5h3l1 1.5h3l1-1.5h3"/></svg></span>
           <span>审阅队列</span>
           <span class="nav-count" id="nav-review-count" hidden>0</span>
-        </button>
-        <button class="nav-item" data-page="ops">
+        </a>
+        <a class="nav-item" href="/ops" data-page="ops">
           <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M2.5 8h3l2-4.5 3 9 2-4.5h3"/></svg></span>
           <span>运维台</span>
-        </button>
-        <button class="nav-item" data-page="settings">
+        </a>
+        <a class="nav-item" href="/settings" data-page="settings">
           <span class="nav-ico" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none"><path d="M2.5 5h11M2.5 11h11"/><circle cx="6" cy="5" r="1.7"/><circle cx="10.5" cy="11" r="1.7"/></svg></span>
           <span>设置</span>
-        </button>
+        </a>
       </nav>
 
       <div class="sidebar-foot">
         <button class="text-btn sidebar-help" id="open-tour" type="button">使用说明</button>
         <div class="account">
           <span class="avatar" id="who-avatar">知</span>
-          <select id="token-select" aria-label="当前身份">
-            <option value="owner-token">何道伟 · owner</option>
-          </select>
+          <div id="account-picker"></div>
         </div>
       </div>
     </aside>
@@ -117,7 +116,7 @@
                 <div class="attention-cell"><span>知识缺口</span><strong id="stat-gaps">0</strong></div>
                 <div class="attention-cell"><span>近 7 日提问</span><strong id="stat-asks">0</strong></div>
               </div>
-              <button class="btn" data-goto="review">进入审阅队列</button>
+              <a class="btn" href="/review" data-goto="review">进入审阅队列</a>
             </section>
 
             <section class="kpis" aria-label="知识库规模">
@@ -132,14 +131,14 @@
               <section class="block">
                 <div class="block-head">
                   <h2>最近接入</h2>
-                  <button class="text-btn" data-goto="library">全部文档</button>
+                  <a class="text-btn" href="/library" data-goto="library">全部文档</a>
                 </div>
                 <div class="rows" id="recent-docs"></div>
               </section>
               <section class="block">
                 <div class="block-head">
                   <h2>最近轨迹</h2>
-                  <button class="text-btn" data-goto="ops">运行记录</button>
+                  <a class="text-btn" href="/ops" data-goto="ops">运行记录</a>
                 </div>
                 <div class="rows" id="recent-traces"></div>
               </section>
@@ -156,7 +155,7 @@
                 </div>
               </section>
               <section class="block">
-                <div class="block-head"><h2>检索配置</h2><button class="text-btn" data-goto="settings">设置</button></div>
+                <div class="block-head"><h2>检索配置</h2><a class="text-btn" href="/settings" data-goto="settings">设置</a></div>
                 <dl class="kv" id="dash-config"></dl>
               </section>
             </div>
@@ -232,10 +231,10 @@
                   <button type="button" class="seg" data-mode="compare" aria-pressed="false">对比</button>
                 </div>
                 <div class="ask-composer-actions">
-                  <label class="ask-asof" for="as-of">
-                    <span>截至</span>
-                    <input type="date" id="as-of" />
-                  </label>
+                  <div class="ask-asof">
+                    <label id="as-of-label" for="as-of">截至</label>
+                    <div id="as-of-picker"></div>
+                  </div>
                   <button class="btn primary ask-send" id="ask-btn" type="submit">
                     <span>提问</span>
                     <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h9M8.5 4.2 12.5 8l-4 3.8"/></svg>
@@ -305,11 +304,11 @@
                       <button class="graph-toggle" type="button" data-graph-scope="local" aria-pressed="true">局部</button>
                     </div>
                     <button class="graph-toggle" id="graph-overview-size" type="button" aria-pressed="false" hidden>放大节点</button>
-                    <button class="graph-toggle entity-rail-btn" id="entity-rail-toggle" type="button" aria-pressed="true" title="显示/隐藏实体列表">
+                    <button class="graph-toggle entity-rail-btn" id="entity-rail-toggle" type="button" aria-pressed="true" data-hover-tip="显示/隐藏实体列表">
                       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M3 8h10M3 11.5h10"/></svg>
                       <span>实体列表</span>
                     </button>
-                    <button class="graph-toggle" id="graph-toggle" type="button" aria-pressed="false" title="展开关系图谱">
+                    <button class="graph-toggle" id="graph-toggle" type="button" aria-pressed="false" data-hover-tip="展开关系图谱">
                       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2.6H2.6v3.4M10 13.4h3.4v-3.4M13.4 6V2.6H10M2.6 10v3.4H6"/></svg>
                       <span>查看关系图谱</span>
                     </button>
@@ -549,15 +548,8 @@
           <input id="entity-name" maxlength="300" autocomplete="off" required />
         </div>
         <div class="field">
-          <label for="entity-type">类型</label>
-          <select id="entity-type">
-            <option value="concept">概念</option>
-            <option value="org">机构</option>
-            <option value="person">人物</option>
-            <option value="location">地点</option>
-            <option value="event">事件</option>
-            <option value="literal">字面值</option>
-          </select>
+          <label id="entity-type-label" for="entity-type">类型</label>
+          <div id="entity-type-picker"></div>
         </div>
         <div class="field">
           <label for="entity-description">描述</label>
@@ -609,7 +601,9 @@
     </div>
   </dialog>
 
+  <div class="hover-tooltip" id="hover-tooltip" role="tooltip" hidden></div>
   <script src="/assets/charts.js"></script>
+  <script src="/assets/pickers.js"></script>
   <script src="/assets/app.js"></script>
 </body>
 </html>

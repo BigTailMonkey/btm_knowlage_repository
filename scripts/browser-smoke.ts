@@ -41,20 +41,28 @@ try {
   ])
   const chunk = await queryOne<{ id: string }>('SELECT id FROM chunks WHERE version_id=$1 AND is_parent=false', [source.version_id])
   const citation = `/${source.document_id}/${source.version_id}/${chunk!.id}`
-  const bootstrap = await readFile('src/adapters/dsh-web/branding/bootstrap.js', 'utf8')
-  app.get('/browser-fixture-native', async (_request, reply) => reply.type('text/html').send(`
-    <!doctype html><title>DSH fixture</title><script>${bootstrap}</script>
+  const brandingUrl = new URL('../src/adapters/dsh-web/branding/index.mjs', import.meta.url)
+  const { transformIndex } = await import(brandingUrl.href)
+  app.get('/browser-fixture-native', async (_request, reply) => reply.type('text/html; charset=utf-8').send(transformIndex(`
+    <!doctype html><html><head><meta charset="utf-8"><title>DSH fixture</title></head><body>
     <div data-conversation-content data-conversation-session="existing" data-content-phase="active">
       <a href="https://citation.knowweave.invalid${citation}">浏览器验收文档</a>
     </div>
+    <label>接口类型<select id="fixture-protocol"><option value="a">接口 A</option><option value="b">接口 B</option></select></label>
+    <input id="fixture-date" type="date" aria-label="规则日期">
+    <input id="fixture-color" type="color" aria-label="背景颜色">
+    <input id="fixture-checkbox" type="checkbox" aria-label="启用">
     <script>window.addEventListener('message', (event) => {
       const conversation = document.querySelector('[data-conversation-content]');
       if (event.data === 'new') {
         conversation.dataset.conversationSession = 'new';
         conversation.dataset.contentPhase = 'hero';
       } else if (event.data === 'click') conversation.querySelector('a').click();
-    })</script>
-  `))
+    });
+    document.addEventListener('change', (event) => {
+      if (event.target.matches('[data-kw-picker-source]')) event.target.dataset.saved = event.target.value;
+    });</script></body></html>
+  `)))
   const url=await app.listen({host:'127.0.0.1',port:0})
   const folder=join(directory,'sync-fixture')
   await mkdir(folder)
@@ -84,11 +92,11 @@ try {
     if(message.id) { const entry=pending.get(message.id);pending.delete(message.id);message.error?entry?.reject(new Error(message.error.message)):entry?.resolve(message.result) }
     if(message.method==='Runtime.exceptionThrown') errors.push(message.params.exceptionDetails.text+': '+(message.params.exceptionDetails.exception?.description||''))
   })
-  const call=(method:string,params:Record<string,unknown>={})=>new Promise<any>((resolve,reject)=>{
+  const call=(method:string,params:Record<string,unknown>={},sessionId?:string)=>new Promise<any>((resolve,reject)=>{
     const id=++serial
     const timer=setTimeout(()=>{pending.delete(id);reject(new Error('CDP timeout: '+method))},15000)
     pending.set(id,{resolve:(value)=>{clearTimeout(timer);resolve(value)},reject:(error)=>{clearTimeout(timer);reject(error)}})
-    socket!.send(JSON.stringify({id,method,params}))
+    socket!.send(JSON.stringify({id,method,params,sessionId}))
   })
   const evaluate=async(expression:string)=>{
     const result=await call('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true})
@@ -100,6 +108,27 @@ try {
     throw new Error('Page condition timed out: '+expression)
   }
   await call('Page.enable');await call('Runtime.enable')
+  await call('Page.navigate', { url: `${url}/review` })
+  await until("document.querySelector('#page-review.active #review-list')?.textContent.includes('暂无待审')")
+  assert.equal(await evaluate('location.pathname + location.search'), '/review')
+  assert.equal(await evaluate("document.querySelector('.nav-item[data-page=review]').getAttribute('aria-current')"), 'page')
+  await call('Page.reload')
+  await until("performance.getEntriesByType('navigation')[0]?.type === 'reload' && document.querySelector('#page-review.active #review-list')?.textContent.includes('暂无待审')")
+  await evaluate("document.querySelector('.nav-item[data-page=library]').click()")
+  await until("location.pathname === '/library' && document.querySelector('#page-library.active')")
+  await evaluate('history.back()')
+  await until("location.pathname === '/review' && document.querySelector('#page-review.active')")
+  await evaluate('history.forward()')
+  await until("location.pathname === '/library' && document.querySelector('#page-library.active')")
+  await evaluate("document.querySelector('#tour').hidden = true; document.querySelector('#token-select').focus(); document.querySelector('#token-select').click()")
+  assert.equal(await evaluate("document.querySelector('#token-select-panel:popover-open [role=option]').textContent"), '何道伟 · owner')
+  await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' })
+  assert.equal(await evaluate("document.activeElement.id === 'token-select' && !document.querySelector('#token-select-panel:popover-open')"), true)
+  await evaluate("openEntityDialog({id:'fixture',name:'验收实体',type:'concept'}); document.querySelector('#entity-type').focus(); document.querySelector('#entity-type').click()")
+  await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'End', code: 'End' })
+  await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter' })
+  assert.equal(await evaluate("document.querySelector('#entity-type').value"), 'literal')
+  await evaluate("document.querySelector('#entity-dialog').close()")
   await call('Page.navigate',{url})
   await until("document.querySelector('#native-chat-retry')?.hidden === false")
   assert.equal(await evaluate("document.querySelector('.nav-item[data-page=chat]').textContent.trim()"), '对话')
@@ -111,6 +140,37 @@ try {
     frame.hidden = false;
     frame.src = ${JSON.stringify(fixtureUrl)};
   })`)
+  const nativeTarget = (await call('Target.getTargets')).targetInfos.find((target: { url: string }) => target.url === fixtureUrl)
+  assert.ok(nativeTarget, 'cross-site native fixture has a browser target')
+  const { sessionId: nativeSession } = await call('Target.attachToTarget', { targetId: nativeTarget.targetId, flatten: true })
+  const nativeEval = async (expression: string) => {
+    const result = await call('Runtime.evaluate', { expression, returnByValue: true }, nativeSession)
+    assert.ok(!result.exceptionDetails, result.exceptionDetails?.exception?.description)
+    return result.result.value
+  }
+  for (let i = 0; i < 100 && !await nativeEval("document.querySelectorAll('.kw-embedded-picker').length === 3"); i += 1) {
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+  const bridged = await nativeEval(`({
+    title: document.title,
+    library: typeof window.KnowWeavePickers,
+    controls: Array.from(document.querySelectorAll('[data-kw-picker-source]'), node => [node.id, getComputedStyle(node).display]),
+  })`)
+  assert.deepEqual(bridged, { title: '知织', library: 'object', controls: [
+    ['fixture-protocol', 'none'], ['fixture-date', 'none'], ['fixture-color', 'none'],
+  ] })
+  assert.equal(await nativeEval("getComputedStyle(document.querySelector('#fixture-checkbox')).appearance"), 'none')
+  assert.equal(await nativeEval(`(() => {
+    const trigger = document.querySelector('#fixture-protocol + .kw-embedded-picker button');
+    trigger.click();
+    document.querySelector('.kw-picker-panel:popover-open [data-index="1"]').click();
+    return document.querySelector('#fixture-protocol').dataset.saved;
+  })()`), 'b')
+  assert.equal(await nativeEval(`(() => {
+    document.querySelector('#fixture-color + .kw-embedded-picker button').click();
+    document.querySelector('.kw-picker-panel:popover-open [data-color="#16a34a"]').click();
+    return document.querySelector('#fixture-color').dataset.saved;
+  })()`), '#16a34a')
   await evaluate(`window.postMessage({ type: 'knowweave:open-citation', path: ${JSON.stringify(citation)} }, location.origin)`)
   assert.equal(await evaluate("document.querySelector('#chat-citation').hidden"), true)
   const tellNative = (message: string) => evaluate(`document.querySelector('#native-chat-frame').contentWindow.postMessage(${JSON.stringify(message)}, ${JSON.stringify(new URL(fixtureUrl).origin)})`)
@@ -126,6 +186,18 @@ try {
   await evaluate("resetNativeChat()")
   await evaluate("document.querySelector('.nav-item[data-page=ask]').click()")
   await until("document.querySelector('#question') && typeof runAsk === 'function'")
+  await call('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
+  await evaluate("document.querySelector('#tour').hidden = true; document.querySelector('#as-of').click(); document.querySelector('.kw-picker-panel:popover-open input').value = '2025-02-29'; document.querySelector('.kw-picker-panel:popover-open .kw-picker-footer button').click()")
+  assert.equal(await evaluate("document.querySelector('.kw-picker-panel:popover-open input').getAttribute('aria-invalid')"), 'true')
+  assert.equal(await evaluate(`(() => {
+    const box = document.querySelector('.kw-picker-panel:popover-open').getBoundingClientRect();
+    return box.left >= 0 && box.right <= innerWidth && box.top >= 0 && box.bottom <= innerHeight;
+  })()`), true)
+  await evaluate("document.querySelector('.kw-picker-panel:popover-open input').value = '2024-02-29'; document.querySelector('.kw-picker-panel:popover-open .kw-picker-footer button').click()")
+  assert.equal(await evaluate("askPayload('测试').as_of"), '2024-02-29')
+  await evaluate("document.querySelector('#as-of').click(); document.querySelector('.kw-picker-panel:popover-open .kw-picker-footer button:last-child').click()")
+  assert.equal(await evaluate("Object.hasOwn(askPayload('测试'), 'as_of')"), false)
+  await call('Emulation.clearDeviceMetricsOverride')
   await evaluate("document.querySelectorAll('dialog[open]').forEach(dialog=>dialog.close());document.querySelector('#question').value='知织支持什么？';document.querySelector('#ask-form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))")
   await until("document.querySelector('#ask-result [data-cite]') !== null")
   assert.equal(await evaluate("document.querySelector('#native-chat-frame').hasAttribute('src')"),false)
@@ -133,6 +205,25 @@ try {
   await until("document.querySelector('#doc-dialog').open && document.querySelector('#source-highlight-target') !== null")
   const highlighted=await evaluate("document.querySelector('#source-highlight-target').textContent")
   assert.match(highlighted,/知织支持本地文档检索/)
+  await evaluate("document.querySelector('.doc-link').open = true; document.querySelector('#continuation-direction').scrollIntoView({ block: 'center' })")
+  await evaluate("document.querySelector('#continuation-direction').click(); document.querySelector('.kw-picker-panel:popover-open [data-index=\"1\"]').click()")
+  assert.equal(await evaluate("document.querySelector('#continuation-direction').value"), 'continued_by')
+  await evaluate("document.querySelector('#continuation-date').scrollIntoView({ block: 'center' }); document.querySelector('#continuation-date').click(); document.querySelector('.kw-picker-panel:popover-open input').value = '2025-03-04'; document.querySelector('.kw-picker-panel:popover-open .kw-picker-footer button').click()")
+  assert.equal(await evaluate("document.querySelector('#continuation-date').value"), '2025-03-04')
+  await evaluate("document.querySelector('#continuation-other').scrollIntoView({ block: 'center' }); document.querySelector('#continuation-other').click()")
+  const relatedDocument = await evaluate(`(() => {
+    const option = [...document.querySelectorAll('.kw-picker-panel:popover-open [role=option]')]
+      .find(node => node.textContent === 'local.txt');
+    option.click();
+    return document.querySelector('#continuation-other').value;
+  })()`)
+  await evaluate("document.querySelector('[data-continuation-link]').click()")
+  await until("document.querySelector('[data-continuation-unlink=continued_by]')")
+  const link = await queryOne<{ successor_doc_id: string; effective_date: string }>(
+    'SELECT successor_doc_id, effective_date::text FROM document_continuations WHERE predecessor_doc_id = $1', [source.document_id],
+  )
+  assert.deepEqual(link, { successor_doc_id: relatedDocument, effective_date: '2025-03-04' })
+  assert.equal(await evaluate("document.querySelectorAll('select, datalist, input[type=date], input[type=color]').length"), 0)
   await evaluate("document.querySelector('[data-doc-action=reindex]').click()")
   await until("document.querySelector('[data-doc-action=reindex]')?.disabled === false")
   assert.equal(await evaluate("document.querySelector('.doc-source').textContent.includes('知织支持本地文档检索')"),true)

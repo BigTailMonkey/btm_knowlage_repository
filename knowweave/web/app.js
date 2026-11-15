@@ -30,19 +30,20 @@ const state = {
   conversationId: null,
 };
 
-const PAGE_META = {
-  chat: "对话",
-  dashboard: "概览",
-  library: "知识库",
-  ask: "研究台",
-  entities: "实体图谱",
-  review: "审阅队列",
-  ops: "运维台",
-  settings: "设置",
+const PAGE_PATHS = {
+  chat: "/",
+  dashboard: "/dashboard",
+  library: "/library",
+  ask: "/ask",
+  entities: "/entities",
+  review: "/review",
+  ops: "/ops",
+  settings: "/settings",
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
+let accountPicker, entityTypePicker;
 
 
 const FEATURE_LABEL = {
@@ -257,15 +258,39 @@ function loadingLines() {
 }
 
 /* ============ Shell ============ */
-function pageFromUrl() {
+function pageFromUrl(url) {
+  if (url.pathname === "/") {
+    const fragmentPage = url.hash.slice(1);
+    if (Object.hasOwn(PAGE_PATHS, fragmentPage)) return fragmentPage;
+    const queryPage = url.searchParams.get("page");
+    if (Object.hasOwn(PAGE_PATHS, queryPage)) return queryPage;
+  }
+  return Object.keys(PAGE_PATHS).find((page) => PAGE_PATHS[page] === url.pathname) ?? "chat";
+}
+
+function pageUrl(page) {
   const url = new URL(location.href);
-  const legacyPage = url.hash.slice(1);
-  if (Object.hasOwn(PAGE_META, legacyPage)) return legacyPage;
-  return url.searchParams.get("page");
+  url.pathname = PAGE_PATHS[page];
+  url.searchParams.delete("page");
+  url.hash = "";
+  return url;
+}
+
+function navigateToPage(page) {
+  const url = pageUrl(page);
+  if (url.href !== location.href) history.pushState(null, "", url);
+  showPage(page);
+}
+
+function restorePageFromUrl() {
+  const page = pageFromUrl(new URL(location.href));
+  const url = pageUrl(page);
+  if (url.href !== location.href) history.replaceState(history.state, "", url);
+  showPage(page);
 }
 
 function showPage(page) {
-  if (!Object.hasOwn(PAGE_META, page)) page = "chat";
+  if (hoverTooltipTarget) hideHoverTooltip();
   if (state.page === "chat" && page !== "chat") closeChatCitation();
   state.page = page;
   document.body.dataset.page = page;
@@ -277,14 +302,6 @@ function showPage(page) {
   });
   $$(".page").forEach((section) => section.classList.toggle("active", section.id === `page-${page}`));
   $("#sheet").scrollTop = 0;
-  const url = new URL(location.href);
-  if (page === "chat") {
-    if (url.searchParams.has("page")) url.searchParams.delete("page");
-  } else if (url.searchParams.get("page") !== page) {
-    url.searchParams.set("page", page);
-  }
-  url.hash = "";
-  if (url.href !== location.href) history.replaceState(history.state, "", url);
   closeSidebar();
   loadPage(page);
 }
@@ -317,8 +334,8 @@ async function refreshShell() {
     state.me = await api("/auth/me");
     const name = state.me.name || "知";
     $("#who-avatar").textContent = Array.from(name)[0];
-    const option = $(`#token-select option[value="${state.token}"]`);
-    if (option) option.textContent = `${state.me.name} · ${state.me.role}`;
+    const identity = { value: state.token, label: `${state.me.name} · ${state.me.role}` };
+    accountPicker.setOptions(state.token === "owner-token" ? [identity] : [identity, ownerIdentity], state.token);
     if (state.page === "settings") renderIdentity();
   } catch (error) {
     toast(error.message);
@@ -600,7 +617,7 @@ function renderExtractionJobs({ items, can_retry }) {
         </div>
         ${task.status === "failed" ? `<p class="muted small">${esc(task.error || "上次抽取失败，可重试。")}</p>
           ${can_retry ? `<button class="text-btn" data-extraction-retry="${esc(task.id)}" ${extractionRetrying ? "disabled" : ""}>重试抽取</button>
-            <button class="text-btn" data-extraction-reset="${esc(task.id)}" ${extractionRetrying ? "disabled" : ""} title="丢掉已有断点，从第一批重新抽取：更慢，但结果完全重算">从头重抽</button>` : ""}` : ""}
+            <button class="text-btn" data-extraction-reset="${esc(task.id)}" ${extractionRetrying ? "disabled" : ""} data-hover-tip="丢掉已有断点，从第一批重新抽取：更慢，但结果完全重算">从头重抽</button>` : ""}` : ""}
         ${percent === null ? "" : `<div class="job-progress"><i style="width:${percent}%"></i></div>`}
         ${task.status === "running" ? eta : ""}
       </div>`;
@@ -657,7 +674,7 @@ function renderIngestJobs() {
       <div class="job-card${failed ? " failed" : ""}">
         <div class="job-line">
           <span class="job-title">${esc(job.title)}</span>
-          <span class="job-stage" title="${esc(stage)}">${esc(stage)}</span>
+          <span class="job-stage" data-hover-tip="${esc(stage)}">${esc(stage)}</span>
           <span class="job-percent">${failed ? "失败" : `${percent}%`}</span>
         </div>
         ${failed ? `<div class="job-actions"><button class="text-btn" data-retry-job="${esc(job.job_id)}">重试入库</button><button class="text-btn" data-correct-job="${esc(job.job_id)}">人工修正文</button></div>` : ""}
@@ -1035,18 +1052,9 @@ async function openDoc(docId, citation = null) {
             <details class="doc-link">
               <summary>登记延续关系</summary>
               <div class="doc-link-fields">
-                <label class="doc-field"><span>方向</span>
-                  <select id="continuation-direction">
-                    <option value="continues">接续自（当前是新文档）</option>
-                    <option value="continued_by">延续到（当前是旧文档）</option>
-                  </select>
-                </label>
-                <label class="doc-field"><span>关联文档</span>
-                  <select id="continuation-other"${linkableItems.length ? "" : " disabled"}>
-                    ${linkableItems.length ? linkableItems.map((item) => `<option value="${esc(item.id)}">${esc(item.title)}</option>`).join("") : `<option>没有可关联的文档</option>`}
-                  </select>
-                </label>
-                <label class="doc-field"><span>生效日期</span><input type="date" id="continuation-date" /></label>
+                <div class="doc-field"><label id="continuation-direction-label" for="continuation-direction">方向</label><div data-direction-picker></div></div>
+                <div class="doc-field"><label id="continuation-other-label" for="continuation-other">关联文档</label><div data-document-picker></div></div>
+                <div class="doc-field"><label id="continuation-date-label" for="continuation-date">生效日期</label><div data-date-picker></div></div>
                 <label class="doc-field"><span>备注</span><input id="continuation-note" maxlength="500" placeholder="可选" /></label>
                 <button class="btn block" type="button" data-continuation-link${linkableItems.length ? "" : " disabled"}>建立延续</button>
               </div>
@@ -1084,6 +1092,20 @@ async function openDoc(docId, citation = null) {
       </div>`;
 
     const body = $("#doc-dialog-body");
+    const direction = KnowWeavePickers.choice($("[data-direction-picker]", body), {
+      id: "continuation-direction", label: "方向", labelId: "continuation-direction-label",
+      options: [
+        { value: "continues", label: "接续自（当前是新文档）" },
+        { value: "continued_by", label: "延续到（当前是旧文档）" },
+      ],
+    });
+    const relatedDocument = KnowWeavePickers.choice($("[data-document-picker]", body), {
+      id: "continuation-other", label: "关联文档", labelId: "continuation-other-label", placeholder: "没有可关联的文档",
+      options: linkableItems.map(({ id, title }) => ({ value: id, label: title })),
+    });
+    const effective = KnowWeavePickers.date($("[data-date-picker]", body), {
+      id: "continuation-date", label: "生效日期", labelId: "continuation-date-label",
+    });
     const infoButton = $("[data-doc-info]", dialog);
     if (infoButton) infoButton.onclick = () => $(".doc-rail", body)?.scrollIntoView({ behavior: "smooth", block: "start" });
     const tabs = $$("[data-doc-tab]", body);
@@ -1145,13 +1167,17 @@ async function openDoc(docId, citation = null) {
       });
     });
     $("[data-continuation-link]", body)?.addEventListener("click", async (event) => {
-      const other = $("#continuation-other", body)?.value;
-      const effectiveDate = $("#continuation-date", body)?.value;
-      const relation = $("#continuation-direction", body)?.value;
+      const button = event.currentTarget;
+      const other = relatedDocument.trigger.value;
+      const effectiveDate = effective.trigger.value;
+      const relation = direction.trigger.value;
       const note = $("#continuation-note", body)?.value.trim();
       if (!other) return toast("没有可关联的文档");
-      if (!effectiveDate) return toast("请填写生效日期");
-      setBusy(event.currentTarget, true, "保存中");
+      if (!effectiveDate) {
+        effective.trigger.focus();
+        return toast("请选择生效日期");
+      }
+      setBusy(button, true, "保存中");
       try {
         await api(`/documents/${encodeURIComponent(doc.id)}/continuation`, {
           method: "POST",
@@ -1163,7 +1189,7 @@ async function openDoc(docId, citation = null) {
       } catch (error) {
         toast(error.message);
       } finally {
-        setBusy(event.currentTarget, false);
+        setBusy(button, false);
       }
     });
     const highlight = $("#source-highlight-target", body);
@@ -1281,6 +1307,7 @@ function setupAclPicker(picker) {
   const input = $("[data-acl-input]", picker);
   const tagBox = $("[data-acl-tags]", picker);
   const menu = $("[data-acl-menu]", picker);
+  menu.setAttribute("aria-multiselectable", "true");
   const selected = new Set(["tenant:public"]);
   let dirty = false;
   let filtered = [];
@@ -1294,6 +1321,7 @@ function setupAclPicker(picker) {
   }
 
   function renderMenu() {
+    input.removeAttribute("aria-activedescendant");
     const query = input.value.trim();
     if (!state.aclOptions) {
       filtered = [];
@@ -1313,10 +1341,11 @@ function setupAclPicker(picker) {
     }
     activeIndex = Math.min(activeIndex, filtered.length - 1);
     menu.innerHTML = filtered.map((option, index) => `
-      <div class="acl-option${index === activeIndex ? " is-active" : ""}" role="option" data-value="${esc(option.value)}" aria-selected="${selected.has(option.value)}">
+      <div id="${menu.id}-option-${index}" class="acl-option${index === activeIndex ? " is-active" : ""}" role="option" data-value="${esc(option.value)}" aria-selected="${selected.has(option.value)}">
         <span>${esc(option.label)}</span>
         <span class="acl-option-kind">${esc(option.kind)}</span>
       </div>`).join("");
+    if (!menu.hidden) input.setAttribute("aria-activedescendant", `${menu.id}-option-${activeIndex}`);
   }
 
   function open() {
@@ -1328,6 +1357,7 @@ function setupAclPicker(picker) {
     menu.hidden = true;
     activeIndex = 0;
     input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
   }
 
   function toggle(value) {
@@ -1372,7 +1402,8 @@ function setupAclPicker(picker) {
       event.preventDefault();
       const option = filtered[activeIndex];
       if (option) toggle(option.value);
-    } else if (event.key === "Escape") {
+    } else if (event.key === "Escape" && !menu.hidden) {
+      event.preventDefault();
       close();
     } else if (event.key === "Backspace" && !input.value) {
       const values = Array.from(selected);
@@ -1383,6 +1414,9 @@ function setupAclPicker(picker) {
         renderMenu();
       }
     }
+  });
+  picker.addEventListener("focusout", (event) => {
+    if (!picker.contains(event.relatedTarget)) close();
   });
   menu.addEventListener("mousedown", (event) => event.preventDefault());
   menu.addEventListener("click", (event) => {
@@ -2570,7 +2604,7 @@ function renderAsk(result, question = $("#question").value.trim() || "检索结�
   $("#ask-result").innerHTML = `
     <article class="answer ${compact ? "is-compact" : ""}">
       <header class="answer-head">
-        <h2 class="answer-question" title="${esc(question)}">${esc(question)}</h2>
+        <h2 class="answer-question" data-hover-tip="${esc(question)}">${esc(question)}</h2>
         <div class="answer-meta">
           <span class="pill ${refused ? "warn" : "ok"}">${refused ? "证据不足" : "已回答"}</span>
           <span class="meta-sep" aria-hidden="true"></span>
@@ -2733,11 +2767,11 @@ function renderRecentState() {
   }
   target.hidden = false;
   const rows = items.map((conversation) => `
-    <button class="recent-item ${conversation.id === state.conversationId ? "active" : ""} ${archivedView ? "archived" : ""}" type="button" data-conversation="${esc(conversation.id)}" title="${esc(conversation.title || "未命名会话")}${archivedView ? "（已归档，继续提问会自动恢复）" : ""}">
+    <button class="recent-item ${conversation.id === state.conversationId ? "active" : ""} ${archivedView ? "archived" : ""}" type="button" data-conversation="${esc(conversation.id)}" data-hover-tip="${esc(conversation.title || "未命名会话")}${archivedView ? "（已归档，继续提问会自动恢复）" : ""}">
       <span class="recent-title">${esc(conversation.title || "未命名会话")}</span>
       <span class="recent-time">${chatWhen(conversation.last_activity_at || conversation.created_at)}</span>
     </button>`).join("");
-  const toggle = `<button class="recent-toggle" type="button" data-archive-toggle title="${archivedView ? "返回最近会话" : "查看已归档会话"}">${archivedView ? "最近" : "已归档"}</button>`;
+  const toggle = `<button class="recent-toggle" type="button" data-archive-toggle data-hover-tip="${archivedView ? "返回最近会话" : "查看已归档会话"}">${archivedView ? "最近" : "已归档"}</button>`;
   target.innerHTML = `<span class="recent-label">${archivedView ? "已归档" : "最近"}</span>` +
     (rows || `<span class="recent-empty">暂无归档会话</span>`) + toggle;
   $$("#conversation-list [data-conversation]").forEach((row) => {
@@ -2750,7 +2784,7 @@ function renderRecentState() {
 }
 
 async function continueConversation(conversationId) {
-  showPage("ask");
+  navigateToPage("ask");
   try {
     const data = await api(`/conversations/${encodeURIComponent(conversationId)}`);
     state.conversationId = conversationId;
@@ -2805,13 +2839,13 @@ function applyEntityViewUI(view) {
   const railToggle = $("#entity-rail-toggle");
   if (railToggle) {
     railToggle.setAttribute("aria-pressed", state.entityRail ? "true" : "false");
-    railToggle.title = state.entityRail ? "收起实体列表，把空间留给图谱" : "展开实体列表，在图谱旁浏览实体";
+    railToggle.setAttribute("data-hover-tip", state.entityRail ? "收起实体列表，把空间留给图谱" : "展开实体列表，在图谱旁浏览实体");
   }
   const toggle = $("#graph-toggle");
   if (!toggle) return;
   const expanded = view === "graph";
   toggle.setAttribute("aria-pressed", expanded ? "true" : "false");
-  toggle.title = expanded ? "收起图谱，回到实体列表" : "展开关系图谱";
+  toggle.setAttribute("data-hover-tip", expanded ? "收起图谱，回到实体列表" : "展开关系图谱");
   const label = toggle.querySelector("span");
   if (label) label.textContent = expanded ? "收起图谱" : "查看关系图谱";
 }
@@ -2890,7 +2924,7 @@ async function loadEntities(q = "") {
     target.innerHTML = items.map((entity) => `
       <button class="row ${state.activeEntity === entity.id ? "selected" : ""}" type="button" data-entity="${esc(entity.id)}">
         <span class="row-main">
-          <span class="row-title" title="${esc(entity.name)}">${esc(entity.name)}</span>
+          <span class="row-title" data-hover-tip="${esc(entity.name)}">${esc(entity.name)}</span>
           <span class="row-sub">${esc(nodeTypeLabel(entity.type))} · ${num(entity.facts)} 条事实</span>
         </span>
       </button>`).join("");
@@ -2974,8 +3008,6 @@ async function selectEntity(entityId) {
 const ENTITY_TYPE_OPTIONS = ["concept", "org", "person", "location", "event", "literal"];
 
 function fillEntityTypes(current) {
-  const select = $("#entity-type");
-  if (!select) return;
   const known = new Set(ENTITY_TYPE_OPTIONS);
   const extra = new Set();
   [...state.entities, ...(state.graph?.nodes || [])].forEach((node) => {
@@ -2984,10 +3016,7 @@ function fillEntityTypes(current) {
   });
   if (current && !known.has(current)) extra.add(current);
   const types = [...ENTITY_TYPE_OPTIONS, ...[...extra].sort()];
-  select.innerHTML = types
-    .map((type) => `<option value="${esc(type)}">${esc(nodeTypeLabel(type))}</option>`)
-    .join("");
-  select.value = current || "concept";
+  entityTypePicker.setOptions(types.map((type) => ({ value: type, label: nodeTypeLabel(type) })), current || "concept");
 }
 
 function openEntityDialog(entity) {
@@ -3098,7 +3127,7 @@ function entityFactHtml(fact, entity) {
     ? `${dayOnly(fact.valid_from)} → ${fact.valid_to ? dayOnly(fact.valid_to) : "至今"}`
     : (fact.recorded_at ? `记录于 ${dayOnly(fact.recorded_at)}` : "");
   const quote = fact.evidence?.[0]?.quote
-    ? `<div class="fact-quote" title="${esc(plain(fact.evidence[0].quote))}">${esc(plain(fact.evidence[0].quote))}</div>`
+    ? `<div class="fact-quote" data-hover-tip="${esc(plain(fact.evidence[0].quote))}">${esc(plain(fact.evidence[0].quote))}</div>`
     : "";
   return `<div class="entity-fact">
     <div class="fact-triple">
@@ -3406,6 +3435,58 @@ function graphArrow(svg, tip, direction, variant) {
   svg.appendChild(arrow);
 }
 
+let hoverTooltipTimer;
+let hoverTooltipTarget;
+
+function hideHoverTooltip() {
+  clearTimeout(hoverTooltipTimer);
+  hoverTooltipTarget = null;
+  const tooltip = $("#hover-tooltip");
+  tooltip.hidden = true;
+  if (tooltip.parentElement !== document.body) document.body.appendChild(tooltip);
+}
+
+function setupHoverTooltip() {
+  const tooltip = $("#hover-tooltip");
+  const selector = "[data-hover-tip]";
+  const position = (event) => {
+    const left = Math.min(event.clientX + 12, window.innerWidth - tooltip.offsetWidth - 8);
+    const below = event.clientY + 16;
+    const top = below + tooltip.offsetHeight <= window.innerHeight - 8
+      ? below : event.clientY - tooltip.offsetHeight - 8;
+    tooltip.style.left = `${Math.max(8, left)}px`;
+    tooltip.style.top = `${Math.max(8, top)}px`;
+  };
+  document.addEventListener("pointerover", (event) => {
+    const target = event.target.closest(selector);
+    if (!target || target === hoverTooltipTarget || event.pointerType === "touch") return;
+    hideHoverTooltip();
+    hoverTooltipTarget = target;
+    hoverTooltipTimer = setTimeout(() => {
+      if (!target.isConnected || !target.getClientRects().length) return;
+      const text = target.getAttribute("data-hover-tip");
+      if (!text) return;
+      const dialog = target.closest("dialog[open]");
+      if (dialog) dialog.appendChild(tooltip);
+      tooltip.textContent = text;
+      tooltip.hidden = false;
+      position(event);
+    }, 300);
+  });
+  document.addEventListener("pointermove", (event) => {
+    if (tooltip.hidden || !hoverTooltipTarget?.contains(event.target)) return;
+    tooltip.textContent = hoverTooltipTarget.getAttribute("data-hover-tip");
+    position(event);
+  });
+  document.addEventListener("pointerout", (event) => {
+    if (hoverTooltipTarget && event.relatedTarget?.closest?.(selector) !== hoverTooltipTarget) hideHoverTooltip();
+  });
+  document.addEventListener("scroll", hideHoverTooltip, true);
+  document.addEventListener("pointerdown", hideHoverTooltip);
+  document.addEventListener("close", hideHoverTooltip, true);
+  window.addEventListener("blur", hideHoverTooltip);
+}
+
 function renderGraphAttrs() {
   const strip = $("#graph-attrs");
   if (!strip) return;
@@ -3422,7 +3503,7 @@ function renderGraphAttrs() {
   const shown = attrs.slice(0, 3);
   strip.hidden = false;
   strip.innerHTML = `<span class="graph-attrs-label">属性</span>`
-    + shown.map((attr) => `<span class="graph-attr" title="${esc(`${graphRelationLabel(attr)}：${attr.value}`)}">`
+    + shown.map((attr) => `<span class="graph-attr" data-hover-tip="${esc(`${graphRelationLabel(attr)}：${attr.value}`)}">`
       + `<b>${esc(graphRelationLabel(attr))}</b>${esc(attr.value)}</span>`).join("")
     + (attrs.length > shown.length ? `<span class="graph-attr more">还有 ${num(attrs.length - shown.length)} 条</span>` : "");
 }
@@ -3621,9 +3702,7 @@ function drawGraphOverview(svg, data, width, height) {
         path.setAttribute("d", `M${start.x},${start.y} Q${control.x},${control.y} ${end.x},${end.y}`);
         tangent = { x: b.x - control.x, y: b.y - control.y };
       }
-      const title = graphEl("title");
-      title.textContent = `${source.name} — ${graphRelationLabel(edge)} → ${target.name}`;
-      group.appendChild(title);
+      group.setAttribute("data-hover-tip", `${source.name} — ${graphRelationLabel(edge)} → ${target.name}`);
       group.appendChild(path);
       const length = Math.hypot(tangent.x, tangent.y);
       graphArrow(group, end, { x: tangent.x / length, y: tangent.y / length }, variant);
@@ -3646,11 +3725,9 @@ function drawGraphOverview(svg, data, width, height) {
     const above = direct && y < canvasHeight / 2;
     label.setAttribute("y", String(above ? -radiusOf(node) - 6 : radiusOf(node) + 14));
     label.textContent = graphTextLabel(node.name, node.id === hub ? 24 : direct ? 15 : 10);
-    const title = graphEl("title");
-    title.textContent = node.name;
+    group.setAttribute("data-hover-tip", node.name);
     group.appendChild(shape);
     group.appendChild(label);
-    group.appendChild(title);
     const highlight = (active) => {
       for (const edge of incident.get(node.id)) {
         if (active) edge.setAttribute("data-highlighted", "true");
@@ -3676,6 +3753,7 @@ function drawGraph() {
   const svg = $("#graph-canvas");
   if (!svg) return;
   const data = state.graph || {};
+  if (hoverTooltipTarget && svg.contains(hoverTooltipTarget)) hideHoverTooltip();
   $(".graph-stage").classList.toggle("graph-stage-overview", Boolean(data.overview));
   svg.style.width = "";
   svg.style.height = "";
@@ -3802,15 +3880,14 @@ function drawGraph() {
     const end = { x: b.x - ux * (rb + 4), y: b.y - uy * (rb + 4) };
     const path = graphEl("path", `g-link${incident ? " strong" : ""}${edge.status === "disputed" ? " disputed" : ""}`);
     path.setAttribute("d", `M${start.x.toFixed(1)},${start.y.toFixed(1)} Q${controlX.toFixed(1)},${controlY.toFixed(1)} ${end.x.toFixed(1)},${end.y.toFixed(1)}`);
-    const title = graphEl("title");
     const sourceName = nodeById.get(edge.source).name;
     const targetName = nodeById.get(edge.target).name;
     const predicateText = (edge.predicates || [edge.predicate]).join(" / ");
     const statusText = edge.status === "disputed" ? "存疑" : "有效";
     const confidenceText = edge.confidence != null ? ` · 置信度 ${edge.confidence}` : "";
-    title.textContent = `${sourceName} — ${predicateText}${edge.value ? `（${edge.value}）` : ""} → ${targetName}`
+    const description = `${sourceName} — ${predicateText}${edge.value ? `（${edge.value}）` : ""} → ${targetName}`
       + `\n关系类型：${graphRelationType(edge)} · ${statusText}${confidenceText}`;
-    path.appendChild(title);
+    path.setAttribute("data-hover-tip", description);
     svg.appendChild(path);
 
     const arrowDirection = { x: end.x - controlX, y: end.y - controlY };
@@ -3855,10 +3932,7 @@ function drawGraph() {
     text.textContent = labelText;
     group.appendChild(text);
     // 标签是缩略后的谓语，悬停看完整原文：主语 — 全部谓语 → 宾语
-    const tagTitle = graphEl("title");
-    tagTitle.textContent = `${sourceName} — ${predicateText}${edge.value ? `（${edge.value}）` : ""} → ${targetName}`
-      + `\n关系类型：${graphRelationType(edge)}`;
-    group.appendChild(tagTitle);
+    group.setAttribute("data-hover-tip", description);
     svg.appendChild(group);
   });
 
@@ -3926,11 +4000,9 @@ function drawGraph() {
       group.appendChild(text);
     }
 
-    const title = graphEl("title");
     const lines = [`${node.name} · ${nodeTypeLabel(node.type)}`, `关系 ${node.degree || 0} 条 · 属性 ${(node.attrs || []).length} 条`];
     (node.attrs || []).slice(0, 5).forEach((attr) => lines.push(`${graphRelationLabel(attr)}：${attr.value}`));
-    title.textContent = lines.join("\n");
-    group.appendChild(title);
+    group.setAttribute("data-hover-tip", lines.join("\n"));
 
     if (node.id !== focusId) {
       group.setAttribute("tabindex", "0");
@@ -3972,9 +4044,7 @@ function drawGraph() {
         text.textContent = chip.text;
         group.appendChild(text);
         // 卡片里的值被截断时，悬停显示完整谓语与值
-        const chipTitle = graphEl("title");
-        chipTitle.textContent = chip.title || chip.text;
-        group.appendChild(chipTitle);
+        group.setAttribute("data-hover-tip", chip.title || chip.text);
         svg.appendChild(group);
       });
       const rest = focusAttrs.length - attrChips.length;
@@ -4043,7 +4113,7 @@ function applyReviewCount(value) {
   if (badge) {
     badge.textContent = count;
     badge.hidden = count === 0;
-    badge.title = count ? `${count} 个待审项` : "";
+    badge.setAttribute("data-hover-tip", count ? `${count} 个待审项` : "");
   }
   const stat = $("#stat-reviews");
   if (stat) stat.textContent = num(count);
@@ -4105,7 +4175,14 @@ async function loadReview() {
   try {
     const data = await api("/review?status=open");
     if (!data.items.length) {
-      target.innerHTML = `<div class="empty-block">暂无待审项</div>`;
+      target.innerHTML = `
+        <div class="review-empty">
+          <div class="review-empty-content">
+            <span class="review-empty-mark" aria-hidden="true"></span>
+            <h1>暂无待审阅项</h1>
+            <p>需要人工核对的内容会出现在这里。</p>
+          </div>
+        </div>`;
       return;
     }
     target.innerHTML = data.items.map((item) => {
@@ -4290,7 +4367,7 @@ function openConsult(item) {
   const subject = $("#consult-subject");
   if (subject) {
     subject.textContent = item.title || "";
-    subject.title = item.title || "";
+    subject.setAttribute("data-hover-tip", item.title || "");
   }
   const log = $("#consult-log");
   if (log) log.innerHTML = "";
@@ -4902,10 +4979,19 @@ async function loadSettings() {
 }
 
 /* ============ Boot ============ */
+const ownerIdentity = { value: "owner-token", label: "何道伟 · owner" };
+
 async function boot() {
   document.body.dataset.page = state.page;
-  $("#token-select").value = state.token;
-  $("#token-select").addEventListener("change", async (event) => {
+  accountPicker = KnowWeavePickers.choice($("#account-picker"), {
+    id: "token-select", label: "当前身份", placeholder: "选择身份", value: state.token, options: [ownerIdentity],
+  });
+  entityTypePicker = KnowWeavePickers.choice($("#entity-type-picker"), {
+    id: "entity-type", label: "类型", labelId: "entity-type-label", options: [],
+  });
+  fillEntityTypes();
+  KnowWeavePickers.date($("#as-of-picker"), { id: "as-of", label: "截至日期", labelId: "as-of-label" });
+  accountPicker.trigger.addEventListener("change", async (event) => {
     state.token = event.target.value;
     localStorage.setItem("kw_token", state.token);
     state.me = null;
@@ -4934,13 +5020,12 @@ async function boot() {
     loadPage(state.page);
   });
 
-  window.addEventListener("popstate", () => showPage(pageFromUrl()));
+  window.addEventListener("popstate", restorePageFromUrl);
 
-  $$(".nav-item").forEach((item) => item.addEventListener("click", () => showPage(item.dataset.page)));
-  $$("[data-goto]").forEach((item) => item.addEventListener("click", (event) => {
-    if (item instanceof HTMLAnchorElement && (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)) return;
+  $$(".nav-item, [data-goto]").forEach((item) => item.addEventListener("click", (event) => {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
-    showPage(item.dataset.goto);
+    navigateToPage(item.dataset.page || item.dataset.goto);
   }));
 
   $("#nav-toggle").addEventListener("click", () => {
@@ -4990,17 +5075,17 @@ async function boot() {
   setupIngest();
   setupAsk();
   setupChat();
+  setupHoverTooltip();
   setupEntityView();
   setupTour();
   setupReviewConsult();
   setupOps();
 
-  const initial = pageFromUrl();
   await refreshShell();
   await loadMetaAndHealth();
-  showPage(initial);
+  restorePageFromUrl();
   connectRealtime();
-  if (!localStorage.getItem(tourKey())) openTour();
+  if (state.page === "chat" && !localStorage.getItem(tourKey())) openTour();
 }
 
 document.addEventListener("DOMContentLoaded", boot);

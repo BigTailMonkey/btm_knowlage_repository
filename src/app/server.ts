@@ -64,7 +64,9 @@ export async function createServer(): Promise<FastifyInstance> {
 
   if (existsSync(settings.webDir)) {
     await app.register(fastifyStatic, { root: settings.webDir, prefix: '/assets/' })
-    app.get('/', async (_request, reply) => reply.sendFile('index.html'))
+    for (const path of ['/', '/dashboard', '/library', '/ask', '/entities', '/review', '/ops', '/settings']) {
+      app.get(path, async (_request, reply) => reply.sendFile('index.html'))
+    }
   }
 
   // 版式预览自带 PDF.js 与字体/CMap 资源，由主服务同源提供，避免依赖外部 CDN。

@@ -34,7 +34,7 @@
   const cssNum = (el, name, fb) => { const v = parseFloat(css(el, name, '')); return Number.isFinite(v) ? v : fb; };
   const svg = (tag, attrs = {}, parent) => { const n = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) if (v != null) n.setAttribute(k, v); if (parent) parent.appendChild(n); return n; };
   const text = (parent, str, attrs) => { const t = svg('text', attrs, parent); t.textContent = str; return t; };
-  const titled = (parent, str) => { svg('title', {}, parent).textContent = str; return parent; };
+  const titled = (parent, str) => { parent.setAttribute('data-hover-tip', str); return parent; };
   // numbers follow the page's language (<html lang>), so separators match the rest of the screen
   const nf = (o) => new Intl.NumberFormat(document.documentElement.lang || 'en', o);
   // every text value that reaches innerHTML goes through esc: a label from a database is text, never markup
@@ -106,11 +106,6 @@
     const w = Math.max(240, el.clientWidth || 600);
     const s = svg('svg', { viewBox: `0 0 ${w} ${h}`, width: '100%', height: h, role: 'img', style: 'display:block;overflow:visible;font-variant-numeric:tabular-nums' }, el);
     return { s, w, h };
-  }
-  function tooltip(el) {
-    let t = el.querySelector('.chart-tip');
-    if (!t) { t = document.createElement('div'); t.className = 'chart-tip'; t.style.cssText = 'position:absolute;pointer-events:none;padding:6px 8px;font:inherit;font-size:12px;line-height:1.35;border-radius:6px;white-space:nowrap;opacity:0;transition:opacity 120ms ease;background:var(--surface,#fff);color:var(--ink,#111);border:1px solid var(--grid,#e5e7eb)'; if (getComputedStyle(el).position === 'static') el.style.position = 'relative'; el.appendChild(t); }
-    return t;
   }
   function axes(g, el, { w, h, padL, padB, yt, y, labels, x, band = false, at = null, tick, avoid = null }) {
     const grid = css(el, '--grid', '#e8e8e8'), ink = css(el, '--axis-ink', '#6b6b6b'), s = g.ownerSVGElement;
@@ -298,11 +293,28 @@
       references(g, el, reference, { y, padL, w, lines: linesAt(y).slice(0, series.length) });
       notesOver(g, el, N, { padT, h, padB });
       // hover: a rule, a dot per series and a bare tooltip
-      const tip = tooltip(el), rule = svg('line', { y1: padT, y2: h - padB, stroke: css(el, '--axis-ink', '#6b6b6b'), 'stroke-width': 1, opacity: 0 }, g);
+      const rule = svg('line', { y1: padT, y2: h - padB, stroke: css(el, '--axis-ink', '#6b6b6b'), 'stroke-width': 1, opacity: 0 }, g);
       const dots = series.map((sr, k) => svg('circle', { r: 3.5, fill: css(el, '--surface', '#fff'), stroke: colourOf(sr, k), 'stroke-width': 2, opacity: 0 }, g));
-      const hit = svg('rect', { x: padL, y: padT, width: w - padL, height: h - padT - padB, fill: 'transparent' }, s);
-      const move = (ev) => { const r = s.getBoundingClientRect(); const px = ((ev.clientX - r.left) / r.width) * w; const i = Math.max(0, Math.min(labels.length - 1, Math.round(((px - padL) / (w - padL - padR)) * (labels.length - 1)))); rule.setAttribute('x1', x(i)); rule.setAttribute('x2', x(i)); rule.setAttribute('opacity', 0.35); series.forEach((sr, k) => { const v = sr.values[i]; dots[k].setAttribute('cx', x(i)); dots[k].setAttribute('cy', v == null ? -99 : y(Math.min(v, yt.at(-1)))); dots[k].setAttribute('opacity', v == null ? 0 : 1); }); tip.innerHTML = `<div style="opacity:.7">${esc(labels[i])}</div>` + series.map((sr) => `<div><b style="font-weight:600">${sr.values[i] == null ? '–' : esc(format(sr.values[i]))}</b> ${series.length > 1 ? esc(sr.name) : ''}</div>`).join(''); const left = Math.min((x(i) / w) * r.width + 12, r.width - tip.offsetWidth - 4); tip.style.left = `${Math.max(0, left)}px`; tip.style.top = '0px'; tip.style.opacity = 1; };
-      hit.addEventListener('pointermove', move); hit.addEventListener('pointerleave', () => { tip.style.opacity = 0; rule.setAttribute('opacity', 0); dots.forEach((d) => d.setAttribute('opacity', 0)); });
+      const hit = svg('rect', { x: padL, y: padT, width: w - padL, height: h - padT - padB, fill: 'transparent', 'data-hover-tip': '' }, s);
+      const move = (ev) => {
+        const r = s.getBoundingClientRect();
+        const px = ((ev.clientX - r.left) / r.width) * w;
+        const i = Math.max(0, Math.min(labels.length - 1, Math.round(((px - padL) / (w - padL - padR)) * (labels.length - 1))));
+        rule.setAttribute('x1', x(i));
+        rule.setAttribute('x2', x(i));
+        rule.setAttribute('opacity', 0.35);
+        const details = series.map((sr, k) => {
+          const v = sr.values[i];
+          dots[k].setAttribute('cx', x(i));
+          dots[k].setAttribute('cy', v == null ? -99 : y(Math.min(v, yt.at(-1))));
+          dots[k].setAttribute('opacity', v == null ? 0 : 1);
+          const value = v == null ? '–' : format(v);
+          return series.length > 1 ? `${sr.name}: ${value}` : value;
+        });
+        hit.setAttribute('data-hover-tip', [labels[i], ...details].join('\n'));
+      };
+      hit.addEventListener('pointerenter', move);
+      hit.addEventListener('pointermove', move); hit.addEventListener('pointerleave', () => { rule.setAttribute('opacity', 0); dots.forEach((d) => d.setAttribute('opacity', 0)); });
       const last = series[0].values.filter((v) => v != null).at(-1);
       s.setAttribute('aria-label', `${series.map((x) => x.name).join(', ')}, ${labels[0]} to ${labels.at(-1)}; latest ${last == null ? 'no data' : format(last)}`);
     };

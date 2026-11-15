@@ -75,6 +75,7 @@ window.__ModuleLoader__.load({
       const action = (value, label, Icon, IconActive) => jsx(Tooltip, {
         label: rating === (value === 1 ? 'positive' : 'negative') ? '已记录' : label,
         side: 'bottom',
+        delayMs: 300,
         children: jsx('button', {
           type: 'button',
           className: '_8_XoUG_action',
