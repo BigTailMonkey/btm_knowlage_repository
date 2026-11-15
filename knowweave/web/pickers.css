@@ -94,9 +94,16 @@
 }
 
 .kw-picker-panel-date, .kw-picker-panel-color { padding: 10px; }
+.kw-picker-panel-date [hidden] { display: none; }
 .kw-calendar-head { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
-.kw-calendar-head strong { font-size: 14px; font-weight: 600; }
-.kw-calendar-head .kw-picker-action { width: 32px; padding: 0; font-size: 20px; line-height: 1; }
+.kw-calendar-head .kw-picker-action:not(.kw-calendar-period-toggle) { width: 32px; padding: 0; font-size: 20px; line-height: 1; }
+.kw-calendar-period-toggle.kw-picker-action { display: inline-flex; align-items: center; gap: 7px; margin-inline: auto; padding: 2px 12px; font-size: 14px; font-weight: 600; }
+.kw-calendar-period-toggle::after { content: ""; width: 6px; height: 6px; border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: translateY(-2px) rotate(45deg); }
+.kw-calendar-period-toggle[aria-expanded="true"]::after { transform: translateY(2px) rotate(225deg); }
+.kw-calendar-year { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 8px 0; }
+.kw-calendar-year .kw-picker-entry { flex: none; width: 72px; text-align: center; }
+.kw-calendar-months { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+.kw-calendar-months .kw-picker-action[aria-pressed="true"] { color: var(--kw-picker-accent, #1b6c80); background: var(--kw-picker-hover, #f2f5f6); font-weight: 600; }
 .kw-calendar-weekdays, .kw-calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; text-align: center; }
 .kw-calendar-weekdays { margin-top: 6px; color: var(--kw-picker-muted, #5b6367); font-size: 12px; line-height: 24px; }
 .kw-calendar-day, .kw-picker-action {

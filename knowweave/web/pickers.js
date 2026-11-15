@@ -242,8 +242,14 @@
     const header = element("div", "kw-calendar-head");
     const previous = button("kw-picker-action", "‹", { "aria-label": "上个月" });
     const next = button("kw-picker-action", "›", { "aria-label": "下个月" });
-    const monthLabel = element("strong", "", { "aria-live": "polite", id: `${panel.id}-month` });
-    header.append(previous, monthLabel, next);
+    const monthLabel = element("span", "", { "aria-live": "polite", id: `${panel.id}-month` });
+    const period = element("div", "kw-calendar-period", { id: `${panel.id}-period`, hidden: "" });
+    const periodToggle = button("kw-picker-action kw-calendar-period-toggle", "", {
+      "aria-controls": period.id, "aria-expanded": "false", title: "选择年月",
+    });
+    periodToggle.append(monthLabel);
+    header.append(previous, periodToggle, next);
+    const calendar = element("div");
     const weekdays = element("div", "kw-calendar-weekdays", { "aria-hidden": "true" });
     weekdays.append(...Array.from("一二三四五六日", (day) => {
       const item = element("span");
@@ -259,12 +265,51 @@
     const clear = button("kw-picker-action", "清除");
     const error = element("p", "kw-picker-error", { role: "status" });
     footer.append(input, apply, clear);
-    panel.append(header, weekdays, grid, footer, error);
+    calendar.append(weekdays, grid, footer, error);
+
+    const yearLabel = element("label", "kw-calendar-year");
+    yearLabel.textContent = "年份";
+    const yearError = element("p", "kw-picker-error", { id: `${panel.id}-year-error`, role: "status" });
+    const yearInput = element("input", "kw-picker-entry", {
+      type: "text", inputmode: "numeric", maxlength: "4", autocomplete: "off", "aria-describedby": yearError.id,
+    });
+    yearLabel.append(yearInput);
+    const monthGrid = element("div", "kw-calendar-months", { role: "group", "aria-label": "月份" });
+    const months = Array.from({ length: 12 }, (_, index) => button("kw-picker-action", `${index + 1} 月`, { "aria-pressed": "false" }));
+    monthGrid.append(...months);
+    period.append(yearLabel, monthGrid, yearError);
+    panel.append(header, calendar, period);
     let current, today;
     let min = "0001-01-01";
     let max = "9999-12-31";
 
     function inBounds(key) { return key >= min && key <= max; }
+
+    function updateMonths() {
+      const year = Number(yearInput.value);
+      const minYear = Number(min.slice(0, 4));
+      const maxYear = Number(max.slice(0, 4));
+      const valid = /^\d{1,4}$/.test(yearInput.value) && year >= minYear && year <= maxYear;
+      yearInput.setAttribute("aria-invalid", String(!valid));
+      yearError.textContent = valid ? "" : `请输入 ${minYear} 至 ${maxYear} 之间的年份。`;
+      months.forEach((control, month) => {
+        control.disabled = !valid || dateKey(utcDate(year, month + 1, 0)) < min || dateKey(utcDate(year, month, 1)) > max;
+        control.setAttribute("aria-pressed", String(year === current.getUTCFullYear() && month === current.getUTCMonth()));
+      });
+    }
+
+    function showPeriod(visible) {
+      period.hidden = !visible;
+      calendar.hidden = previous.hidden = next.hidden = visible;
+      periodToggle.setAttribute("aria-expanded", String(visible));
+      periodToggle.title = visible ? "返回选择日期" : "选择年月";
+      if (visible) {
+        yearInput.value = String(current.getUTCFullYear());
+        updateMonths();
+        yearInput.select();
+        yearInput.focus();
+      }
+    }
 
     function render(focusDay = false) {
       const year = current.getUTCFullYear();
@@ -314,11 +359,28 @@
       clear.disabled = !trigger.value;
       error.textContent = "";
       input.removeAttribute("aria-invalid");
+      showPeriod(false);
       picker.open();
       move(parseDate(trigger.value) || parseDate(today), true);
     });
     previous.addEventListener("click", () => changeMonth(-1, previous));
     next.addEventListener("click", () => changeMonth(1, next));
+    periodToggle.addEventListener("click", () => showPeriod(period.hidden));
+    yearInput.addEventListener("input", updateMonths);
+    yearInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.isComposing) return;
+      event.preventDefault();
+      const currentMonth = months[current.getUTCMonth()];
+      (currentMonth.disabled ? months.find((control) => !control.disabled) : currentMonth)?.focus();
+    });
+    months.forEach((control, month) => {
+      control.addEventListener("click", () => {
+        const offset = (Number(yearInput.value) - current.getUTCFullYear()) * 12 + month - current.getUTCMonth();
+        showPeriod(false);
+        move(monthOffset(current, offset), false);
+        grid.querySelector('[tabindex="0"]')?.focus();
+      });
+    });
     grid.addEventListener("click", (event) => {
       const key = event.target.closest("[data-date]")?.dataset.date;
       if (key && inBounds(key)) picker.choose(key, key);

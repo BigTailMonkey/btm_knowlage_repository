@@ -49,7 +49,7 @@ try {
       <a href="https://citation.knowweave.invalid${citation}">浏览器验收文档</a>
     </div>
     <label>接口类型<select id="fixture-protocol"><option value="a">接口 A</option><option value="b">接口 B</option></select></label>
-    <input id="fixture-date" type="date" aria-label="规则日期">
+    <input id="fixture-date" type="date" aria-label="规则日期" min="2024-02-10" max="2024-04-20">
     <input id="fixture-color" type="color" aria-label="背景颜色">
     <input id="fixture-checkbox" type="checkbox" aria-label="启用">
     <script>window.addEventListener('message', (event) => {
@@ -76,7 +76,7 @@ try {
   const cached=await readFile(join(folder,'.knowweave-sync.json'),'utf8')
   assert.ok(cached.includes('local.txt'))
   await sync()
-  browser=spawn(chrome,['--headless=new','--disable-gpu','--disable-background-networking','--disable-component-update','--disable-extensions','--no-first-run','--no-default-browser-check','--password-store=basic','--use-mock-keychain','--remote-debugging-port=0',`--user-data-dir=${directory}`,'about:blank'],{stdio:'ignore'})
+  browser=spawn(chrome,['--headless=new','--window-size=1280,900','--disable-gpu','--disable-background-networking','--disable-component-update','--disable-extensions','--no-first-run','--no-default-browser-check','--password-store=basic','--use-mock-keychain','--remote-debugging-port=0',`--user-data-dir=${directory}`,'about:blank'],{stdio:'ignore'})
   let port=''
   for(let i=0;i<200;i+=1) {
     try { port=(await readFile(join(directory,'DevToolsActivePort'),'utf8')).split('\n')[0]!;break } catch { await new Promise(resolve=>setTimeout(resolve,100)) }
@@ -166,6 +166,23 @@ try {
     document.querySelector('.kw-picker-panel:popover-open [data-index="1"]').click();
     return document.querySelector('#fixture-protocol').dataset.saved;
   })()`), 'b')
+  assert.deepEqual(await nativeEval(`(() => {
+    document.querySelector('#fixture-date + .kw-embedded-picker button').click();
+    const panel = document.querySelector('.kw-picker-panel:popover-open');
+    panel.querySelector('.kw-calendar-period-toggle').click();
+    const year = panel.querySelector('.kw-calendar-year input');
+    const months = [...panel.querySelectorAll('.kw-calendar-months button')];
+    year.value = '2023';
+    year.dispatchEvent(new Event('input', { bubbles: true }));
+    const invalid = year.getAttribute('aria-invalid') === 'true' && months.every(month => month.disabled);
+    year.value = '2024';
+    year.dispatchEvent(new Event('input', { bubbles: true }));
+    const allowed = months.filter(month => !month.disabled).map(month => month.textContent);
+    months[1].click();
+    const bounded = panel.querySelector('[data-date="2024-02-09"]').disabled;
+    panel.querySelector('[data-date="2024-02-29"]').click();
+    return { invalid, allowed, bounded, saved: document.querySelector('#fixture-date').dataset.saved };
+  })()`), { invalid: true, allowed: ['2 月', '3 月', '4 月'], bounded: true, saved: '2024-02-29' })
   assert.equal(await nativeEval(`(() => {
     document.querySelector('#fixture-color + .kw-embedded-picker button').click();
     document.querySelector('.kw-picker-panel:popover-open [data-color="#16a34a"]').click();
@@ -205,34 +222,152 @@ try {
   await until("document.querySelector('#doc-dialog').open && document.querySelector('#source-highlight-target') !== null")
   const highlighted=await evaluate("document.querySelector('#source-highlight-target').textContent")
   assert.match(highlighted,/知织支持本地文档检索/)
-  await evaluate("document.querySelector('.doc-link').open = true; document.querySelector('#continuation-direction').scrollIntoView({ block: 'center' })")
-  await evaluate("document.querySelector('#continuation-direction').click(); document.querySelector('.kw-picker-panel:popover-open [data-index=\"1\"]').click()")
-  assert.equal(await evaluate("document.querySelector('#continuation-direction').value"), 'continued_by')
-  await evaluate("document.querySelector('#continuation-date').scrollIntoView({ block: 'center' }); document.querySelector('#continuation-date').click(); document.querySelector('.kw-picker-panel:popover-open input').value = '2025-03-04'; document.querySelector('.kw-picker-panel:popover-open .kw-picker-footer button').click()")
-  assert.equal(await evaluate("document.querySelector('#continuation-date').value"), '2025-03-04')
-  await evaluate("document.querySelector('#continuation-other').scrollIntoView({ block: 'center' }); document.querySelector('#continuation-other').click()")
+  await call('Emulation.setDeviceMetricsOverride', { width: 1200, height: 400, deviceScaleFactor: 1, mobile: false })
+  assert.equal(await evaluate(`(() => {
+    const scroll = document.querySelector('.doc-rail-scroll');
+    const status = scroll.lastElementChild;
+    const button = document.querySelector('.doc-rail-danger [data-doc-action=delete]');
+    const before = button.getBoundingClientRect().top;
+    scroll.scrollTop = scroll.scrollHeight;
+    return status.querySelector('h3').textContent === '文档状态' && scroll.scrollTop > 0
+      && status.getBoundingClientRect().bottom <= scroll.getBoundingClientRect().bottom
+      && !scroll.contains(button) && button.getBoundingClientRect().top === before;
+  })()`), true)
+  await call('Emulation.setDeviceMetricsOverride', { width: 390, height: 720, deviceScaleFactor: 1, mobile: false })
+  assert.equal(await evaluate(`(() => {
+    const meta = document.querySelector('#doc-dialog-meta');
+    const metrics = [...meta.querySelectorAll('small')];
+    return metrics.length === 4 && meta.scrollWidth === meta.clientWidth
+      && metrics.every(node => getComputedStyle(node).fontSize === '11px');
+  })()`), true)
+  await evaluate("document.querySelector('[data-doc-info]').click()")
+  await until(`(() => {
+    const box = document.querySelector('.doc-rail .doc-actions [data-continuation-open]').getBoundingClientRect();
+    const head = document.querySelector('.doc-dialog-head').getBoundingClientRect();
+    return box.width > 0 && box.left >= 0 && box.right <= innerWidth && box.top >= head.bottom && box.bottom <= innerHeight;
+  })()`)
+  assert.equal(await evaluate(`(() => {
+    const trigger = document.querySelector('.doc-rail .doc-actions [data-continuation-open]');
+    trigger.focus();
+    trigger.click();
+    return document.querySelector('#continuation-dialog').open && !document.querySelector('#doc-dialog-body #continuation-other');
+  })()`), true)
+  assert.equal(await evaluate(`(() => {
+    const related = document.querySelector('.continuation-related').getBoundingClientRect();
+    const current = document.querySelector('.continuation-current').getBoundingClientRect();
+    return related.bottom < current.top && related.right <= innerWidth
+      && document.querySelector('#continuation-other-label').textContent === '前序文档';
+  })()`), true)
+  const swapPosition = await evaluate(`(() => {
+    const box = document.querySelector('[data-continuation-swap]').getBoundingClientRect();
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+  })()`)
+  await call('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...swapPosition })
+  await call('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...swapPosition })
+  assert.equal(await evaluate("document.querySelector('#continuation-other-label').textContent"), '后继文档')
+  assert.equal(await evaluate(`(() => {
+    const related = document.querySelector('.continuation-related').getBoundingClientRect();
+    const current = document.querySelector('.continuation-current').getBoundingClientRect();
+    return current.bottom < related.top;
+  })()`), true)
+  await evaluate("document.querySelector('[data-continuation-cancel]').click()")
+  assert.equal(await evaluate("!document.querySelector('#continuation-dialog').open && document.querySelector('#doc-dialog').open && document.activeElement.matches('[data-continuation-open]')"), true)
+  assert.equal(await evaluate("document.querySelector('#source-highlight-target').textContent"), highlighted)
+  await call('Emulation.clearDeviceMetricsOverride')
+  await evaluate("document.querySelector('[data-continuation-open]').click()")
+  await until("document.querySelector('[data-continuation-link]')?.disabled === false")
+  assert.equal(await evaluate("document.querySelector('#continuation-other').value"), '')
+  await evaluate("document.querySelector('[data-continuation-link]').click()")
+  assert.equal(await evaluate("document.querySelector('.continuation-status').textContent"), '请选择关联文档')
+  await evaluate("document.querySelector('#continuation-other').click()")
   const relatedDocument = await evaluate(`(() => {
     const option = [...document.querySelectorAll('.kw-picker-panel:popover-open [role=option]')]
       .find(node => node.textContent === 'local.txt');
     option.click();
     return document.querySelector('#continuation-other').value;
   })()`)
+  assert.equal(await evaluate(`(() => {
+    const picker = document.querySelector('#continuation-other');
+    const current = document.querySelector('.continuation-current');
+    const related = picker.closest('.continuation-related');
+    const value = picker.value;
+    if (related.getBoundingClientRect().right >= current.getBoundingClientRect().left) return false;
+    document.querySelector('[data-continuation-swap]').click();
+    return current.getBoundingClientRect().right < related.getBoundingClientRect().left
+      && document.querySelector('#continuation-other') === picker && picker.value === value
+      && document.querySelector('#continuation-other-label').textContent === '后继文档';
+  })()`), true)
   await evaluate("document.querySelector('[data-continuation-link]').click()")
-  await until("document.querySelector('[data-continuation-unlink=continued_by]')")
+  assert.equal(await evaluate("document.querySelector('.continuation-status').textContent"), '请选择生效日期')
+  await evaluate(`(() => {
+    document.querySelector('#continuation-date').click();
+    const panel = document.querySelector('#continuation-date-panel');
+    panel.querySelector('.kw-calendar-period-toggle').click();
+    const year = panel.querySelector('.kw-calendar-year input');
+    year.value = '2025';
+    year.dispatchEvent(new Event('input', { bubbles: true }));
+    panel.querySelector('.kw-calendar-months button:nth-child(3)').click();
+    panel.querySelector('[data-date="2025-03-04"]').click();
+  })()`)
+  assert.equal(await evaluate("document.querySelector('#continuation-date').value"), '2025-03-04')
+  await evaluate("document.querySelector('[data-continuation-link]').click()")
+  await until("!document.querySelector('#continuation-dialog').open && document.querySelector('[data-continuation-unlink]')")
+  assert.equal(await evaluate("document.querySelector('#source-highlight-target').textContent"), highlighted)
+  assert.equal(await evaluate("document.querySelector('#doc-dialog-title + #doc-dialog-badges .pill').textContent"), '已被延续')
+  const libraryBadge = `[data-doc="${source.document_id}"] .doc-title-line strong + .pill`
+  await until(`document.querySelector(${JSON.stringify(libraryBadge)})?.textContent === '已被延续'`)
   const link = await queryOne<{ successor_doc_id: string; effective_date: string }>(
     'SELECT successor_doc_id, effective_date::text FROM document_continuations WHERE predecessor_doc_id = $1', [source.document_id],
   )
   assert.deepEqual(link, { successor_doc_id: relatedDocument, effective_date: '2025-03-04' })
+  await evaluate("document.querySelector('[data-continuation-unlink]').click()")
+  assert.equal(await evaluate("document.querySelector('[data-unlink-confirm=reconnect]').hidden && document.querySelector('[data-unlink-confirm=separate]').textContent === '确认解除'"), true)
+  await evaluate("document.querySelector('#unlink-continuation-dialog [autofocus]').click()")
+  await evaluate("document.querySelector('[data-continuation-open]').click(); document.querySelector('[data-continuation-swap]').click()")
+  assert.equal(await evaluate("document.querySelector('#continuation-placement').textContent"), '所选文档将插入当前文档与原后续之间。')
+  assert.equal(await evaluate("document.querySelector('#continuation-date-label').textContent"), '关联文档生效日期')
+  await evaluate("document.querySelector('[data-continuation-cancel]').click()")
   assert.equal(await evaluate("document.querySelectorAll('select, datalist, input[type=date], input[type=color]').length"), 0)
   await evaluate("document.querySelector('[data-doc-action=reindex]').click()")
   await until("document.querySelector('[data-doc-action=reindex]')?.disabled === false")
   assert.equal(await evaluate("document.querySelector('.doc-source').textContent.includes('知织支持本地文档检索')"),true)
-  await evaluate("window.prompt=()=> '0.5';document.querySelector('[data-doc-action=policy]').click()")
-  await until("document.querySelector('[data-doc-action=policy]')?.disabled === false")
+  await evaluate("window.prompt = () => { throw new Error('Unexpected native prompt') }; document.querySelector('[data-doc-action=policy]').click()")
+  assert.equal(await evaluate("document.querySelector('#policy-dialog').open && document.querySelector('#policy-document').textContent === '浏览器验收文档'"), true)
+  assert.deepEqual(await evaluate("[document.querySelector('#policy-trust').value, document.querySelector('#policy-core').checked]"), ['0.5', false])
+  await call('Emulation.setDeviceMetricsOverride', { width: 390, height: 720, deviceScaleFactor: 1, mobile: false })
+  assert.equal(await evaluate(`(() => {
+    const form = document.querySelector('#policy-form');
+    const button = document.querySelector('#policy-save').getBoundingClientRect();
+    return form.scrollWidth === form.clientWidth && button.bottom <= innerHeight;
+  })()`), true)
+  await call('Emulation.clearDeviceMetricsOverride')
+  await evaluate("document.querySelector('#policy-trust').value = '1.2'; document.querySelector('#policy-save').click()")
+  assert.equal(await evaluate("document.querySelector('#policy-trust').getAttribute('aria-invalid')"), 'true')
+  assert.match(await evaluate("document.querySelector('#policy-error').textContent"), /0 到 1/)
+  await evaluate("document.querySelector('#policy-form [data-close]').click(); document.querySelector('[data-doc-action=policy]').click()")
+  assert.equal(await evaluate("document.querySelector('#policy-trust').value"), '0.5')
+  await evaluate("document.querySelector('#policy-trust').value = '0.73'; document.querySelector('#policy-core').click(); document.querySelector('#policy-save').click()")
+  await until("!document.querySelector('#policy-dialog').open && document.querySelector('.doc-meta')?.textContent.includes('0.73 · 核心')")
+  const policy = await queryOne('SELECT source_trust, is_core FROM documents WHERE id = $1', [source.document_id])
+  assert.deepEqual(policy, { source_trust: 0.73, is_core: true })
   await evaluate("document.querySelector('#doc-dialog').close();loadEvals()")
   await until("document.querySelector('#import-eval') !== null")
   await evaluate(`window.prompt=()=>JSON.stringify([{question:'浏览器导入评测题',expected_docs:['浏览器验收文档'],expected_keywords:['引用'],should_refuse:false}]);document.querySelector('#import-eval').click()`)
   await until("document.querySelector('#ops-body').textContent.includes('浏览器导入评测题')")
+  const middle = await ingestParsed(workspace.principal, parseText('沿革链中的中间版本。', '沿革验收中间文档'), { sourceType: 'text' })
+  const inserted = await app.inject({
+    method: 'POST', url: `/api/v1/documents/${source.document_id}/continuation`, headers: workspace.headers,
+    payload: { other_doc_id: middle.document_id, relation: 'continued_by', effective_date: '2024-03-04' },
+  })
+  assert.equal(inserted.statusCode, 200, inserted.body)
+  await evaluate(`openDoc(${JSON.stringify(middle.document_id)})`)
+  assert.equal(await evaluate("document.querySelectorAll('#doc-dialog [data-continuation-unlink]').length"), 1)
+  await evaluate("document.querySelector('[data-continuation-unlink]').click()")
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#unlink-continuation-dialog [data-unlink-confirm]:not([hidden])')].map(button => button.textContent)"), ['仅解除', '解除并续接'])
+  await evaluate("document.querySelector('[data-unlink-confirm=reconnect]').click()")
+  await until("!document.querySelector('#unlink-continuation-dialog').open && document.querySelector('#doc-dialog-body .doc-source') && !document.querySelector('[data-continuation-unlink]')")
+  assert.deepEqual(await queryOne('SELECT successor_doc_id, effective_date FROM document_continuations WHERE predecessor_doc_id = $1', [source.document_id]), link)
+  await evaluate("document.querySelector('#doc-dialog').close()")
   assert.deepEqual(errors,[])
   await evaluate("document.querySelector('#ask-result [data-cite]').click()")
   await until("document.querySelector('#source-highlight-target') !== null")
