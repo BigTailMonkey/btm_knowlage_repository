@@ -77,6 +77,14 @@ function frontend(respond: (url: string, options: Record<string, unknown>) => un
     },
     localStorage: { getItem: () => null, setItem() {} },
     location: { hash: '', hostname, port, href: `http://${hostname}:${port}/`, origin: `http://${hostname}:${port}` },
+    history: {
+      state: null,
+      pushState(state: unknown, _title: string, url: URL) { this.replaceState(state, _title, url) },
+      replaceState(state: unknown, _title: string, url: URL) {
+        this.state = state
+        context.location.href = url.href
+      },
+    },
     window: { addEventListener: listen('window'), parent: { postMessage() {} } },
     navigator: { onLine: true },
     setTimeout: () => 1, clearTimeout() {},
@@ -147,6 +155,62 @@ test('the library offers both decisions for an import awaiting duplicate confirm
   assert.equal(box.hidden, true)
 })
 
+test('library stacks continuation chains behind the in-force document until it is expanded', async () => {
+  const docs = [
+    { id: 'old', title: '门诊须知', source_type: 'text', status: 'active', version: 1, chunks: 4, acl_label: '全员可见',
+      summary: '旧版排班', updated_at: '2026-01-02', in_force: false,
+      continuation: { role: 'predecessor', predecessor_doc_id: null, successor_doc_id: 'current', effective_date: '2026-02-01', in_force: false } },
+    { id: 'current', title: '门诊通知', source_type: 'text', status: 'active', version: 2, chunks: 5, acl_label: '全员可见',
+      summary: '新版排班', updated_at: '2026-02-01', in_force: true,
+      continuation: { role: 'successor', predecessor_doc_id: 'old', successor_doc_id: null, effective_date: '2026-02-01', in_force: true } },
+    { id: 'contract', title: '独立合同', source_type: 'pdf', status: 'active', version: 1, chunks: 2, acl_label: '全员可见',
+      summary: '合同正文', updated_at: '2026-03-01', in_force: true, continuation: null },
+  ]
+  const page = frontend(() => ({ items: docs }))
+  const body = page.element('#doc-table-body')
+  page.element('#doc-search').value = '门诊'
+  await page.run('state.libraryView = "stack"; loadDocs()')
+  // 堆叠要先取回整条沿革，筛选交给前端做，标题筛选不会下发给服务端
+  assert.equal(new URL(String(page.calls.at(-1)?.url), 'http://127.0.0.1:8730').searchParams.has('q'), false)
+  page.element('#doc-search').value = ''
+  page.run('renderDocs()')
+  const html = body.innerHTML
+  assert.match(html, /data-doc="current"[^>]*data-stack-head="old"/)
+  assert.match(html, /data-doc="old"[^>]*data-stack-child="old" hidden[^>]*>/)
+  assert.match(html, /data-doc="contract"/)
+  assert.doesNotMatch(html, /data-stack-head="contract"/)
+  assert.equal(page.element('#doc-count').textContent, '2 篇现行 · 1 篇沿革')
+  assert.equal(page.element('#doc-view-hint').hidden, false)
+
+  // 搜到被延续的旧标题时，链上现行的那篇仍然要出现，否则堆叠视图会像是丢了文档
+  page.element('#doc-search').value = '门诊须知'
+  page.run('renderDocs()')
+  assert.match(body.innerHTML, /data-doc="current"[^>]*data-stack-head="old"/)
+  assert.doesNotMatch(body.innerHTML, /data-doc="contract"/)
+
+  const child = Object.assign(page.element('doc-stack-child'), { dataset: { stackChild: 'old' }, hidden: true })
+  const toggle = Object.assign(page.element('doc-stack-toggle'), {
+    dataset: { stackToggle: 'old' }, attributes: {} as Record<string, string>,
+    setAttribute(key: string, value: string) { this.attributes[key] = value },
+    querySelector: () => null,
+  })
+  page.context.docStackToggle = toggle
+  page.context.document.querySelectorAll = (selector: string) => selector === '#doc-table-body [data-stack-child]' ? [child] : []
+  page.run('toggleDocStack(docStackToggle)')
+  assert.equal(child.hidden, false)
+  assert.equal(toggle.attributes?.['aria-expanded'], 'true')
+  page.run('toggleDocStack(docStackToggle)')
+  assert.equal(child.hidden, true)
+
+  // 平铺视图保持原有行为：标题和来源交给服务端筛选
+  page.element('#doc-search').value = '门诊'
+  await page.run('state.libraryView = "flat"; state.source = "text"; loadDocs()')
+  const flat = new URL(String(page.calls.at(-1)?.url), 'http://127.0.0.1:8730').searchParams
+  assert.equal(flat.get('q'), '门诊')
+  assert.equal(flat.get('source_type'), 'text')
+  assert.doesNotMatch(body.innerHTML, /data-stack-head/)
+})
+
 test('review compares the new source with the selected existing fact and can switch existing records', async () => {
   const oldPath = '/documents/clinic/citation/old?chunk_id=day'
   const currentPath = '/documents/clinic/citation/current?chunk_id=night'
@@ -188,8 +252,8 @@ test('review compares the new source with the selected existing fact and can swi
   assert.match(html, /医院提供急诊<\/div>\s*<div class="conflict-quote">原文（《值班表》 · 急诊）：急诊 &lt;全天&gt;\n节假日照常<\/div>/)
   await oldSourceButton.handlers.click()
   assert.deepEqual(page.calls.slice(1).map(call => call.url), ['/api/v1' + currentPath, '/api/v1' + oldPath])
-  assert.equal(page.element('#doc-dialog').open, true)
-  assert.equal(page.element('#doc-dialog-title').textContent, '新旧原文对照')
+  assert.equal(page.element('#review-source-dialog').open, true)
+  assert.equal(page.element('#review-source-title').textContent, '新旧原文对照')
   assert.equal(panes.current.querySelector('[data-review-location]').textContent, '《新通知》 · v2 · 第 1 页')
   assert.equal(panes.existing.querySelector('[data-review-location]').textContent, '《门诊须知》 · v1 · 第 3 页')
   const newText = panes.current.querySelector('[data-review-text]').innerHTML
@@ -405,28 +469,39 @@ test('legacy citations fall back to a matching literal quote without changing th
 })
 
 test('opening a citation requests its recorded version and renders a marked source plus version navigation', async () => {
-  const page = frontend(() => ({
+  const data = {
     document: { id: 'doc-a', title: 'Doc <A>', version: 2, status: 'active', source_type: 'text', chunks: 1, quality: 1, acl_label: '全员可见', source_trust: 0.5, content_hash: 'abc123', updated_at: '2023-01-01T00:00:00Z', enrichment_status: 'done', summary: '', continuation: { role: 'predecessor', in_force: false } },
     versions: [{ id: 'old-v', version: 1, parser: 'text', hash: 'abc', chars: 8, created_at: '2023-01-01T00:00:00Z' }],
-    source: { version_id: 'old-v', version: 1, text: 'old text', coordinate_system: 'normalized-text-utf16' },
+    source: { version_id: 'old-v', version: 1, text: 'old text', parser: 'text', coordinate_system: 'normalized-text-utf16' },
     chunks: [{ id: 'old-c', text: 'old text', spans: [{ start: 0, end: 8 }], seq: 0, tokens: 2 }],
     facts: [], entities: [],
-  }))
+  }
+  const page = frontend(() => data)
   await page.run('openCitation({doc_id: "doc-a", chunk_id: "old-c", version_id: "old-v"})')
   assert.equal(page.calls[0]!.url, '/api/v1/documents/doc-a?version_id=old-v')
-  const meta = page.element('#doc-dialog-meta').innerHTML
+  const detailUrl = `${page.context.location.origin}/library/doc-a?version_id=old-v&chunk_id=old-c`
+  assert.equal(page.context.location.href, detailUrl)
+  assert.equal(page.run('state.page'), 'document')
+  const meta = page.element('#doc-page-meta').innerHTML
   assert.doesNotMatch(meta, /已被延续|历史版本/)
-  assert.match(page.element('#doc-dialog-badges').innerHTML, /已被延续.*历史版本/)
+  assert.match(page.element('#doc-page-badges').innerHTML, /已被延续.*历史版本/)
   assert.deepEqual(Array.from(meta.matchAll(/<small>(.*?)<\/small>/g), ([, text]) => text), [
-    '检索单元 1', '查看版本 v1', '原文长度 8 字符', '解析质量 1',
+    '检索单元 1', '查看版本 v1', '原文长度 8 字符', '解析质量 1', '解析器 text',
   ])
-  const html = page.element('#doc-dialog-body').innerHTML
-  assert.match(html, /data-doc-tab="source"[^>]*>原文/)
+  const html = page.element('#doc-page-body').innerHTML
+  assert.match(page.element('#doc-page-tabs').innerHTML, /data-doc-tab="source"[^>]*>原文/)
   assert.doesNotMatch(html, /doc-kpis|查看版本|原文长度|解析质量/)
   assert.match(html, /<mark[^>]*>old text<\/mark>/)
+  assert.match(html, /id="doc-panel-versions"[^>]*>\s*<p class="doc-hint">同一文档的内容修订会新增版本[^<]*<\/p>\s*<div class="doc-version-list">/)
   assert.match(html, /data-doc-version="old-v" aria-current="true"/)
-  assert.match(html, /data-doc-action="update"/)
-  assert.equal(page.element('#doc-dialog-title').textContent, 'Doc <A>')
+  assert.match(page.element('#doc-page-info').innerHTML, /data-doc-action="update"/)
+  assert.equal(page.element('#doc-page-title').textContent, 'Doc <A>')
+
+  const reopened = frontend(() => data)
+  reopened.context.location.href = detailUrl
+  await reopened.run('restorePageFromUrl()')
+  assert.equal(reopened.context.location.href, detailUrl)
+  assert.match(reopened.element('#doc-page-body').innerHTML, /<mark[^>]*>old text<\/mark>/)
 })
 
 test('empty entity rail explains by extraction state instead of a bare placeholder', async () => {
@@ -439,8 +514,9 @@ test('empty entity rail explains by extraction state instead of a bare placehold
   const railFor = async (status: string) => {
     const page = frontend(() => documentFor(status))
     await page.run('openDoc("doc-a")')
-    const html = page.element('#doc-dialog-body').innerHTML as string
-    return html.slice(html.indexOf('<h3>关联实体</h3>'), html.indexOf('移入回收站'))
+    const html = page.element('#doc-page-info').innerHTML as string
+    const start = html.indexOf('id="doc-related-entities"')
+    return html.slice(start, html.indexOf('</section>', start))
   }
 
   // empty：状态说明已经解释了为什么为空，不再出现第二句占位。

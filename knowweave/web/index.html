@@ -164,12 +164,18 @@
 
           <!-- 知识库 -->
           <section class="page" id="page-library">
-            <div class="tabs" id="doc-tabs" role="tablist" aria-label="按来源筛选">
-              <button class="tab active" data-source="" role="tab" aria-selected="true">全部</button>
-              <button class="tab" data-source="text" role="tab" aria-selected="false">文本</button>
-              <button class="tab" data-source="web" role="tab" aria-selected="false">网页</button>
-              <button class="tab" data-source="pdf" role="tab" aria-selected="false">PDF</button>
-              <button class="tab" data-source="docx" role="tab" aria-selected="false">DOCX</button>
+            <div class="library-top">
+              <div class="tabs" id="doc-tabs" role="tablist" aria-label="按来源筛选">
+                <button class="tab active" data-source="" role="tab" aria-selected="true">全部</button>
+                <button class="tab" data-source="text" role="tab" aria-selected="false">文本</button>
+                <button class="tab" data-source="web" role="tab" aria-selected="false">网页</button>
+                <button class="tab" data-source="pdf" role="tab" aria-selected="false">PDF</button>
+                <button class="tab" data-source="docx" role="tab" aria-selected="false">DOCX</button>
+              </div>
+              <div class="segmented doc-view" id="doc-view" role="group" aria-label="文档视图">
+                <button class="seg active" type="button" data-view="flat" aria-pressed="true">全部列出</button>
+                <button class="seg" type="button" data-view="stack" aria-pressed="false">沿革堆叠</button>
+              </div>
             </div>
 
             <div class="toolbar">
@@ -201,6 +207,38 @@
               </table>
             </div>
             <div class="empty-block" id="doc-empty" hidden>暂无文档</div>
+            <p class="doc-hint" id="doc-view-hint" hidden>沿革堆叠只列出当前生效的文档，同一沿革上被延续的旧文档收在标题下方，可点击展开查看。</p>
+          </section>
+
+          <section class="page" id="page-document" aria-labelledby="doc-page-title">
+            <div class="doc-shell">
+              <div class="doc-page-main">
+                <div class="doc-page-toolbar">
+                  <a class="btn sm" href="/library" data-goto="library">
+                    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5M5.5 8h7"/></svg>
+                    返回文档列表
+                  </a>
+                  <a class="btn sm doc-head-info" href="#doc-page-info" data-doc-info hidden>文档信息与操作</a>
+                </div>
+                <header class="doc-page-header">
+                  <div class="doc-page-heading">
+                    <div class="doc-title-line">
+                      <h1 id="doc-page-title" tabindex="-1">文档</h1>
+                      <div class="doc-head-badges" id="doc-page-badges"></div>
+                    </div>
+                    <p class="doc-head-meta" id="doc-page-meta"></p>
+                  </div>
+                  <dl class="doc-page-status doc-meta" id="doc-page-status" hidden></dl>
+                  <div class="doc-page-tabbar" id="doc-page-tabbar" hidden>
+                    <div class="tabs doc-tabs" id="doc-page-tabs" role="tablist" aria-label="文档内容"></div>
+                    <button class="text-btn" type="button" data-copy-source>复制全文</button>
+                  </div>
+                </header>
+                <div id="doc-page-body"></div>
+              </div>
+              <p class="doc-hint doc-source-footer" id="doc-source-footer" hidden>区间坐标：规范化原文 UTF-16 偏移，末尾不含；与引用中的版本一致。</p>
+              <aside class="doc-rail" id="doc-page-info" aria-label="文档信息与操作" tabindex="-1" hidden></aside>
+            </div>
           </section>
 
           <!-- 研究台 -->
@@ -446,19 +484,15 @@
     </div>
   </dialog>
 
-  <dialog class="dialog wide doc-dialog" id="doc-dialog" aria-labelledby="doc-dialog-title">
-    <div class="dialog-head doc-dialog-head">
+  <dialog class="dialog wide review-source-dialog" id="review-source-dialog" aria-labelledby="review-source-title">
+    <div class="dialog-head">
       <div class="doc-head-main">
-        <div class="doc-title-line">
-          <h2 id="doc-dialog-title"></h2>
-          <div class="doc-head-badges" id="doc-dialog-badges"></div>
-        </div>
-        <p class="doc-head-meta" id="doc-dialog-meta"></p>
+        <h2 id="review-source-title"></h2>
+        <p class="doc-head-meta" id="review-source-meta"></p>
       </div>
-      <button class="icon-btn doc-head-info" type="button" data-doc-info aria-label="文档信息与操作"><svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="5.6"/><path d="M8 7.2v3.4M8 5.2v.2"/></svg></button>
       <button class="icon-btn" data-close aria-label="关闭"><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button>
     </div>
-    <div class="dialog-body" id="doc-dialog-body"></div>
+    <div class="dialog-body" id="review-source-body"></div>
   </dialog>
 
   <dialog class="dialog" id="continuation-dialog" aria-labelledby="continuation-title">

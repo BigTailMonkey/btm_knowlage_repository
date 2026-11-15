@@ -64,7 +64,7 @@ export async function createServer(): Promise<FastifyInstance> {
 
   if (existsSync(settings.webDir)) {
     await app.register(fastifyStatic, { root: settings.webDir, prefix: '/assets/' })
-    for (const path of ['/', '/dashboard', '/library', '/ask', '/entities', '/review', '/ops', '/settings']) {
+    for (const path of ['/', '/dashboard', '/library', '/library/:docId', '/ask', '/entities', '/review', '/ops', '/settings']) {
       app.get(path, async (_request, reply) => reply.sendFile('index.html'))
     }
   }

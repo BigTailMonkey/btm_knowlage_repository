@@ -10,6 +10,7 @@ const state = {
   tourReturnPage: null,
   source: "",
   docs: [],
+  document: null,
   stats: null,
   conversations: [],
   showArchivedConversations: false,
@@ -19,6 +20,7 @@ const state = {
   graphOverviewZoom: false,
   activeEntity: null,
   entityView: localStorage.getItem("kw_entity_view") === "graph" ? "graph" : "entity",
+  libraryView: localStorage.getItem("kw_library_view") === "stack" ? "stack" : "flat",
   entityRail: localStorage.getItem("kw_entity_rail") === "shown",
   opsTab: "traces",
   harness: null,
@@ -269,34 +271,65 @@ function pageFromUrl(url) {
   return Object.keys(PAGE_PATHS).find((page) => PAGE_PATHS[page] === url.pathname) ?? "chat";
 }
 
-function pageUrl(page) {
+function documentFromUrl(url) {
+  const match = /^\/library\/([^/]+)\/?$/.exec(url.pathname);
+  if (!match) return null;
+  try {
+    return {
+      doc_id: decodeURIComponent(match[1]),
+      version_id: url.searchParams.get("version_id"),
+      chunk_id: url.searchParams.get("chunk_id"),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function documentPagePath(docId) {
+  return `${PAGE_PATHS.library}/${encodeURIComponent(docId)}`;
+}
+
+function pageUrl(page, detail) {
   const url = new URL(location.href);
-  url.pathname = PAGE_PATHS[page];
+  if (detail || documentFromUrl(url)) {
+    for (const key of ["version_id", "chunk_id"]) {
+      if (detail?.[key]) url.searchParams.set(key, detail[key]);
+      else url.searchParams.delete(key);
+    }
+  }
+  url.pathname = detail ? documentPagePath(detail.doc_id) : PAGE_PATHS[page];
   url.searchParams.delete("page");
   url.hash = "";
   return url;
 }
 
-function navigateToPage(page) {
-  const url = pageUrl(page);
-  if (url.href !== location.href) history.pushState(null, "", url);
-  showPage(page);
+function navigateToPage(page, detail = null) {
+  const url = pageUrl(page, detail);
+  const excerpt = detail ? { quote: detail.quote, spans: detail.spans } : null;
+  if (url.href !== location.href) history.pushState(excerpt, "", url);
+  else if (detail) history.replaceState(excerpt, "", url);
+  return showPage(page, detail);
 }
 
 function restorePageFromUrl() {
-  const page = pageFromUrl(new URL(location.href));
-  const url = pageUrl(page);
+  const currentUrl = new URL(location.href);
+  const params = documentFromUrl(currentUrl);
+  const page = params ? "document" : pageFromUrl(currentUrl);
+  const detail = params ? { ...history.state, ...params } : null;
+  const url = pageUrl(page, detail);
   if (url.href !== location.href) history.replaceState(history.state, "", url);
-  showPage(page);
+  return showPage(page, detail);
 }
 
-function showPage(page) {
+function showPage(page, detail = null) {
   if (hoverTooltipTarget) hideHoverTooltip();
   if (state.page === "chat" && page !== "chat") closeChatCitation();
   state.page = page;
+  state.document = detail;
   document.body.dataset.page = page;
+  const navPage = detail ? "library" : page;
   $$(".nav-item").forEach((item) => {
-    const active = item.dataset.page === page;
+    const active = item.dataset.page === navPage;
     item.classList.toggle("active", active);
     if (active) item.setAttribute("aria-current", "page");
     else item.removeAttribute("aria-current");
@@ -304,13 +337,14 @@ function showPage(page) {
   $$(".page").forEach((section) => section.classList.toggle("active", section.id === `page-${page}`));
   $("#sheet").scrollTop = 0;
   closeSidebar();
-  loadPage(page);
+  return loadPage(page);
 }
 
 function loadPage(page) {
   if (page === "chat") resumeNativeChat();
   if (page === "dashboard") loadDashboard();
   if (page === "library") { loadDocs(); loadIngestJobs(); }
+  if (page === "document") return loadDocument(state.document);
   if (page === "ask") loadAsk();
   if (page === "entities") { loadEntities(); loadGraph(); }
   if (page === "review") loadReview();
@@ -544,13 +578,15 @@ function trackIngestJob(job) {
 }
 
 async function loadIngestJobs() {
-  if (state.page !== "library") {
+  const inLibrary = () => state.page === "library" || state.page === "document";
+  if (!inLibrary()) {
     stopJobPoll();
     return;
   }
   const token = state.token;
   const [ingest, extraction] = await Promise.allSettled([api("/documents/jobs"), api("/documents/extractions")]);
-  if (state.page !== "library" || state.token !== token) return;
+  if (!inLibrary() || state.token !== token) return;
+  let refreshDetail = false;
   if (ingest.status === "fulfilled") {
     state.jobs = ingest.value.items;
     renderIngestJobs();
@@ -570,6 +606,7 @@ async function loadIngestJobs() {
             else toast(job.duplicate ? "内容与已有版本相同，未重复入库" : `已接入 ${num(job.chunks)} 个检索单元 · v${job.version}`);
             loadDocs();
             loadDashboard();
+            if (state.document && state.document.doc_id === job.doc_id) refreshDetail = true;
           } else {
             toast(`处理失败：${job.error || "未知错误"}`);
           }
@@ -582,6 +619,8 @@ async function loadIngestJobs() {
     const extractions = extraction.value;
     const nextActive = new Set(extractions.items.filter(task => task.status !== "failed").map(task => task.id));
     if ([...activeExtractions].some(id => !nextActive.has(id))) loadDocs();
+    const docId = state.document?.doc_id;
+    if (activeExtractions.has(docId) && !nextActive.has(docId)) refreshDetail = true;
     activeExtractions = nextActive;
     renderExtractionJobs(extractions);
   } else {
@@ -595,6 +634,7 @@ async function loadIngestJobs() {
   const transient = [ingest, extraction].some(result => result.status === "rejected" && (!result.reason.status || result.reason.status >= 500));
   if (hasActive || transient) scheduleJobPoll();
   else stopJobPoll();
+  if (refreshDetail) refreshDocument(state.document);
 }
 
 function renderExtractionJobs({ items, can_retry }) {
@@ -716,14 +756,16 @@ function renderIngestJobs() {
 async function loadDocs() {
   const params = new URLSearchParams({ limit: "100" });
   const q = docQuery();
-  if (q) params.set("q", q);
-  if (state.source) params.set("source_type", state.source);
+  // 沿革堆叠要先拿到整条链再按筛选收窄，所以筛选在前端做：
+  // 服务端只按标题搜会把链上的其他文档挡在列表外，堆叠就断了。
+  if (state.libraryView !== "stack") {
+    if (q) params.set("q", q);
+    if (state.source) params.set("source_type", state.source);
+  }
   try {
     const data = await api(`/documents?${params}`);
     state.docs = data.items;
     renderDocs();
-    const totalChunks = data.items.reduce((sum, doc) => sum + Number(doc.chunks || 0), 0);
-    $("#doc-count").textContent = `${num(data.items.length)} 篇`;
   } catch (error) {
     toast(error.message);
   }
@@ -747,21 +789,15 @@ function continuationBadge(doc) {
   return `<span class="pill ${status.tone}">${esc(status.label)}</span>`;
 }
 
-function renderDocs() {
-  const target = $("#doc-table-body");
-  const empty = $("#doc-empty");
-  empty.hidden = Boolean(state.docs.length);
-  if (!state.docs.length) {
-    target.innerHTML = "";
-    return;
-  }
-  target.innerHTML = state.docs.map((doc) => `
-    <tr data-doc="${esc(doc.id)}" tabindex="0">
+function docRowHtml(doc, { attributes = "", titleExtra = "" } = {}) {
+  return `
+    <tr data-doc="${esc(doc.id)}"${attributes}>
       <td>
         <div class="cell-title">
           <div class="doc-title-line">
-            <strong>${esc(doc.title)}</strong>
+            <strong><a href="${esc(documentPagePath(doc.id))}">${esc(doc.title)}</a></strong>
             ${doc.continuation ? continuationBadge(doc) : ""}
+            ${titleExtra}
           </div>
           <span>${esc(plain(doc.summary) || "无")}</span>
           <span class="cell-inline">${esc(SOURCE_LABEL[doc.source_type] || doc.source_type)} · ${num(doc.chunks)} 个检索单元 · ${shortDate(doc.updated_at)}</span>
@@ -772,15 +808,156 @@ function renderDocs() {
       <td><span class="pill ${doc.acl_label === "全员可见" ? "" : "warn"}">${esc(doc.acl_label)}</span></td>
       <td class="ver">v${esc(doc.version)}</td>
       <td class="date">${shortDate(doc.updated_at)}</td>
-    </tr>`).join("");
+    </tr>`;
+}
+
+/**
+ * 把已加载的文档按延续关系还原成沿革链。每个文档最多一前一后，
+ * 所以从链首顺着 continuation.successor_doc_id 走就能得到时间顺序；
+ * 相邻文档不在本次列表里时（超过一页或无法阅读）就各自成链，不猜测缺失的一代。
+ */
+function docStacks(docs) {
+  const byId = new Map(docs.map((doc) => [doc.id, doc]));
+  const next = new Map();
+  const previous = new Map();
+  for (const doc of docs) {
+    const continuation = doc.continuation;
+    if (!continuation) continue;
+    const successor = continuation.successor_doc_id;
+    const predecessor = continuation.predecessor_doc_id;
+    if (successor && successor !== doc.id && byId.has(successor)) {
+      next.set(doc.id, successor);
+      previous.set(successor, doc.id);
+    }
+    if (predecessor && predecessor !== doc.id && byId.has(predecessor)) {
+      previous.set(doc.id, predecessor);
+      next.set(predecessor, doc.id);
+    }
+  }
+  const stacks = [];
+  const placed = new Set();
+  for (const doc of docs) {
+    if (placed.has(doc.id)) continue;
+    let head = doc.id;
+    const walked = new Set([head]);
+    while (previous.has(head) && !walked.has(previous.get(head))) {
+      head = previous.get(head);
+      walked.add(head);
+    }
+    const chain = [];
+    const seen = new Set();
+    let cursor = head;
+    while (cursor && !seen.has(cursor)) {
+      seen.add(cursor);
+      chain.push(byId.get(cursor));
+      cursor = next.get(cursor);
+    }
+    chain.forEach((item) => placed.add(item.id));
+    stacks.push({ key: head, docs: chain });
+  }
+  const newest = (chain) => chain.reduce((at, doc) => Math.max(at, new Date(doc.updated_at).getTime() || 0), 0);
+  return stacks.sort((a, b) => newest(b.docs) - newest(a.docs));
+}
+
+const expandedDocStacks = new Set();
+
+function toggleDocStack(button) {
+  const key = button.dataset.stackToggle;
+  const expanded = expandedDocStacks.has(key);
+  if (expanded) expandedDocStacks.delete(key);
+  else expandedDocStacks.add(key);
+  button.setAttribute("aria-expanded", expanded ? "false" : "true");
+  const caret = button.querySelector("[data-stack-caret]");
+  if (caret) caret.textContent = expanded ? "展开" : "收起";
+  $$("#doc-table-body [data-stack-child]").forEach((row) => {
+    if (row.dataset.stackChild === key) row.hidden = expanded;
+  });
+}
+
+function docMatchesFilter(doc, query, source) {
+  if (source && doc.source_type !== source) return false;
+  if (!query) return true;
+  return String(doc.title ?? "").toLowerCase().includes(query.toLowerCase());
+}
+
+/** 沿革堆叠：每条链只留当前生效的一篇，被延续的收在它下面，点开才显示。 */
+function docStackRows() {
+  const query = docQuery();
+  const stacks = docStacks(state.docs)
+    .filter((stack) => stack.docs.some((doc) => docMatchesFilter(doc, query, state.source)));
+  const rows = [];
+  let current = 0;
+  let folded = 0;
+  for (const stack of stacks) {
+    const index = stack.docs.findIndex((doc) => doc.in_force);
+    const active = stack.docs[index >= 0 ? index : stack.docs.length - 1];
+    const rest = stack.docs.filter((doc) => doc !== active);
+    const key = esc(stack.key);
+    const expanded = expandedDocStacks.has(stack.key);
+    current += 1;
+    folded += rest.length;
+    const toggle = rest.length
+      ? `<button class="doc-stack-toggle" type="button" data-stack-toggle="${key}" aria-expanded="${expanded ? "true" : "false"}"><span data-stack-caret>${expanded ? "收起" : "展开"}</span>沿革 ${num(stack.docs.length)} 篇</button>`
+      : "";
+    rows.push(docRowHtml(active, { attributes: rest.length ? ` data-stack-head="${key}"` : "", titleExtra: toggle }));
+    rest.forEach((doc) => rows.push(docRowHtml(doc, { attributes: ` data-stack-child="${key}"${expanded ? "" : " hidden"}` })));
+  }
+  return { rows, current, folded };
+}
+
+function renderDocs() {
+  const target = $("#doc-table-body");
+  const empty = $("#doc-empty");
+  const hint = $("#doc-view-hint");
+  if (hint) hint.hidden = state.libraryView !== "stack";
+  const stacked = state.libraryView === "stack" ? docStackRows() : null;
+  const rows = stacked ? stacked.rows : state.docs.map((doc) => docRowHtml(doc));
+  empty.hidden = Boolean(rows.length);
+  empty.textContent = stacked ? "当前筛选下没有现行文档" : "暂无文档";
+  $("#doc-count").textContent = stacked
+    ? `${num(stacked.current)} 篇现行${stacked.folded ? ` · ${num(stacked.folded)} 篇沿革` : ""}`
+    : `${num(state.docs.length)} 篇`;
+  if (!rows.length) {
+    target.innerHTML = "";
+    return;
+  }
+  target.innerHTML = rows.join("");
+  $$("#doc-table-body [data-stack-toggle]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleDocStack(button);
+    });
+    button.addEventListener("keydown", (event) => event.stopPropagation());
+  });
   $$("#doc-table-body [data-doc]").forEach((row) => {
-    const open = () => openDoc(row.dataset.doc);
-    row.addEventListener("click", open);
-    row.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        open();
-      }
+    row.addEventListener("click", (event) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      openDoc(row.dataset.doc);
+    });
+  });
+}
+
+function applyLibraryViewUI() {
+  $$("#doc-view [data-view]").forEach((button) => {
+    const active = (button.dataset.view === "stack") === (state.libraryView === "stack");
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+  const table = $(".docs-table");
+  if (table) table.classList.toggle("is-stacked", state.libraryView === "stack");
+}
+
+function setupLibraryView() {
+  applyLibraryViewUI();
+  $$("#doc-view [data-view]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const view = button.dataset.view === "stack" ? "stack" : "flat";
+      if (state.libraryView === view) return;
+      state.libraryView = view;
+      localStorage.setItem("kw_library_view", view);
+      applyLibraryViewUI();
+      await loadDocs();
     });
   });
 }
@@ -927,7 +1104,7 @@ const ENTITY_EMPTY_LABEL = {
 };
 
 function entityPills(entities, enrichmentStatus) {
-  if (entities.length) return `<div class="pill-row">${entities.map((entity) => `<span class="pill">${esc(entity.name)}</span>`).join("")}</div>`;
+  if (entities.length) return `<div class="pill-row">${entities.map((entity) => `<span class="pill doc-entity-pill">${esc(entity.name)}</span>`).join("")}</div>`;
   const label = enrichmentStatus === "empty" ? "" : ENTITY_EMPTY_LABEL[enrichmentStatus] ?? ENTITY_EMPTY_LABEL.done;
   return label ? `<div class="pill-row"><span class="doc-hint">${esc(label)}</span></div>` : "";
 }
@@ -940,25 +1117,51 @@ function docTabPanel(id, content, active) {
   return `<div class="doc-panel" id="doc-panel-${id}" role="tabpanel" aria-labelledby="doc-tab-${id}" data-doc-panel="${id}"${active ? "" : " hidden"}>${content}</div>`;
 }
 
-function showDocDialog(title, sourceOnly = false) {
-  const dialog = $("#doc-dialog");
-  $("#doc-dialog-title").textContent = title;
-  $("#doc-dialog-badges").innerHTML = "";
-  $("#doc-dialog-meta").innerHTML = "";
-  $("#doc-dialog-body").innerHTML = loadingLines();
-  $("[data-doc-info]", dialog).hidden = sourceOnly;
-  if (!dialog.open) dialog.showModal();
-  return dialog;
+function openDoc(docId, citation = null) {
+  return navigateToPage("document", { ...citation, doc_id: docId });
 }
 
-async function openDoc(docId, citation = null) {
+function refreshDocument(detail) {
+  if (detail && state.document === detail) return loadDocument(detail, true);
+}
+
+async function loadDocument(citation, refresh = false) {
   const request = ++docOpenRequest;
-  const dialog = showDocDialog("文档");
-  const badges = $("#doc-dialog-badges");
+  const token = state.token;
+  const isCurrent = () => request === docOpenRequest && state.document === citation && state.token === token;
+  const docId = citation.doc_id;
+  const title = $("#doc-page-title");
+  const badges = $("#doc-page-badges");
+  const meta = $("#doc-page-meta");
+  const status = $("#doc-page-status");
+  const tabBar = $("#doc-page-tabbar");
+  const tabList = $("#doc-page-tabs");
+  const copySource = $("[data-copy-source]", tabBar);
+  const body = $("#doc-page-body");
+  const sourceFooter = $("#doc-source-footer");
+  const rail = $("#doc-page-info");
+  const infoLink = $("[data-doc-info]");
+  if (!refresh) {
+    title.textContent = "文档";
+    badges.innerHTML = "";
+    meta.innerHTML = "";
+    status.hidden = true;
+    status.innerHTML = "";
+    tabBar.hidden = true;
+    tabList.innerHTML = "";
+    infoLink.hidden = true;
+    rail.hidden = true;
+    rail.innerHTML = "";
+    sourceFooter.hidden = true;
+    body.innerHTML = loadingLines();
+    $(".doc-page-main").scrollTop = 0;
+    title.focus({ preventScroll: true });
+  }
+  body.setAttribute("aria-busy", "true");
   try {
-    const selectedVersion = citation?.version_id;
+    const selectedVersion = citation.version_id;
     const data = await api(`/documents/${encodeURIComponent(docId)}${selectedVersion ? `?version_id=${encodeURIComponent(selectedVersion)}` : ""}`);
-    if (request !== docOpenRequest) return;
+    if (!isCurrent()) return;
     const doc = data.document;
     const continuation = data.continuation;
     const enrichmentLabel = ENRICHMENT_LABEL[doc.enrichment_status];
@@ -969,26 +1172,25 @@ async function openDoc(docId, citation = null) {
     const locating = Boolean(citation?.chunk_id || citation?.quote || citation?.spans?.length);
     const hasChain = Boolean(doc.continuation) || (continuation?.chain?.length ?? 0) > 1;
     const activeVersionId = data.source?.version_id;
-    $("#doc-dialog-title").textContent = doc.title;
+    title.textContent = doc.title;
     badges.innerHTML = `${continuationBadge(doc)}${version !== doc.version ? `<span class="pill warn">历史版本</span>` : ""}`;
-    $("#doc-dialog-meta").innerHTML = `
+    meta.innerHTML = `
       <span>${esc(sourceLabel)} · 更新于 ${esc(shortDate(doc.updated_at))}</span>
       <small>检索单元 ${num(data.chunks.length)}</small>
       <small>查看版本 v${esc(version)}</small>
       <small>原文长度 ${num(sourceText.length)} 字符</small>
-      <small>解析质量 ${esc(doc.quality)}</small>`;
+      <small>解析质量 ${esc(doc.quality)}</small>
+      <small>解析器 ${esc(data.source?.parser || "未知")}</small>`;
+    status.innerHTML = `
+      <div><dt>权限</dt><dd>${esc(doc.acl_label)}</dd></div>
+      <div><dt>可信度</dt><dd>${esc(doc.source_trust ?? 0.5)}${doc.is_core ? " · 核心" : ""}</dd></div>
+      <div><dt>内容哈希</dt><dd class="mono">${esc(doc.content_hash)}</dd></div>`;
+    status.hidden = false;
 
     const sourcePanel = `
-      <div class="doc-panel-toolbar">
-        <span class="doc-panel-note">${esc(data.source?.parser || "解析器未知")}</span>
-        <div class="doc-panel-tools">
-          ${locating ? `<span class="pill info">已定位引用</span>` : ""}
-          <button class="text-btn" type="button" data-copy-source>复制全文</button>
-        </div>
-      </div>
+      ${locating ? `<div class="doc-panel-toolbar"><span class="pill info">已定位引用</span></div>` : ""}
       ${locating && !ranges.length ? `<p class="doc-hint">该引用暂无精确坐标，可在下方原文中核对。</p>` : ""}
-      <pre class="doc-source">${sourceHtml(sourceText, ranges) || '<span class="muted">暂无原文</span>'}</pre>
-      <p class="doc-hint">区间坐标：规范化原文 UTF-16 偏移，末尾不含；与引用中的版本一致。</p>`;
+      <pre class="doc-source">${sourceHtml(sourceText, ranges) || '<span class="muted">暂无原文</span>'}</pre>`;
 
     const chunksPanel = data.chunks.length
       ? `<div class="doc-chunk-list">${data.chunks.map((chunk) => `
@@ -1003,7 +1205,8 @@ async function openDoc(docId, citation = null) {
       : `<div class="empty-block">暂无检索单元</div>`;
 
     const versionsPanel = data.versions.length
-      ? `<div class="doc-version-list">${data.versions.map((item) => `
+      ? `<p class="doc-hint">同一文档的内容修订会新增版本；引用始终指向生成时的版本，历史版本不会被覆盖。</p>
+        <div class="doc-version-list">${data.versions.map((item) => `
           <button type="button" class="doc-version-row${item.id === activeVersionId ? " is-active" : ""}" data-doc-version="${esc(item.id)}"${item.id === activeVersionId ? ' aria-current="true"' : ""}>
             <span class="doc-version-no">v${esc(item.version)}</span>
             <span class="doc-version-body">
@@ -1012,7 +1215,7 @@ async function openDoc(docId, citation = null) {
             </span>
             <span class="doc-version-date">${esc(shortDate(item.created_at))}</span>
             ${item.version === doc.version ? `<span class="pill info">当前</span>` : item.id === activeVersionId ? `<span class="doc-version-open">查看中</span>` : `<span class="doc-version-open">查看</span>`}
-          </button>`).join("")}</div><p class="doc-hint">同一文档的内容修订会新增版本；引用始终指向生成时的版本，历史版本不会被覆盖。</p>`
+          </button>`).join("")}</div>`
       : `<div class="empty-block">暂无版本</div>`;
 
     const factsPanel = `
@@ -1038,74 +1241,59 @@ async function openDoc(docId, citation = null) {
       && (predecessor || !doc.continuation?.predecessor_doc_id)
       && (successor || !doc.continuation?.successor_doc_id);
 
-    $("#doc-dialog-body").innerHTML = `
-      <div class="doc-shell">
-        <aside class="doc-rail" aria-label="文档信息与操作">
-          <div class="doc-rail-scroll">
-            <section class="doc-rail-section">
-              <h3>操作</h3>
-              <div class="doc-actions">
-                <button class="btn primary block" data-doc-action="update" data-doc-id="${esc(doc.id)}">更新内容</button>
-                <div class="doc-action-grid">
-                  <button class="btn" data-doc-action="reprocess" data-doc-id="${esc(doc.id)}">重新抽取事实</button>
-                  <button class="btn" data-doc-action="reindex" data-doc-id="${esc(doc.id)}">重建检索索引</button>
-                  <button class="btn span-2" type="button" data-doc-action="policy" aria-haspopup="dialog">来源与核心标记</button>
-                  <button class="btn span-2" type="button" data-continuation-open aria-haspopup="dialog">登记延续关系</button>
-                </div>
-              </div>
-            </section>
+    const selectedTab = refresh ? $('[data-doc-tab][aria-selected="true"]', tabList)?.dataset.docTab : null;
+    tabList.innerHTML = `
+      ${docTabButton("source", "原文", null, true)}
+      ${docTabButton("chunks", "检索单元", data.chunks.length, false)}
+      ${docTabButton("versions", "版本", data.versions.length, false)}
+      ${docTabButton("facts", "事实", data.facts.length, false)}`;
+    tabBar.hidden = false;
+    body.innerHTML = `
+      <section class="doc-main" aria-label="文档内容">
+        ${docTabPanel("source", sourcePanel, true)}
+        ${docTabPanel("chunks", chunksPanel, false)}
+        ${docTabPanel("versions", versionsPanel, false)}
+        ${docTabPanel("facts", factsPanel, false)}
+      </section>`;
 
-            <section class="doc-rail-section">
-              <div class="doc-section-head"><h3>沿革</h3><span class="doc-section-note">${hasChain ? (chain.length > 1 ? `${chain.length} 代` : "已登记") : "未登记"}</span></div>
-              ${chainHtml}
-              ${canUnlink ? `<div><button class="text-btn danger" type="button" data-continuation-unlink aria-haspopup="dialog">解除延续</button></div>` : ""}
-            </section>
-
-            <section class="doc-rail-section">
-              <div class="doc-section-head"><h3>关联实体</h3><span class="doc-section-note">${num(data.entities.length)}</span></div>
-              ${enrichmentLabel ? `<p class="doc-hint">${esc(enrichmentLabel)}</p>` : ""}
-              ${doc.enrichment_status === "failed" && doc.enrichment_error ? `<p class="doc-hint danger-text">${esc(doc.enrichment_error)}</p>` : ""}
-              ${entityPills(data.entities, doc.enrichment_status)}
-            </section>
-
-            <section class="doc-rail-section">
-              <h3>文档状态</h3>
-              <dl class="doc-meta">
-                <div><dt>来源</dt><dd>${esc(sourceLabel)}</dd></div>
-                <div><dt>权限</dt><dd>${esc(doc.acl_label)}</dd></div>
-                <div><dt>可信度</dt><dd>${esc(doc.source_trust ?? 0.5)}${doc.is_core ? " · 核心" : ""}</dd></div>
-                <div><dt>内容哈希</dt><dd class="mono">${esc(doc.content_hash)}</dd></div>
-              </dl>
-            </section>
+    rail.innerHTML = `
+      <div class="doc-rail-content">
+        <div class="doc-actions">
+          <button class="btn primary block" data-doc-action="update">更新内容</button>
+          <div class="doc-action-grid">
+            <button class="btn" data-doc-action="reprocess">重新抽取事实</button>
+            <button class="btn" data-doc-action="reindex">重建检索索引</button>
+            <button class="btn span-2" type="button" data-doc-action="policy" aria-haspopup="dialog">来源与核心标记</button>
+            <button class="btn span-2" type="button" data-continuation-open aria-haspopup="dialog">登记延续关系</button>
           </div>
+        </div>
 
-          <div class="doc-rail-danger">
-            <button class="text-btn danger" data-doc-action="delete" data-doc-id="${esc(doc.id)}">移入回收站</button>
-          </div>
-        </aside>
-
-        <section class="doc-main">
-          <div class="doc-tabs-wrap">
-            <div class="tabs doc-tabs" role="tablist" aria-label="文档内容">
-              ${docTabButton("source", "原文", null, true)}
-              ${docTabButton("chunks", "检索单元", data.chunks.length, false)}
-              ${docTabButton("versions", "版本", data.versions.length, false)}
-              ${docTabButton("facts", "事实", data.facts.length, false)}
-            </div>
-          </div>
-          <div class="doc-panels">
-            ${docTabPanel("source", sourcePanel, true)}
-            ${docTabPanel("chunks", chunksPanel, false)}
-            ${docTabPanel("versions", versionsPanel, false)}
-            ${docTabPanel("facts", factsPanel, false)}
-          </div>
+        <section class="doc-rail-section" id="doc-related-entities">
+          <div class="doc-section-head"><h3>关联实体</h3><span class="doc-section-note">${num(data.entities.length)}</span></div>
+          ${enrichmentLabel ? `<p class="doc-hint">${esc(enrichmentLabel)}</p>` : ""}
+          ${doc.enrichment_status === "failed" && doc.enrichment_error ? `<p class="doc-hint danger-text">${esc(doc.enrichment_error)}</p>` : ""}
+          ${entityPills(data.entities, doc.enrichment_status)}
         </section>
+
+        <section class="doc-rail-section">
+          <div class="doc-section-head"><h3>沿革</h3><span class="doc-section-note">${hasChain ? (chain.length > 1 ? `${chain.length} 代` : "已登记") : "未登记"}</span></div>
+          ${chainHtml}
+          ${canUnlink ? `<div><button class="text-btn danger" type="button" data-continuation-unlink aria-haspopup="dialog">解除延续</button></div>` : ""}
+        </section>
+      </div>
+
+      <div class="doc-rail-danger">
+        <button class="text-btn danger" data-doc-action="delete">移入回收站</button>
       </div>`;
 
-    const body = $("#doc-dialog-body");
-    const infoButton = $("[data-doc-info]", dialog);
-    if (infoButton) infoButton.onclick = () => $(".doc-rail", body)?.scrollIntoView({ behavior: "smooth", block: "start" });
-    const tabs = $$("[data-doc-tab]", body);
+    rail.hidden = false;
+    infoLink.hidden = false;
+    infoLink.onclick = (event) => {
+      event.preventDefault();
+      rail.scrollIntoView({ behavior: "smooth", block: "start" });
+      rail.focus({ preventScroll: true });
+    };
+    const tabs = $$("[data-doc-tab]", tabList);
     const panels = $$("[data-doc-panel]", body);
     const activateTab = (id) => {
       for (const tab of tabs) {
@@ -1115,51 +1303,65 @@ async function openDoc(docId, citation = null) {
         tab.tabIndex = active ? 0 : -1;
       }
       for (const panel of panels) panel.hidden = panel.dataset.docPanel !== id;
+      copySource.hidden = id !== "source";
+      sourceFooter.hidden = id !== "source";
     };
+    activateTab(selectedTab ?? "source");
     for (const tab of tabs) tab.addEventListener("click", () => activateTab(tab.dataset.docTab));
-    $(".doc-tabs", body)?.addEventListener("keydown", (event) => {
+    tabList.onkeydown = (event) => {
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
       const index = tabs.findIndex((tab) => tab.getAttribute("aria-selected") === "true");
       const next = (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
       event.preventDefault();
       tabs[next].focus();
       activateTab(tabs[next].dataset.docTab);
-    });
-    $("[data-copy-source]", body)?.addEventListener("click", async () => {
+    };
+    copySource.onclick = async () => {
       try {
         await navigator.clipboard.writeText(sourceText);
         toast("原文已复制");
       } catch {
         toast("复制失败，请手动选择原文");
       }
-    });
-    $$("[data-doc-action]", body).forEach((button) => {
+    };
+    $$("[data-doc-action]", rail).forEach((button) => {
       button.addEventListener("click", () => {
         if (button.dataset.docAction === "update") {
-          dialog.close();
           openIngest(doc);
         } else if (button.dataset.docAction === "policy") {
           openPolicyDialog(doc, citation);
-        } else handleDocAction(button.dataset.docAction, button.dataset.docId, button);
+        } else handleDocAction(button.dataset.docAction, citation, button);
       });
     });
     $$("[data-doc-version]", body).forEach((button) => {
       button.addEventListener("click", () => openDoc(docId, { version_id: button.dataset.docVersion }));
     });
-    $$("[data-open-doc]", body).forEach((button) => {
+    $$("[data-open-doc]", rail).forEach((button) => {
       button.addEventListener("click", () => openDoc(button.dataset.openDoc));
     });
-    $("[data-continuation-unlink]", body)?.addEventListener("click", () => openUnlinkContinuationDialog(doc, predecessor, successor, citation));
-    $("[data-continuation-open]", body).addEventListener("click", () => openContinuationDialog(doc, citation));
-    const highlight = $("#source-highlight-target", body);
-    highlight?.scrollIntoView({ behavior: "smooth", block: "center" });
-    highlight?.focus({ preventScroll: true });
-  } catch (error) {
-    if (request === docOpenRequest) {
-      badges.innerHTML = "";
-      $("#doc-dialog-meta").innerHTML = "";
-      $("#doc-dialog-body").innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
+    $("[data-continuation-unlink]", rail)?.addEventListener("click", () => openUnlinkContinuationDialog(doc, predecessor, successor, citation));
+    $("[data-continuation-open]", rail).addEventListener("click", () => openContinuationDialog(doc, citation));
+    if (!refresh) {
+      const highlight = $("#source-highlight-target", body);
+      highlight?.scrollIntoView({ behavior: "smooth", block: "center" });
+      highlight?.focus({ preventScroll: true });
     }
+  } catch (error) {
+    if (isCurrent()) {
+      badges.innerHTML = "";
+      meta.innerHTML = "";
+      status.hidden = true;
+      status.innerHTML = "";
+      tabBar.hidden = true;
+      tabList.innerHTML = "";
+      infoLink.hidden = true;
+      rail.hidden = true;
+      rail.innerHTML = "";
+      sourceFooter.hidden = true;
+      body.innerHTML = `<div class="empty-block" role="status">${esc(error.message)}</div>`;
+    }
+  } finally {
+    if (isCurrent()) body.removeAttribute("aria-busy");
   }
 }
 
@@ -1194,7 +1396,7 @@ function openUnlinkContinuationDialog(doc, predecessor, successor, citation) {
       await api(`/documents/${encodeURIComponent(doc.id)}/continuation?${params}`, { method: "DELETE" });
       dialog.close();
       toast(shouldReconnect ? "延续关系已解除，前后文档已续接" : "延续关系已解除");
-      openDoc(doc.id, citation);
+      refreshDocument(citation);
       loadDocs();
     } catch (failure) {
       error.textContent = failure.message;
@@ -1305,7 +1507,7 @@ async function openContinuationDialog(doc, citation) {
       });
       dialog.close();
       toast("延续关系已建立");
-      openDoc(doc.id, citation);
+      refreshDocument(citation);
       loadDocs();
     } catch (error) {
       showError(error.message);
@@ -1368,7 +1570,7 @@ function openPolicyDialog(doc, citation) {
       await api(`/documents/${encodeURIComponent(doc.id)}/policy`, { method: "PATCH", body: payload });
       dialog.close();
       toast("来源与核心标记已保存");
-      openDoc(doc.id, citation);
+      refreshDocument(citation);
     } catch (failure) {
       error.textContent = failure.message;
     } finally {
@@ -1380,15 +1582,16 @@ function openPolicyDialog(doc, citation) {
   dialog.showModal();
 }
 
-async function handleDocAction(action, docId, button) {
+async function handleDocAction(action, detail, button) {
+  const docId = encodeURIComponent(detail.doc_id);
   if (action === "delete") {
     if (!confirm("确认移入回收站？可在回收站中恢复。")) return;
     setBusy(button, true, "删除中");
     try {
       await api(`/documents/${docId}`, { method: "DELETE" });
       toast("文档已移入回收站，可到回收站恢复");
-      $("#doc-dialog").close();
-      loadDocs();
+      if (state.document?.doc_id === detail.doc_id) navigateToPage("library");
+      else loadDocs();
       loadDashboard();
     } catch (error) {
       toast(error.message);
@@ -1402,7 +1605,7 @@ async function handleDocAction(action, docId, button) {
       await api(`/documents/${docId}/reprocess`, { method: "POST" });
       toast("已排入事实抽取队列");
       void loadIngestJobs();
-      await openDoc(docId);
+      await refreshDocument(detail);
     } catch (error) {
       toast(error.message);
     } finally {
@@ -1414,7 +1617,7 @@ async function handleDocAction(action, docId, button) {
     try {
       await api(`/documents/${docId}/reprocess`, { method: "POST", body: { scope: "index" } });
       toast("所有存储版本的检索索引已重建");
-      await openDoc(docId);
+      await refreshDocument(detail);
     } catch (error) { toast(error.message); }
     finally { setBusy(button, false); }
   }
@@ -2518,7 +2721,7 @@ function closeTour() {
   $("#tour").hidden = true;
   $("#tour-hole").classList.remove("show");
   localStorage.setItem(tourKey(), "1");
-  if (state.page !== returnPage) showPage(returnPage);
+  if (state.page !== returnPage) restorePageFromUrl();
 }
 
 function setupTour() {
@@ -4491,20 +4694,26 @@ function reviewSourcePane(side, label, choose = false) {
   </section>`;
 }
 
+let reviewSourceRequest = 0;
 async function openReviewSource(current, existing, selected = 0) {
   const comparison = existing.length > 0;
-  const request = ++docOpenRequest;
-  const dialog = showDocDialog(comparison ? "新旧原文对照" : "审阅原文", true);
-  const body = $("#doc-dialog-body");
+  const request = ++reviewSourceRequest;
+  const dialog = $("#review-source-dialog");
+  const titleLabel = $("#review-source-title");
+  const meta = $("#review-source-meta");
+  const body = $("#review-source-body");
+  titleLabel.textContent = comparison ? "新旧原文对照" : "审阅原文";
+  meta.textContent = "";
   body.innerHTML = `<div class="review-source-grid${comparison ? " is-comparison" : ""}">
     ${reviewSourcePane("current", comparison ? "新提取的原文" : "审阅原文")}
     ${comparison ? reviewSourcePane("existing", "库内已有的原文", existing.length > 1) : ""}
   </div>`;
+  if (!dialog.open) dialog.showModal();
 
   const paneRequests = { current: 0, existing: 0 };
   async function showSource(side, record) {
     const paneRequest = ++paneRequests[side];
-    const active = () => dialog.open && request === docOpenRequest && paneRequest === paneRequests[side];
+    const active = () => dialog.open && request === reviewSourceRequest && paneRequest === paneRequests[side];
     const pane = $(`[data-review-pane="${side}"]`, body);
     const content = $("[data-review-text]", pane);
     const location = $("[data-review-location]", pane);
@@ -4528,8 +4737,8 @@ async function openReviewSource(current, existing, selected = 0) {
       const versionLabel = page ? `v${version} · 第 ${page} 页` : `v${version}`;
       if (comparison) location.textContent = `《${title}》 · ${versionLabel}`;
       else {
-        $("#doc-dialog-title").textContent = title;
-        $("#doc-dialog-meta").textContent = versionLabel;
+        titleLabel.textContent = title;
+        meta.textContent = versionLabel;
       }
       const chunk = data.chunks[0];
       const ranges = sourceRanges(data, { chunk_id: chunk?.id, quote: chunk?.text });
@@ -5435,9 +5644,10 @@ async function boot() {
     $("#evidence-count").textContent = "";
     $("#conversation-list").innerHTML = "";
     $("#conversation-list").hidden = true;
+    if (state.document) loadDocument(state.document);
     await refreshShell();
     await loadMetaAndHealth();
-    loadPage(state.page);
+    if (!state.document) loadPage(state.page);
   });
 
   window.addEventListener("popstate", restorePageFromUrl);
@@ -5493,6 +5703,7 @@ async function boot() {
   });
 
   setupIngest();
+  setupLibraryView();
   setupAsk();
   setupChat();
   setupHoverTooltip();
