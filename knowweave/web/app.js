@@ -742,9 +742,8 @@ function continuationStatus(doc) {
 }
 
 function continuationBadge(doc) {
-  if (!doc.continuation) return "";
   const status = continuationStatus(doc);
-  return `<div class="pill ${status.tone}">${esc(status.label)}</div>`;
+  return `<span class="pill ${status.tone}">${esc(status.label)}</span>`;
 }
 
 function renderDocs() {
@@ -759,8 +758,10 @@ function renderDocs() {
     <tr data-doc="${esc(doc.id)}" tabindex="0">
       <td>
         <div class="cell-title">
-          <strong>${esc(doc.title)}</strong>
-          ${continuationBadge(doc)}
+          <div class="doc-title-line">
+            <strong>${esc(doc.title)}</strong>
+            ${doc.continuation ? continuationBadge(doc) : ""}
+          </div>
           <span>${esc(plain(doc.summary) || "无")}</span>
           <span class="cell-inline">${esc(SOURCE_LABEL[doc.source_type] || doc.source_type)} · ${num(doc.chunks)} 个检索单元 · ${shortDate(doc.updated_at)}</span>
         </div>
@@ -914,6 +915,22 @@ const ENRICHMENT_LABEL = {
   failed: "抽取失败，可点击「重新抽取事实」重试",
 };
 
+// 关联实体由可见事实推导，列表为空时的说明要区分「还没抽」「抽完但无可展示实体」。
+// empty 交给 ENRICHMENT_LABEL 解释，这里不再重复占位。
+const ENTITY_EMPTY_LABEL = {
+  pending: "尚未抽取到关联实体",
+  running: "尚未抽取到关联实体",
+  deferred: "尚未抽取到关联实体",
+  failed: "尚未抽取到关联实体",
+  done: "抽取完成，但事实未通过可见原文证据或实体名校验",
+};
+
+function entityPills(entities, enrichmentStatus) {
+  if (entities.length) return `<div class="pill-row">${entities.map((entity) => `<span class="pill">${esc(entity.name)}</span>`).join("")}</div>`;
+  const label = enrichmentStatus === "empty" ? "" : ENTITY_EMPTY_LABEL[enrichmentStatus] ?? ENTITY_EMPTY_LABEL.done;
+  return label ? `<div class="pill-row"><span class="doc-hint">${esc(label)}</span></div>` : "";
+}
+
 function docTabButton(id, label, count, active) {
   return `<button class="tab${active ? " active" : ""}" type="button" role="tab" id="doc-tab-${id}" aria-controls="doc-panel-${id}" aria-selected="${active}" tabindex="${active ? "0" : "-1"}" data-doc-tab="${id}">${label}${count === null ? "" : `<span class="doc-tab-count">${num(count)}</span>`}</button>`;
 }
@@ -925,38 +942,38 @@ function docTabPanel(id, content, active) {
 async function openDoc(docId, citation = null) {
   const request = ++docOpenRequest;
   const dialog = $("#doc-dialog");
+  const badges = $("#doc-dialog-badges");
   $("#doc-dialog-title").textContent = "文档";
+  badges.innerHTML = "";
   $("#doc-dialog-meta").innerHTML = "";
   $("#doc-dialog-body").innerHTML = loadingLines();
   if (!dialog.open) dialog.showModal();
   try {
     const selectedVersion = citation?.version_id;
-    const [data, library] = await Promise.all([
-      api(`/documents/${encodeURIComponent(docId)}${selectedVersion ? `?version_id=${encodeURIComponent(selectedVersion)}` : ""}`),
-      api("/documents?limit=200").catch(() => ({ items: [] })),
-    ]);
+    const data = await api(`/documents/${encodeURIComponent(docId)}${selectedVersion ? `?version_id=${encodeURIComponent(selectedVersion)}` : ""}`);
     if (request !== docOpenRequest) return;
     const doc = data.document;
     const continuation = data.continuation;
-    const linkableItems = (library.items || []).filter((item) => item.id !== doc.id);
     const enrichmentLabel = ENRICHMENT_LABEL[doc.enrichment_status];
     const ranges = sourceRanges(data, citation);
     const version = data.source?.version ?? doc.version;
     const sourceText = data.source?.text ?? "";
     const sourceLabel = SOURCE_LABEL[doc.source_type] || doc.source_type;
     const locating = Boolean(citation?.chunk_id || citation?.quote || citation?.spans?.length);
-    const status = continuationStatus(doc);
     const hasChain = Boolean(doc.continuation) || (continuation?.chain?.length ?? 0) > 1;
     const activeVersionId = data.source?.version_id;
     $("#doc-dialog-title").textContent = doc.title;
+    badges.innerHTML = `${continuationBadge(doc)}${version !== doc.version ? `<span class="pill warn">历史版本</span>` : ""}`;
     $("#doc-dialog-meta").innerHTML = `
-      <span class="pill ${status.tone}">${esc(status.label)}</span>
-      ${version !== doc.version ? `<span class="pill warn">历史版本</span>` : ""}
-      <span>${esc(sourceLabel)} · v${esc(version)} · 更新于 ${esc(shortDate(doc.updated_at))}</span>`;
+      <span>${esc(sourceLabel)} · 更新于 ${esc(shortDate(doc.updated_at))}</span>
+      <small>检索单元 ${num(data.chunks.length)}</small>
+      <small>查看版本 v${esc(version)}</small>
+      <small>原文长度 ${num(sourceText.length)} 字符</small>
+      <small>解析质量 ${esc(doc.quality)}</small>`;
 
     const sourcePanel = `
       <div class="doc-panel-toolbar">
-        <span class="doc-panel-note">v${esc(version)} · ${esc(data.source?.parser || "解析器未知")} · ${num(sourceText.length)} 字符 · ${num(data.chunks.length)} 个检索单元</span>
+        <span class="doc-panel-note">${esc(data.source?.parser || "解析器未知")}</span>
         <div class="doc-panel-tools">
           ${locating ? `<span class="pill info">已定位引用</span>` : ""}
           <button class="text-btn" type="button" data-copy-source>复制全文</button>
@@ -1008,65 +1025,52 @@ async function openDoc(docId, citation = null) {
             <span class="doc-chain-meta">${node.effective_date ? `自 ${esc(node.effective_date)} 起` : "链首"} · v${esc(node.version)} · ${node.in_force ? "现行" : "非现行"}</span>
           </button>`).join("")}</div>`
       : `<p class="doc-hint">还没有登记沿革。政策类文档更新后，把新旧两篇连起来，检索会按日期只取当时有效的一篇。</p>`;
-    const unlinkHtml = [
-      continuation?.predecessor ? `<span>前序：${esc(continuation.predecessor.title)}</span><button class="text-btn danger" type="button" data-continuation-unlink="continues">解除接续</button>` : "",
-      continuation?.successor ? `<span>后续：${esc(continuation.successor.title)}</span><button class="text-btn danger" type="button" data-continuation-unlink="continued_by">解除延续</button>` : "",
-    ].filter(Boolean).join("");
+    const predecessor = continuation?.predecessor;
+    const successor = continuation?.successor;
+    const canUnlink = (predecessor || successor)
+      && (predecessor || !doc.continuation?.predecessor_doc_id)
+      && (successor || !doc.continuation?.successor_doc_id);
 
     $("#doc-dialog-body").innerHTML = `
       <div class="doc-shell">
         <aside class="doc-rail" aria-label="文档信息与操作">
-          <div class="doc-kpis">
-            <div class="doc-kpi"><span>检索单元</span><strong>${num(data.chunks.length)}</strong></div>
-            <div class="doc-kpi"><span>查看版本</span><strong>v${esc(version)}</strong></div>
-            <div class="doc-kpi"><span>原文长度</span><strong>${num(sourceText.length)}</strong></div>
-            <div class="doc-kpi"><span>解析质量</span><strong>${esc(doc.quality)}</strong></div>
+          <div class="doc-rail-scroll">
+            <section class="doc-rail-section">
+              <h3>操作</h3>
+              <div class="doc-actions">
+                <button class="btn primary block" data-doc-action="update" data-doc-id="${esc(doc.id)}">更新内容</button>
+                <div class="doc-action-grid">
+                  <button class="btn" data-doc-action="reprocess" data-doc-id="${esc(doc.id)}">重新抽取事实</button>
+                  <button class="btn" data-doc-action="reindex" data-doc-id="${esc(doc.id)}">重建检索索引</button>
+                  <button class="btn span-2" type="button" data-doc-action="policy" aria-haspopup="dialog">来源与核心标记</button>
+                  <button class="btn span-2" type="button" data-continuation-open aria-haspopup="dialog">登记延续关系</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="doc-rail-section">
+              <div class="doc-section-head"><h3>沿革</h3><span class="doc-section-note">${hasChain ? (chain.length > 1 ? `${chain.length} 代` : "已登记") : "未登记"}</span></div>
+              ${chainHtml}
+              ${canUnlink ? `<div><button class="text-btn danger" type="button" data-continuation-unlink aria-haspopup="dialog">解除延续</button></div>` : ""}
+            </section>
+
+            <section class="doc-rail-section">
+              <div class="doc-section-head"><h3>关联实体</h3><span class="doc-section-note">${num(data.entities.length)}</span></div>
+              ${enrichmentLabel ? `<p class="doc-hint">${esc(enrichmentLabel)}</p>` : ""}
+              ${doc.enrichment_status === "failed" && doc.enrichment_error ? `<p class="doc-hint danger-text">${esc(doc.enrichment_error)}</p>` : ""}
+              ${entityPills(data.entities, doc.enrichment_status)}
+            </section>
+
+            <section class="doc-rail-section">
+              <h3>文档状态</h3>
+              <dl class="doc-meta">
+                <div><dt>来源</dt><dd>${esc(sourceLabel)}</dd></div>
+                <div><dt>权限</dt><dd>${esc(doc.acl_label)}</dd></div>
+                <div><dt>可信度</dt><dd>${esc(doc.source_trust ?? 0.5)}${doc.is_core ? " · 核心" : ""}</dd></div>
+                <div><dt>内容哈希</dt><dd class="mono">${esc(doc.content_hash)}</dd></div>
+              </dl>
+            </section>
           </div>
-
-          <section class="doc-rail-section">
-            <h3>文档状态</h3>
-            <dl class="doc-meta">
-              <div><dt>来源</dt><dd>${esc(sourceLabel)}</dd></div>
-              <div><dt>权限</dt><dd>${esc(doc.acl_label)}</dd></div>
-              <div><dt>可信度</dt><dd>${esc(doc.source_trust ?? 0.5)}${doc.is_core ? " · 核心" : ""}</dd></div>
-              <div><dt>内容哈希</dt><dd class="mono">${esc(doc.content_hash)}</dd></div>
-            </dl>
-          </section>
-
-          <section class="doc-rail-section">
-            <h3>操作</h3>
-            <div class="doc-actions">
-              <button class="btn primary block" data-doc-action="update" data-doc-id="${esc(doc.id)}">更新内容</button>
-              <div class="doc-action-grid">
-                <button class="btn" data-doc-action="reprocess" data-doc-id="${esc(doc.id)}">重新抽取事实</button>
-                <button class="btn" data-doc-action="reindex" data-doc-id="${esc(doc.id)}">重建检索索引</button>
-                <button class="btn span-2" data-doc-action="policy" data-doc-id="${esc(doc.id)}" data-trust="${esc(doc.source_trust ?? 0.5)}" data-core="${doc.is_core ? 'true' : 'false'}">来源与核心标记</button>
-              </div>
-            </div>
-          </section>
-
-          <section class="doc-rail-section">
-            <div class="doc-section-head"><h3>沿革</h3><span class="doc-section-note">${hasChain ? (chain.length > 1 ? `${chain.length} 代` : "已登记") : "未登记"}</span></div>
-            ${chainHtml}
-            ${unlinkHtml ? `<div class="doc-chain-actions">${unlinkHtml}</div>` : ""}
-            <details class="doc-link">
-              <summary>登记延续关系</summary>
-              <div class="doc-link-fields">
-                <div class="doc-field"><label id="continuation-direction-label" for="continuation-direction">方向</label><div data-direction-picker></div></div>
-                <div class="doc-field"><label id="continuation-other-label" for="continuation-other">关联文档</label><div data-document-picker></div></div>
-                <div class="doc-field"><label id="continuation-date-label" for="continuation-date">生效日期</label><div data-date-picker></div></div>
-                <label class="doc-field"><span>备注</span><input id="continuation-note" maxlength="500" placeholder="可选" /></label>
-                <button class="btn block" type="button" data-continuation-link${linkableItems.length ? "" : " disabled"}>建立延续</button>
-              </div>
-            </details>
-          </section>
-
-          <section class="doc-rail-section">
-            <div class="doc-section-head"><h3>关联实体</h3><span class="doc-section-note">${num(data.entities.length)}</span></div>
-            ${enrichmentLabel ? `<p class="doc-hint">${esc(enrichmentLabel)}</p>` : ""}
-            ${doc.enrichment_status === "failed" && doc.enrichment_error ? `<p class="doc-hint danger-text">${esc(doc.enrichment_error)}</p>` : ""}
-            <div class="pill-row">${data.entities.length ? data.entities.map((entity) => `<span class="pill">${esc(entity.name)}</span>`).join("") : `<span class="doc-hint">暂无</span>`}</div>
-          </section>
 
           <div class="doc-rail-danger">
             <button class="text-btn danger" data-doc-action="delete" data-doc-id="${esc(doc.id)}">移入回收站</button>
@@ -1092,20 +1096,6 @@ async function openDoc(docId, citation = null) {
       </div>`;
 
     const body = $("#doc-dialog-body");
-    const direction = KnowWeavePickers.choice($("[data-direction-picker]", body), {
-      id: "continuation-direction", label: "方向", labelId: "continuation-direction-label",
-      options: [
-        { value: "continues", label: "接续自（当前是新文档）" },
-        { value: "continued_by", label: "延续到（当前是旧文档）" },
-      ],
-    });
-    const relatedDocument = KnowWeavePickers.choice($("[data-document-picker]", body), {
-      id: "continuation-other", label: "关联文档", labelId: "continuation-other-label", placeholder: "没有可关联的文档",
-      options: linkableItems.map(({ id, title }) => ({ value: id, label: title })),
-    });
-    const effective = KnowWeavePickers.date($("[data-date-picker]", body), {
-      id: "continuation-date", label: "生效日期", labelId: "continuation-date-label",
-    });
     const infoButton = $("[data-doc-info]", dialog);
     if (infoButton) infoButton.onclick = () => $(".doc-rail", body)?.scrollIntoView({ behavior: "smooth", block: "start" });
     const tabs = $$("[data-doc-tab]", body);
@@ -1141,6 +1131,8 @@ async function openDoc(docId, citation = null) {
         if (button.dataset.docAction === "update") {
           dialog.close();
           openIngest(doc);
+        } else if (button.dataset.docAction === "policy") {
+          openPolicyDialog(doc, citation);
         } else handleDocAction(button.dataset.docAction, button.dataset.docId, button);
       });
     });
@@ -1150,57 +1142,235 @@ async function openDoc(docId, citation = null) {
     $$("[data-open-doc]", body).forEach((button) => {
       button.addEventListener("click", () => openDoc(button.dataset.openDoc));
     });
-    $$("[data-continuation-unlink]", body).forEach((button) => {
-      button.addEventListener("click", async () => {
-        if (!confirm("确认解除这条延续关系？")) return;
-        setBusy(button, true, "解除中");
-        try {
-          await api(`/documents/${encodeURIComponent(doc.id)}/continuation?relation=${button.dataset.continuationUnlink}`, { method: "DELETE" });
-          toast("延续关系已解除");
-          await openDoc(doc.id);
-          loadDocs();
-        } catch (error) {
-          toast(error.message);
-        } finally {
-          setBusy(button, false);
-        }
-      });
-    });
-    $("[data-continuation-link]", body)?.addEventListener("click", async (event) => {
-      const button = event.currentTarget;
-      const other = relatedDocument.trigger.value;
-      const effectiveDate = effective.trigger.value;
-      const relation = direction.trigger.value;
-      const note = $("#continuation-note", body)?.value.trim();
-      if (!other) return toast("没有可关联的文档");
-      if (!effectiveDate) {
-        effective.trigger.focus();
-        return toast("请选择生效日期");
-      }
-      setBusy(button, true, "保存中");
-      try {
-        await api(`/documents/${encodeURIComponent(doc.id)}/continuation`, {
-          method: "POST",
-          body: { other_doc_id: other, relation, effective_date: effectiveDate, note },
-        });
-        toast("延续关系已建立");
-        await openDoc(doc.id);
-        loadDocs();
-      } catch (error) {
-        toast(error.message);
-      } finally {
-        setBusy(button, false);
-      }
-    });
+    $("[data-continuation-unlink]", body)?.addEventListener("click", () => openUnlinkContinuationDialog(doc, predecessor, successor, citation));
+    $("[data-continuation-open]", body).addEventListener("click", () => openContinuationDialog(doc, citation));
     const highlight = $("#source-highlight-target", body);
     highlight?.scrollIntoView({ behavior: "smooth", block: "center" });
     highlight?.focus({ preventScroll: true });
   } catch (error) {
     if (request === docOpenRequest) {
+      badges.innerHTML = "";
       $("#doc-dialog-meta").innerHTML = "";
       $("#doc-dialog-body").innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
     }
   }
+}
+
+function openUnlinkContinuationDialog(doc, predecessor, successor, citation) {
+  const dialog = $("#unlink-continuation-dialog");
+  const error = $("#unlink-continuation-error", dialog);
+  const separate = $("[data-unlink-confirm=separate]", dialog);
+  const reconnect = $("[data-unlink-confirm=reconnect]", dialog);
+  const canReconnect = Boolean(predecessor && successor);
+  const buttons = $$("button", dialog);
+  $("#unlink-continuation-document", dialog).textContent = doc.title;
+  $("#unlink-continuation-note", dialog).textContent = canReconnect
+    ? `当前文档将移出沿革。「仅解除」会拆分前后两段沿革。「解除并续接」会将「${successor.title}」设为「${predecessor.title}」的直接后继。`
+    : "当前文档将移出这条沿革。";
+  separate.textContent = canReconnect ? "仅解除" : "确认解除";
+  reconnect.hidden = !canReconnect;
+  error.textContent = "";
+  dialog.oncancel = (event) => {
+    if (separate.disabled) event.preventDefault();
+  };
+  const submit = async (button, shouldReconnect) => {
+    if (button.disabled) return;
+    const params = new URLSearchParams({
+      reconnect: String(shouldReconnect),
+      predecessor_id: predecessor?.id ?? "",
+      successor_id: successor?.id ?? "",
+    });
+    error.textContent = "";
+    setBusy(button, true, "解除中");
+    buttons.forEach((control) => { control.disabled = true; });
+    try {
+      await api(`/documents/${encodeURIComponent(doc.id)}/continuation?${params}`, { method: "DELETE" });
+      dialog.close();
+      toast(shouldReconnect ? "延续关系已解除，前后文档已续接" : "延续关系已解除");
+      openDoc(doc.id, citation);
+      loadDocs();
+    } catch (failure) {
+      error.textContent = failure.message;
+    } finally {
+      buttons.forEach((control) => { control.disabled = false; });
+      setBusy(button, false);
+      if (dialog.open) button.focus();
+    }
+  };
+  separate.onclick = () => submit(separate, false);
+  reconnect.onclick = () => submit(reconnect, true);
+  dialog.showModal();
+}
+
+async function openContinuationDialog(doc, citation) {
+  const dialog = $("#continuation-dialog");
+  const closeButton = $("[data-close]", dialog);
+  const body = $("#continuation-dialog-body");
+  body.innerHTML = `
+    <form class="form continuation-form">
+      <div class="continuation-order" role="group" aria-label="文档接续顺序">
+        <div class="field continuation-related">
+          <label id="continuation-other-label" for="continuation-other">前序文档</label>
+          <div data-document-picker></div>
+        </div>
+        <div class="continuation-connector">
+          <span class="continuation-arrow" aria-hidden="true">→</span>
+          <button class="btn" type="button" data-continuation-swap>交换位置</button>
+        </div>
+        <p class="doc-form-current continuation-current">当前文档 <strong>${esc(doc.title)}</strong></p>
+      </div>
+      <p class="doc-hint" id="continuation-placement" hidden></p>
+      <div class="field"><label id="continuation-date-label" for="continuation-date">生效日期</label><div data-date-picker></div></div>
+      <div class="field"><label for="continuation-note">备注（选填）</label><input id="continuation-note" maxlength="500" /></div>
+      <p class="continuation-status" role="status">正在加载可关联的文档…</p>
+      <div class="dialog-actions">
+        <button class="btn" type="button" data-continuation-cancel>取消</button>
+        <button class="btn primary" type="submit" data-continuation-link disabled>建立延续</button>
+      </div>
+    </form>`;
+  const form = $("form", body);
+  const status = $(".continuation-status", form);
+  const save = $("[data-continuation-link]", form);
+  const cancel = $("[data-continuation-cancel]", form);
+  const order = $(".continuation-order", form);
+  const relatedField = $(".continuation-related", order);
+  const currentDocument = $(".continuation-current", order);
+  const connector = $(".continuation-connector", order);
+  const swap = $("[data-continuation-swap]", connector);
+  const relatedLabel = $("#continuation-other-label", relatedField);
+  const isPredecessor = () => order.firstElementChild === relatedField;
+  const relatedDocument = KnowWeavePickers.choice($("[data-document-picker]", form), {
+    id: "continuation-other", label: "前序文档", labelId: "continuation-other-label", placeholder: "选择文档",
+    options: [],
+  });
+  const effective = KnowWeavePickers.date($("[data-date-picker]", form), {
+    id: "continuation-date", label: "生效日期", labelId: "continuation-date-label",
+  });
+  const placement = $("#continuation-placement", form);
+  const effectiveLabel = $("#continuation-date-label", form);
+  const updatePlacement = () => {
+    const before = isPredecessor();
+    const label = before ? "前序文档" : "后继文档";
+    relatedLabel.textContent = label;
+    relatedDocument.setLabel(label);
+    swap.setAttribute("aria-label", `交换位置，将所选文档设为${before ? "后继" : "前序"}`);
+    const inserting = Boolean(before ? doc.continuation?.predecessor_doc_id : doc.continuation?.successor_doc_id);
+    placement.hidden = !inserting;
+    placement.textContent = inserting
+      ? `所选文档将插入${before ? "原前序与当前文档" : "当前文档与原后续"}之间。`
+      : "";
+    effectiveLabel.textContent = before && !inserting ? "当前文档生效日期" : "关联文档生效日期";
+  };
+  swap.addEventListener("click", () => {
+    const before = isPredecessor();
+    relatedDocument.close();
+    connector.before(before ? currentDocument : relatedField);
+    connector.after(before ? relatedField : currentDocument);
+    updatePlacement();
+  });
+  updatePlacement();
+  const showError = (message) => {
+    status.classList.add("danger-text");
+    status.textContent = message;
+  };
+  cancel.onclick = () => dialog.close();
+  dialog.oncancel = (event) => {
+    if (closeButton.disabled) event.preventDefault();
+  };
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    if (save.disabled) return;
+    const other = relatedDocument.trigger.value;
+    const effectiveDate = effective.trigger.value;
+    if (!other || !effectiveDate) {
+      showError(other ? "请选择生效日期" : "请选择关联文档");
+      (other ? effective : relatedDocument).trigger.focus();
+      return;
+    }
+    const note = $("#continuation-note", form).value.trim();
+    status.textContent = "";
+    setBusy(save, true, "保存中");
+    closeButton.disabled = cancel.disabled = swap.disabled = true;
+    try {
+      await api(`/documents/${encodeURIComponent(doc.id)}/continuation`, {
+        method: "POST",
+        body: { other_doc_id: other, relation: isPredecessor() ? "continues" : "continued_by", effective_date: effectiveDate, note },
+      });
+      dialog.close();
+      toast("延续关系已建立");
+      openDoc(doc.id, citation);
+      loadDocs();
+    } catch (error) {
+      showError(error.message);
+    } finally {
+      closeButton.disabled = cancel.disabled = swap.disabled = false;
+      setBusy(save, false);
+    }
+  };
+
+  dialog.showModal();
+  swap.focus();
+  try {
+    const { items } = await api("/documents?limit=200");
+    if (!form.isConnected || !dialog.open) return;
+    const options = items.filter((item) => item.id !== doc.id).map(({ id, title }) => ({ value: id, label: title }));
+    relatedDocument.setOptions(options, "");
+    save.disabled = options.length === 0;
+    status.textContent = options.length ? "" : "没有可关联的文档";
+  } catch (error) {
+    if (form.isConnected && dialog.open) showError(error.message);
+  }
+}
+
+function openPolicyDialog(doc, citation) {
+  const dialog = $("#policy-dialog");
+  const form = $("#policy-form", dialog);
+  const trust = $("#policy-trust", form);
+  const core = $("#policy-core", form);
+  const save = $("#policy-save", form);
+  const error = $("#policy-error", form);
+  const closeButtons = $$("[data-close]", dialog);
+
+  $("#policy-document", form).textContent = doc.title;
+  trust.value = String(doc.source_trust ?? 0.5);
+  core.checked = Boolean(doc.is_core);
+  error.textContent = "";
+  trust.removeAttribute("aria-invalid");
+  trust.oninput = () => {
+    if (!trust.hasAttribute("aria-invalid")) return;
+    trust.removeAttribute("aria-invalid");
+    error.textContent = "";
+  };
+  dialog.oncancel = (event) => {
+    if (save.disabled) event.preventDefault();
+  };
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    if (save.disabled) return;
+    if (!trust.validity.valid) {
+      trust.setAttribute("aria-invalid", "true");
+      error.textContent = "请输入 0 到 1 之间的来源可信度。";
+      trust.focus();
+      return;
+    }
+    const payload = { source_trust: trust.valueAsNumber, is_core: core.checked };
+    error.textContent = "";
+    setBusy(save, true, "保存中");
+    [trust, core, ...closeButtons].forEach((control) => { control.disabled = true; });
+    try {
+      await api(`/documents/${encodeURIComponent(doc.id)}/policy`, { method: "PATCH", body: payload });
+      dialog.close();
+      toast("来源与核心标记已保存");
+      openDoc(doc.id, citation);
+    } catch (failure) {
+      error.textContent = failure.message;
+    } finally {
+      [trust, core, ...closeButtons].forEach((control) => { control.disabled = false; });
+      setBusy(save, false);
+      if (dialog.open) save.focus();
+    }
+  };
+  dialog.showModal();
 }
 
 async function handleDocAction(action, docId, button) {
@@ -1232,19 +1402,11 @@ async function handleDocAction(action, docId, button) {
       setBusy(button, false);
     }
   }
-  if (action === "reindex" || action === "policy") {
-    let payload;
-    if (action === "policy") {
-      const value = prompt("来源可信度（0–1）；追加 core 标记为核心文档，例如：0.8 core", `${button.dataset.trust}${button.dataset.core === 'true' ? ' core' : ''}`);
-      if (value === null) return;
-      const source_trust = Number(value.trim().split(/\s+/)[0]);
-      if (!Number.isFinite(source_trust) || source_trust < 0 || source_trust > 1) { toast("可信度需为0–1"); return; }
-      payload = { source_trust, is_core: /\bcore\b/i.test(value) };
-    }
+  if (action === "reindex") {
     setBusy(button, true, "处理中");
     try {
-      await api(`/documents/${docId}/${action === 'policy' ? 'policy' : 'reprocess'}`, { method: action === 'policy' ? 'PATCH' : 'POST', body: payload || { scope: 'index' } });
-      toast(action === 'policy' ? "文档来源策略已保存" : "所有存储版本的检索索引已重建");
+      await api(`/documents/${docId}/reprocess`, { method: "POST", body: { scope: "index" } });
+      toast("所有存储版本的检索索引已重建");
       await openDoc(docId);
     } catch (error) { toast(error.message); }
     finally { setBusy(button, false); }

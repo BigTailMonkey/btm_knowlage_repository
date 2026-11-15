@@ -370,7 +370,7 @@ test('legacy citations fall back to a matching literal quote without changing th
 
 test('opening a citation requests its recorded version and renders a marked source plus version navigation', async () => {
   const page = frontend(() => ({
-    document: { id: 'doc-a', title: 'Doc <A>', version: 2, status: 'active', source_type: 'text', chunks: 1, quality: 1, acl_label: '全员可见', source_trust: 0.5, content_hash: 'abc123', updated_at: '2023-01-01T00:00:00Z', enrichment_status: 'done', summary: '' },
+    document: { id: 'doc-a', title: 'Doc <A>', version: 2, status: 'active', source_type: 'text', chunks: 1, quality: 1, acl_label: '全员可见', source_trust: 0.5, content_hash: 'abc123', updated_at: '2023-01-01T00:00:00Z', enrichment_status: 'done', summary: '', continuation: { role: 'predecessor', in_force: false } },
     versions: [{ id: 'old-v', version: 1, parser: 'text', hash: 'abc', chars: 8, created_at: '2023-01-01T00:00:00Z' }],
     source: { version_id: 'old-v', version: 1, text: 'old text', coordinate_system: 'normalized-text-utf16' },
     chunks: [{ id: 'old-c', text: 'old text', spans: [{ start: 0, end: 8 }], seq: 0, tokens: 2 }],
@@ -378,13 +378,49 @@ test('opening a citation requests its recorded version and renders a marked sour
   }))
   await page.run('openCitation({doc_id: "doc-a", chunk_id: "old-c", version_id: "old-v"})')
   assert.equal(page.calls[0]!.url, '/api/v1/documents/doc-a?version_id=old-v')
+  const meta = page.element('#doc-dialog-meta').innerHTML
+  assert.doesNotMatch(meta, /已被延续|历史版本/)
+  assert.match(page.element('#doc-dialog-badges').innerHTML, /已被延续.*历史版本/)
+  assert.deepEqual(Array.from(meta.matchAll(/<small>(.*?)<\/small>/g), ([, text]) => text), [
+    '检索单元 1', '查看版本 v1', '原文长度 8 字符', '解析质量 1',
+  ])
   const html = page.element('#doc-dialog-body').innerHTML
   assert.match(html, /data-doc-tab="source"[^>]*>原文/)
-  assert.match(html, /查看版本<\/span><strong>v1/)
+  assert.doesNotMatch(html, /doc-kpis|查看版本|原文长度|解析质量/)
   assert.match(html, /<mark[^>]*>old text<\/mark>/)
   assert.match(html, /data-doc-version="old-v" aria-current="true"/)
   assert.match(html, /data-doc-action="update"/)
   assert.equal(page.element('#doc-dialog-title').textContent, 'Doc <A>')
+})
+
+test('empty entity rail explains by extraction state instead of a bare placeholder', async () => {
+  const documentFor = (enrichment_status: string) => ({
+    document: { id: 'doc-a', title: 'Doc A', version: 1, status: 'active', source_type: 'text', chunks: 1, quality: 1, acl_label: '全员可见', source_trust: 0.5, content_hash: 'abc123', updated_at: '2023-01-01T00:00:00Z', enrichment_status, summary: '' },
+    versions: [{ id: 'v1', version: 1, parser: 'text', hash: 'abc', chars: 8, created_at: '2023-01-01T00:00:00Z' }],
+    source: { version_id: 'v1', version: 1, text: 'old text', coordinate_system: 'normalized-text-utf16' },
+    chunks: [], facts: [], entities: [],
+  })
+  const railFor = async (status: string) => {
+    const page = frontend(() => documentFor(status))
+    await page.run('openDoc("doc-a")')
+    const html = page.element('#doc-dialog-body').innerHTML as string
+    return html.slice(html.indexOf('<h3>关联实体</h3>'), html.indexOf('移入回收站'))
+  }
+
+  // empty：状态说明已经解释了为什么为空，不再出现第二句占位。
+  const emptyRail = await railFor('empty')
+  assert.match(emptyRail, /未找到有原文依据的事实/)
+  assert.doesNotMatch(emptyRail, /暂无|尚未抽取到关联实体/)
+
+  // 未抽完：说明数据还没就绪，而不是「没有」。
+  for (const status of ['pending', 'running', 'deferred', 'failed']) {
+    assert.match(await railFor(status), /尚未抽取到关联实体/)
+  }
+
+  // done 但没有可展示实体：如实说明是被证据/实体名校验过滤掉了。
+  const doneRail = await railFor('done')
+  assert.match(doneRail, /抽取完成，但事实未通过可见原文证据或实体名校验/)
+  assert.doesNotMatch(doneRail, /暂无/)
 })
 
 test('document updates send doc_id in text, URL and multipart requests and clear it on close', async () => {

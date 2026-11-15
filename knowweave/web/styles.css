@@ -600,7 +600,8 @@ svg { display: block; }
 .table tbody tr:focus-visible { outline-offset: -2px; }
 
 .cell-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.cell-title .pill { align-self: flex-start; }
+.doc-title-line { display: flex; align-items: center; gap: 4px 8px; min-width: 0; }
+.doc-title-line .pill { flex: none; }
 .cell-title strong {
   font-size: 14px;
   font-weight: 500;
@@ -608,7 +609,7 @@ svg { display: block; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cell-title span {
+.cell-title > span {
   font-size: 13px;
   color: var(--muted);
   overflow: hidden;
@@ -2362,7 +2363,10 @@ body[data-page="review"] .stage-wrap { display: flex; flex-direction: column; mi
 }
 .doc-dialog[open] { display: flex; flex-direction: column; }
 .doc-dialog .dialog-head { flex: none; align-items: flex-start; padding: 16px 22px 14px; }
-.doc-head-main { min-width: 0; }
+.doc-head-main { flex: 1; min-width: 0; }
+.doc-head-main .doc-title-line { flex-wrap: wrap; }
+.doc-head-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.doc-head-badges:empty { display: none; }
 .doc-dialog .dialog-head h2 {
   font-size: 20px;
   line-height: 1.35;
@@ -2373,7 +2377,8 @@ body[data-page="review"] .stage-wrap { display: flex; flex-direction: column; mi
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.doc-head-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 5px; color: var(--muted); font-size: 12px; }
+.doc-head-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 5px; color: var(--muted); font-size: 12px; }
+.doc-head-meta small { font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .doc-dialog .dialog-body { flex: 1; min-height: 0; max-height: none; padding: 0; overflow: hidden; }
 .doc-dialog .icon-btn { flex: none; margin-top: -2px; }
 .doc-head-info { display: none; }
@@ -2382,26 +2387,21 @@ body[data-page="review"] .stage-wrap { display: flex; flex-direction: column; mi
 .doc-rail {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+  background: var(--raised);
+}
+.doc-rail-scroll {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
   gap: 20px;
   min-height: 0;
   padding: 18px 20px 20px;
-  border-right: 1px solid var(--border);
-  background: var(--raised);
   overflow: auto;
 }
-.doc-rail > * { flex: none; }
-.doc-kpis {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  border: 1px solid var(--border);
-  border-radius: var(--radius-card);
-  background: var(--surface);
-  overflow: hidden;
-}
-.doc-kpi { padding: 9px 8px 10px; }
-.doc-kpi:not(:first-child) { border-left: 1px solid var(--rule); }
-.doc-kpi span { display: block; color: var(--muted); font-size: 11px; }
-.doc-kpi strong { display: block; margin-top: 2px; font-size: 15px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.doc-rail-scroll > * { flex: none; }
+.doc-rail-danger { flex: none; padding: 12px 20px; border-top: 1px solid var(--border); }
 
 .doc-rail-section { display: flex; flex-direction: column; gap: 8px; }
 .doc-rail-section h3 { font-size: 12.5px; font-weight: 600; }
@@ -2427,22 +2427,58 @@ body[data-page="review"] .stage-wrap { display: flex; flex-direction: column; mi
 .doc-chain-node.is-current::before { background: var(--accent); }
 .doc-chain-title { font-size: 12.5px; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
 .doc-chain-meta { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
-.doc-chain-actions { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; color: var(--muted); font-size: 11.5px; }
-.doc-chain-actions span { min-width: 0; overflow-wrap: anywhere; }
 .text-btn.danger, .danger-text { color: var(--negative); }
 
-.doc-link summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border: 1px solid var(--control); border-radius: var(--radius-control); background: var(--surface); color: var(--text); font-size: 12px; font-weight: 500; cursor: pointer; list-style: none; }
-.doc-link summary:hover { background: var(--raised); border-color: #b8c1c3; }
-.doc-link summary::-webkit-details-marker { display: none; }
-.doc-link summary::after { content: "+"; color: var(--faint); font-size: 14px; line-height: 1; }
-.doc-link[open] summary::after { content: "−"; }
-.doc-link-fields { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
-.doc-field { display: flex; flex-direction: column; gap: 4px; }
-.doc-field > span, .doc-field > label { color: var(--muted); font-size: 12px; }
-.doc-field > input { width: 100%; height: 32px; min-width: 0; padding: 0 8px; border: 1px solid var(--control); border-radius: var(--radius-control); background: var(--surface); color: var(--text); font: inherit; font-size: 12.5px; }
-.doc-field .kw-picker-trigger { min-height: 32px; font-size: 12.5px; }
-.doc-link-fields .btn { margin-top: 2px; height: 32px; }
-.doc-rail-danger { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--border); }
+.doc-form-current { padding: 10px 12px; border-radius: var(--radius-control); background: var(--raised); color: var(--muted); overflow-wrap: anywhere; }
+.doc-form-current strong { display: block; margin-top: 3px; color: var(--text); font-weight: 500; }
+.continuation-order { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 10px; }
+.continuation-related { min-width: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-control); }
+.continuation-connector { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; }
+.continuation-arrow { color: var(--accent); font-size: 23px; line-height: 1; }
+.continuation-connector .btn { height: 30px; padding: 0 8px; font-size: 12px; }
+.continuation-form .kw-picker-value { white-space: normal; overflow-wrap: anywhere; }
+.continuation-status { font-size: 13px; overflow-wrap: anywhere; }
+.continuation-status:empty { position: absolute; }
+.continuation-form .dialog-actions { margin-top: 4px; }
+#unlink-continuation-note { color: var(--muted); line-height: 1.65; overflow-wrap: anywhere; }
+#unlink-continuation-dialog .dialog-actions { flex-wrap: wrap; margin-top: 0; }
+.policy-setting { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--rule); }
+.policy-setting-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.policy-setting-row label { font-size: 14px; font-weight: 600; }
+.policy-setting p { margin-top: 6px; color: var(--muted); font-size: 13px; line-height: 1.65; }
+#policy-trust {
+  width: 92px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--control);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  appearance: textfield;
+}
+#policy-trust::-webkit-inner-spin-button { appearance: none; }
+#policy-trust[aria-invalid="true"] { border-color: var(--negative); }
+.policy-switch {
+  appearance: none;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  width: 42px;
+  height: 24px;
+  padding: 3px;
+  border: 1px solid var(--control);
+  border-radius: 999px;
+  background: var(--raised);
+  color: var(--muted);
+  cursor: pointer;
+}
+.policy-switch::before { content: ""; width: 16px; height: 16px; border-radius: 50%; background: currentColor; }
+.policy-switch:checked { justify-content: flex-end; border-color: var(--accent); background: var(--accent); color: white; }
+.policy-switch:disabled { opacity: 0.55; cursor: default; }
+.policy-error { margin-top: 12px; font-size: 13px; overflow-wrap: anywhere; }
+.policy-error:empty { position: absolute; margin: 0; }
 .doc-hint { color: var(--muted); font-size: 11.5px; line-height: 1.6; }
 
 .doc-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--surface); }
@@ -2860,7 +2896,7 @@ body[data-page="review"] .stage-wrap { display: flex; flex-direction: column; mi
   .docs-table td { padding: 0; border: 0; }
   .docs-table td:not(:first-child) { display: none; }
   .docs-table tr:hover { background: transparent; }
-  .cell-title span { max-width: none; }
+  .cell-title > span { max-width: none; }
   .cell-inline { display: block; margin-top: 2px; }
 
   .ask-composer { padding: 10px 12px 9px; }
@@ -2992,13 +3028,9 @@ body[data-page="review"] .stage-wrap { display: flex; flex-direction: column; mi
   .doc-tabs-wrap { position: sticky; top: 0; z-index: 2; padding: 0 16px; background: var(--surface); }
   .doc-panels { flex: none; min-height: 0; }
   .doc-panel { height: auto; padding: 16px 16px 24px; overflow: visible; }
-  .doc-rail { gap: 18px; padding: 18px 16px 24px; border-top: 1px solid var(--border); border-right: 0; overflow: visible; }
-  .doc-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .doc-kpi { padding: 8px 9px 9px; }
-  .doc-kpi:nth-child(odd) { border-right: 0; }
-  .doc-kpi:not(:first-child) { border-left: 1px solid var(--rule); }
-  .doc-kpi:nth-child(n + 3) { border-top: 0; }
-  .doc-kpi strong { font-size: 15px; }
+  .doc-rail { border-top: 1px solid var(--border); border-right: 0; }
+  .doc-rail-scroll { flex: none; gap: 18px; padding: 18px 16px; overflow: visible; }
+  .doc-rail-danger { padding: 12px 16px; }
   .doc-source { padding: 14px; font-size: 13.5px; }
   .doc-panel-toolbar { align-items: flex-start; }
   .doc-panel-note { line-height: 1.5; }
@@ -3007,10 +3039,9 @@ body[data-page="review"] .stage-wrap { display: flex; flex-direction: column; mi
 }
 
 @media (max-width: 520px) {
-  .doc-kpis { grid-template-columns: 1fr 1fr; }
-  .doc-kpi:not(:first-child) { border-left: 0; }
-  .doc-kpi:nth-child(odd) { border-right: 1px solid var(--rule); }
-  .doc-kpi:nth-child(n + 3) { border-top: 1px solid var(--rule); }
+  .continuation-order { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .continuation-connector { flex-direction: row; gap: 8px; }
+  .continuation-arrow { transform: rotate(90deg); }
   .doc-panel-toolbar { flex-direction: column; gap: 6px; }
   .doc-panel-tools { width: 100%; justify-content: space-between; }
 }

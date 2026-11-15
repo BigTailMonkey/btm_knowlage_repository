@@ -448,13 +448,70 @@
   <dialog class="dialog wide doc-dialog" id="doc-dialog" aria-labelledby="doc-dialog-title">
     <div class="dialog-head doc-dialog-head">
       <div class="doc-head-main">
-        <h2 id="doc-dialog-title"></h2>
+        <div class="doc-title-line">
+          <h2 id="doc-dialog-title"></h2>
+          <div class="doc-head-badges" id="doc-dialog-badges"></div>
+        </div>
         <p class="doc-head-meta" id="doc-dialog-meta"></p>
       </div>
       <button class="icon-btn doc-head-info" type="button" data-doc-info aria-label="文档信息与操作"><svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="5.6"/><path d="M8 7.2v3.4M8 5.2v.2"/></svg></button>
       <button class="icon-btn" data-close aria-label="关闭"><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button>
     </div>
     <div class="dialog-body" id="doc-dialog-body"></div>
+  </dialog>
+
+  <dialog class="dialog" id="continuation-dialog" aria-labelledby="continuation-title">
+    <div class="dialog-head">
+      <h2 id="continuation-title">登记延续关系</h2>
+      <button class="icon-btn" type="button" data-close aria-label="关闭"><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button>
+    </div>
+    <div class="dialog-body" id="continuation-dialog-body"></div>
+  </dialog>
+
+  <dialog class="dialog" id="unlink-continuation-dialog" aria-labelledby="unlink-continuation-title" aria-describedby="unlink-continuation-note">
+    <div class="dialog-head">
+      <h2 id="unlink-continuation-title">解除延续</h2>
+      <button class="icon-btn" type="button" data-close aria-label="关闭"><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button>
+    </div>
+    <div class="dialog-body form">
+      <p class="doc-form-current">当前文档 <strong id="unlink-continuation-document"></strong></p>
+      <p id="unlink-continuation-note"></p>
+      <p class="continuation-status danger-text" id="unlink-continuation-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="btn" type="button" data-close autofocus>取消</button>
+        <button class="btn danger" type="button" data-unlink-confirm="separate">仅解除</button>
+        <button class="btn primary" type="button" data-unlink-confirm="reconnect">解除并续接</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog class="dialog" id="policy-dialog" aria-labelledby="policy-title" aria-describedby="policy-document">
+    <div class="dialog-head">
+      <h2 id="policy-title">来源与核心标记</h2>
+      <button class="icon-btn" type="button" data-close aria-label="关闭"><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button>
+    </div>
+    <form class="dialog-body" id="policy-form" novalidate>
+      <p class="doc-form-current">当前文档 <strong id="policy-document"></strong></p>
+      <section class="policy-setting" aria-labelledby="policy-trust-label">
+        <div class="policy-setting-row">
+          <label id="policy-trust-label" for="policy-trust">来源可信度</label>
+          <input id="policy-trust" type="number" inputmode="decimal" min="0" max="1" step="any" required aria-describedby="policy-trust-help" autofocus />
+        </div>
+        <p id="policy-trust-help">手动评估来源的可靠程度，范围 0–1，默认 0.5。保存后，系统会结合可信度和解析质量更新这篇文档的证据权重。事实发生冲突时，权重越高，这篇文档提供的证据分量越大。</p>
+      </section>
+      <section class="policy-setting" aria-labelledby="policy-core-label">
+        <div class="policy-setting-row">
+          <label id="policy-core-label" for="policy-core">标记为核心文档</label>
+          <input class="policy-switch" id="policy-core" type="checkbox" role="switch" aria-describedby="policy-core-help" />
+        </div>
+        <p id="policy-core-help">用于标记需要抽取事实的关键资料。保存时，如果开启核心标记，或来源可信度为 0.8 及以上，系统会安排后台事实抽取。</p>
+      </section>
+      <p class="policy-error danger-text" id="policy-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="btn" type="button" data-close>取消</button>
+        <button class="btn primary" type="submit" id="policy-save">保存</button>
+      </div>
+    </form>
   </dialog>
 
   <dialog class="dialog" id="ingest-dialog" aria-labelledby="ingest-title">
