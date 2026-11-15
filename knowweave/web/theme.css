@@ -1,0 +1,45 @@
+:root {
+  --kw-ground: #fffefa;
+  --kw-primary: #b0d5df;
+  --kw-success: #83cbac;
+  --kw-warning: #f8c471;
+
+  --kw-surface: var(--kw-ground);
+  --kw-raised: #edf7f9;
+  --kw-active: #d8edf3;
+  --kw-border: #dcebef;
+  --kw-control: #a2bbc3;
+  --kw-control-hover: #87b7c5;
+  --kw-text: #153e49;
+  --kw-muted: #38636e;
+  --kw-accent: #245f70;
+  --kw-primary-hover: #a2cbd7;
+  --kw-primary-ink: #173945;
+  --kw-success-ink: #193e31;
+  --kw-warning-ink: #513410;
+  --kw-success-text: #236045;
+  --kw-warning-text: #815317;
+  --kw-danger: #a12626;
+  --kw-danger-pale: #fbe9e7;
+  --kw-danger-border: #e4c8c6;
+  --kw-shadow-ink: #10252d;
+}
+
+/* DSH applies its resolved appearance to the body, including an explicit dark preference. */
+body[data-ds-dark-theme] {
+  --kw-ground: #102a34;
+  --kw-surface: #163743;
+  --kw-raised: #193e4b;
+  --kw-active: #235263;
+  --kw-border: #2c5561;
+  --kw-control: #527987;
+  --kw-control-hover: #77a9b8;
+  --kw-text: #e6f5f8;
+  --kw-muted: #aed6df;
+  --kw-accent: #b8e0ea;
+  --kw-success-text: var(--kw-success);
+  --kw-warning-text: var(--kw-warning);
+  --kw-danger: #ffb3ae;
+  --kw-danger-pale: #462d32;
+  --kw-danger-border: #78525a;
+}
