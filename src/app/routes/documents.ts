@@ -1,8 +1,4 @@
 import { FastifyInstance } from 'fastify'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { createConverter } from '@deepseek-ai/libreoffice-kit'
 
 import { authenticate, currentPrincipal } from '../server.js'
 import { settings } from '../../config.js'
@@ -10,6 +6,7 @@ import { query, queryOne } from '../../db/index.js'
 import { chunkDict, documentDict, entityDict, factDict } from '../../core/serializers.js'
 import { decideIngestDuplicate, ingestParsed, savedIngestJobs, retryIngestJob, submitIngest } from '../../core/ingestion.js'
 import { parseBytes, parseTextContent } from '../../adapters/parsing/index.js'
+import { convertWord } from '../../adapters/parsing/word.js'
 import { requireEditor, canRead } from '../../core/security.js'
 import { isEntityName } from '../../core/learning.js'
 import { enrichmentTasks, processEnrichmentQueue, requestEnrichment } from '../../core/enrichment-queue.js'
@@ -38,36 +35,38 @@ async function visibleDocument(principal: ReturnType<typeof currentPrincipal>, d
   return document
 }
 
-let activeWordPreviews = 0
+const ORIGINAL_FILE_TYPES = {
+  pdf: 'application/pdf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+}
 
-async function renderWordPreview(data: Buffer, signal: AbortSignal): Promise<Buffer> {
-  if (activeWordPreviews >= 2) throw Object.assign(new Error('文档转换繁忙，请稍后重试'), { statusCode: 503 })
-  activeWordPreviews += 1
-  let directory: string | undefined
-  let converter: Awaited<ReturnType<typeof createConverter>> | undefined
-  try {
-    directory = await mkdtemp(join(tmpdir(), 'knowweave-preview-'))
-    const inputPath = join(directory, 'source.docx')
-    const outputPath = join(directory, 'preview.pdf')
-    await writeFile(inputPath, data, { mode: 0o600, signal })
-    converter = await createConverter({
-      timeoutMs: 30_000,
-      maxInputBytes: 30 * 1024 * 1024,
-      maxOutputBytes: 50 * 1024 * 1024,
-      fontMetadataCacheDirectory: false,
-    })
-    await converter.render({ inputPath, outputPath }, signal)
-    return await readFile(outputPath, { signal })
-  } catch {
-    throw Object.assign(new Error('Word 版式预览暂不可用'), { statusCode: 422 })
-  } finally {
-    try {
-      await converter?.dispose()
-    } finally {
-      activeWordPreviews -= 1
-      if (directory) await rm(directory, { recursive: true, force: true })
-    }
+async function versionFile(version: VersionRow, includeData = false) {
+  if (typeof version.meta.source_pdf_hash === 'string') {
+    const pdf = await queryOne<{ filename: string; data: string | null }>(
+      `SELECT payload #>> ARRAY['source_pdfs', $4, 'filename'] AS filename,
+              CASE WHEN $5::boolean THEN payload #>> ARRAY['source_pdfs', $4, 'data'] END AS data
+       FROM jobs WHERE tenant_id = $1 AND payload->>'doc_id' = $2 AND id = $3
+         AND type = 'ingest' AND payload->>'source' = 'url' AND (payload->'source_pdfs') ? $4`,
+      [version.tenant_id, version.doc_id, version.meta.source_job_id ?? null, version.meta.source_pdf_hash, includeData],
+    )
+    return pdf ? { ...pdf, type: 'pdf' as const } : null
   }
+  const upload = await queryOne<{ filename: string; data: string | null }>(
+    `SELECT payload #>> '{request,filename}' AS filename,
+            CASE WHEN $6::boolean THEN payload #>> '{request,data}' END AS data
+     FROM jobs WHERE tenant_id = $1 AND type = 'ingest' AND payload->>'source' = 'file'
+       AND payload->>'doc_id' = $2
+       AND (payload #>> '{request,filename}') ~* '\\.(pdf|docx?)$'
+       AND coalesce(payload #>> '{request,data}', '') <> ''
+       AND (id = $5 OR (payload->>'version' = $3 AND input_hash = $4))
+     ORDER BY (id = $5) DESC NULLS LAST, created_at DESC LIMIT 1`,
+    [version.tenant_id, version.doc_id, String(version.version), version.hash, version.meta.source_job_id ?? null, includeData],
+  )
+  if (!upload) return null
+  const filename = upload.filename.split(/[/\\]/).at(-1)!
+  const type = filename.split('.').at(-1)!.toLowerCase() as keyof typeof ORIGINAL_FILE_TYPES
+  return { filename, type, data: upload.data }
 }
 
 export async function documentRoutes(app: FastifyInstance): Promise<void> {
@@ -243,6 +242,7 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
        ORDER BY seq`,
       [document.id, selectedVersion.id],
     )
+    const file = chunks.every((chunk) => canRead(principal, chunk.acl_principals)) ? await versionFile(selectedVersion) : null
     const sourcedFacts = await query<FactRow & { displayable: boolean }>(
       `SELECT f.*, ${DISPLAYABLE_FACT} AS displayable FROM facts f
        WHERE f.tenant_id = $1 AND EXISTS (
@@ -280,7 +280,11 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
         chars: version.text.length,
         created_at: version.created_at,
       })),
-      source: { version_id: selectedVersion.id, version: selectedVersion.version, text: selectedVersion.text, parser: selectedVersion.parser, coordinate_system: selectedVersion.meta.coordinate_system ?? null },
+      source: {
+        version_id: selectedVersion.id, version: selectedVersion.version, text: selectedVersion.text, parser: selectedVersion.parser,
+        coordinate_system: selectedVersion.meta.coordinate_system ?? null,
+        file: file ? { filename: file.filename, type: file.type } : null,
+      },
       chunks: chunks.map((chunk) => ({ ...chunkDict(chunk, document), version_id: selectedVersion.id, bbox: chunk.bbox, spans: (selectedVersion.meta.chunk_spans as Record<string, unknown> | undefined)?.[chunk.id] ?? [] })),
       facts,
       entities,
@@ -310,29 +314,29 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
     if (chunkId && !cited) throw unavailable()
     const partial = visibleChunks.length !== chunks.length
     if (partial && !visibleChunks.length) throw unavailable()
-    const wantsPdf = format === 'pdf'
-    const upload = partial ? null : await queryOne<{ filename: string; data: string | null }>(
-      `SELECT payload #>> '{request,filename}' AS filename,
-              CASE WHEN $6::boolean THEN payload #>> '{request,data}' END AS data
-       FROM jobs WHERE tenant_id = $1 AND type = 'ingest' AND payload->>'source' = 'file'
-         AND payload->>'doc_id' = $2
-         AND (payload #>> '{request,filename}') ~* '\\.(pdf|docx)$'
-         AND coalesce(payload #>> '{request,data}', '') <> ''
-         AND (id = $5 OR (payload->>'version' = $3 AND input_hash = $4))
-       ORDER BY (id = $5) DESC NULLS LAST, created_at DESC LIMIT 1`,
-      [principal.tenantId, document.id, String(version.version), version.hash, version.meta.source_job_id ?? null, wantsPdf],
-    )
-    const fileType = upload?.filename.toLowerCase().endsWith('.pdf') ? 'pdf' : upload ? 'docx' : null
-    if (wantsPdf) {
-      if (!upload?.data) throw unavailable()
-      const bytes = Buffer.from(upload.data, 'base64')
-      if (fileType === 'pdf' && !bytes.subarray(0, 1024).includes('%PDF-')) throw unavailable()
+    const wantsFile = format === 'pdf' || format === 'original'
+    const file = partial ? null : await versionFile(version, wantsFile)
+    if (wantsFile) {
+      if (!file?.data) throw unavailable()
+      const bytes = Buffer.from(file.data, 'base64')
+      reply.header('X-Content-Type-Options', 'nosniff')
+      if (format === 'original') {
+        const filename = encodeURIComponent(file.filename).replace(/['()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16)}`)
+        return reply.type(ORIGINAL_FILE_TYPES[file.type]).header('Content-Disposition', `attachment; filename*=UTF-8''${filename}`).send(bytes)
+      }
+      if (file.type === 'pdf') {
+        if (!bytes.subarray(0, 1024).includes('%PDF-')) throw unavailable()
+        return reply.type('application/pdf').send(bytes)
+      }
       const controller = new AbortController()
       const abort = () => controller.abort()
       reply.raw.once('close', abort)
       try {
-        const pdf = fileType === 'docx' ? await renderWordPreview(bytes, controller.signal) : bytes
-        return reply.type('application/pdf').header('X-Content-Type-Options', 'nosniff').send(pdf)
+        const pdf = await convertWord(bytes, file.type, 'pdf', controller.signal)
+        return reply.type('application/pdf').send(pdf)
+      } catch (error) {
+        if ((error as { statusCode?: number }).statusCode === 503) throw error
+        throw Object.assign(new Error('Word 版式预览暂不可用'), { statusCode: 422 })
       } finally {
         reply.raw.off('close', abort)
       }
@@ -342,7 +346,7 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
       title: document.title,
       version: version.version,
       page: cited?.page ?? null,
-      file_type: fileType,
+      file_type: file?.type ?? null,
       source: { text: partial ? (cited ? cited.text : visibleChunks.map((chunk) => chunk.text).join('\n\n')) : version.text },
       chunks: cited ? [{ id: cited.id, spans: partial ? [{ start: 0, end: cited.text.length }] : spans?.[cited.id] ?? [], text: cited.text }] : [],
     }

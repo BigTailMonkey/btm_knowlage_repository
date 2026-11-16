@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { testWorkspace } from './helpers.js'
 import { createServer } from '../src/app/server.js'
-import { ingestParsed } from '../src/core/ingestion.js'
+import { ingestParsed, processIngestQueue } from '../src/core/ingestion.js'
 import { parseText } from '../src/adapters/parsing/index.js'
+import { settings } from '../src/config.js'
 import { query, queryOne } from '../src/db/index.js'
 
 test('document API returns exact historical source and persisted UTF-16 citation ranges', async () => {
@@ -107,14 +108,67 @@ test('chat citation previews stay on the cited version and check source permissi
     assert.equal(preview.version, 1)
     assert.equal(preview.file_type, 'pdf')
     assert.deepEqual(preview.chunks[0].spans.map(({ start, end }: { start: number; end: number }) => ({ start, end })), [{ start: 0, end: source.length }])
+    const detail = (version?: unknown) => app.inject({
+      url: `/api/v1/documents/${first.document_id}${version ? `?version_id=${version}` : ''}`, headers: workspace.headers,
+    })
+    assert.deepEqual((await detail(versionId)).json().source.file, { filename: 'history.pdf', type: 'pdf' })
+    assert.equal((await detail()).json().source.file, null)
     const file = await get('&format=pdf')
     assert.equal(file.statusCode, 200)
     assert.equal(file.headers['content-type'], 'application/pdf')
     assert.deepEqual(file.rawPayload, pdf)
+    const original = await get('&format=original')
+    assert.equal(original.headers['content-disposition'], "attachment; filename*=UTF-8''history.pdf")
+    assert.deepEqual(original.rawPayload, pdf)
     assert.equal((await get('&format=pdf', {})).statusCode, 401)
     assert.equal((await app.inject({ url: url.replace(String(versionId), String(second.version_id)), headers: workspace.headers })).statusCode, 404)
     await query("UPDATE chunks SET acl_principals = '[\"user:other\"]'::jsonb WHERE id = $1", [chunk!.id])
     assert.equal((await get()).statusCode, 404)
     assert.equal((await get('&format=pdf')).statusCode, 404)
+    assert.equal((await get('&format=original')).statusCode, 404)
+    assert.equal((await detail(versionId)).json().source.file, null)
   } finally { await app.close(); await workspace.close() }
+})
+
+test('PDFs imported by URL preserve each version of the fetched file', async (t) => {
+  const workspace = await testWorkspace()
+  const app = await createServer()
+  app.log.level = 'silent'
+  settings.sidecarEnabled = true
+  const url = 'https://source.invalid/history.pdf?download=1'
+  const first = '%PDF-1.7\nFirst published PDF document.\n%%EOF\n'
+  const second = '%PDF-1.7\nSecond published PDF document.\n%%EOF\n'
+  let body = first
+  t.mock.method(globalThis, 'fetch', async (target: string, options?: RequestInit) => {
+    if (target === url) return new Response(body)
+    if (target.endsWith('/health')) return Response.json({ status: 'ok' })
+    assert.ok(target.endsWith('/parse'))
+    const input = JSON.parse(String(options?.body))
+    assert.equal(input.filename, 'history.pdf')
+    return Response.json({ ...parseText(Buffer.from(input.data, 'base64').toString(), 'URL PDF'), quality: 1 })
+  })
+  const request = (path: string, payload?: unknown) => app.inject({
+    method: payload ? 'POST' : 'GET', url: `/api/v1/documents${path}`,
+    headers: workspace.headers, payload: payload as Record<string, unknown> | undefined,
+  })
+  try {
+    const { job_id: jobId } = (await request('/url', { url })).json()
+    await processIngestQueue()
+    const job = (await request('/jobs')).json().items.find((item: { job_id: string }) => item.job_id === jobId)
+    assert.equal(job.status, 'done', job.error)
+    const path = `/${job.doc_id}`
+    const v1 = (await request(path)).json().source
+    assert.deepEqual(v1.file, { filename: 'history.pdf', type: 'pdf' })
+    body = second
+    assert.equal((await request(`/jobs/${jobId}/retry`, { stage: 'parse' })).statusCode, 200)
+    await processIngestQueue()
+    const v2 = (await request(path)).json().source
+    assert.equal(v2.version, 2)
+    assert.equal((await request(`${path}/citation/${v1.version_id}?format=pdf`)).body, first)
+    assert.equal((await request(`${path}/citation/${v2.version_id}?format=original`)).body, second)
+  } finally {
+    settings.sidecarEnabled = false
+    await app.close()
+    await workspace.close()
+  }
 })

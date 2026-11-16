@@ -54,7 +54,7 @@ function frontend(respond: (url: string, options: Record<string, unknown>) => un
     console,
     FormData: Form,
     KnowWeavePickers: {
-      choice: (_root: unknown, config: { options: Array<{ value: string }> }) => ({ trigger: { value: config.options[0]?.value ?? '' } }),
+      choice: (_root: unknown, config: { options: Array<{ value: string }> }) => ({ trigger: { value: config.options[0]?.value ?? '' }, close() {} }),
       date: () => ({ trigger: { value: '' } }),
     },
     URL,
@@ -101,6 +101,37 @@ function frontend(respond: (url: string, options: Record<string, unknown>) => un
   }
   return { context, nodes, calls, element, dispatch, run: (code: string) => vm.runInContext(code, context) }
 }
+
+test('the research result explains rejected evidence and links failed claims to their sources', async () => {
+  const page = frontend()
+  const source = { index: 1, doc_id: 'doc', doc_title: '文件上传规范', version_id: 'v2', page: 7, quote: '上限为30MB。', rerank: 0.589 }
+  const excluded = { doc_id: 'old', doc_title: '上传记录', version_id: 'v1', page: 5, quote: '上传次数不限。', rerank: 0.2, reason: 'answer_limit' }
+  const button = page.element('failure-source')
+  button.dataset.failureSource = '1'
+  page.element('#ask-result').querySelectorAll = (selector: string) => selector === '[data-failure-source]' ? [button] : []
+  page.context.sample = {
+    refused: true, answer: '生成回答未通过核验。', failure: {
+      stage: 'grounding', queries: ['上限 <多少>'], selected: [source], excluded: [excluded],
+      ranked_count: 2, excluded_count: 1, query_limit_count: 0, acl_excluded_count: 0, fusion_excluded_count: 0, top_score: 0.589, threshold: 0.306,
+      verification: { sentences: 3, supported: 1, issues: [
+        { claim: '上限为999GB <错误>', evidence_indices: [1], reasons: ['原文中未找到999GB'] },
+        { claim: '还可以申请提高上限。', evidence_indices: [], reasons: ['这条表述没有引用原文'] },
+      ] },
+    },
+  }
+  page.run('let openedSource; openCitation = (item) => { openedSource = item }; renderAsk(sample, "上限是多少");')
+  const html = page.element('#ask-result').innerHTML
+  assert.match(html, /检索到了什么[\s\S]*文件上传规范[\s\S]*上限为30MB/)
+  assert.match(html, /哪些片段未采用[\s\S]*上传记录[\s\S]*排序超出本轮作答片段名额/)
+  assert.match(html, /为什么无法回答[\s\S]*0\.589 已达到作答阈值 0\.306/)
+  assert.match(html, /问答模型收到你的问题和本轮入围的原文片段[\s\S]*模型草稿中的 3 条表述有 1 条通过原文核验/)
+  assert.match(html, /模型生成的表述（未通过核验）[\s\S]*999GB &lt;错误&gt;[\s\S]*原文中未找到999GB[\s\S]*模型标注的原文[\s\S]*片段 \[1\]/)
+  assert.match(html, /还可以申请提高上限。[\s\S]*这条表述没有引用原文。系统无法根据引用定位这句话对应的原文。<\/p>\s*<\/li>/)
+  assert.match(html, /上限 &lt;多少&gt;/)
+  assert.doesNotMatch(html, /基于 .*条证据|data-cite=/)
+  button.handlers.click()
+  assert.equal(page.run('openedSource'), excluded)
+})
 
 test('navigation restores path URLs and migrates old bookmarks without adding history entries', () => {
   const page = frontend();
@@ -162,7 +193,10 @@ test('library stacks continuation chains behind the in-force document until it i
       continuation: { role: 'predecessor', predecessor_doc_id: null, successor_doc_id: 'current', effective_date: '2026-02-01', in_force: false } },
     { id: 'current', title: '门诊通知', source_type: 'text', status: 'active', version: 2, chunks: 5, acl_label: '全员可见',
       summary: '新版排班', updated_at: '2026-02-01', in_force: true,
-      continuation: { role: 'successor', predecessor_doc_id: 'old', successor_doc_id: null, effective_date: '2026-02-01', in_force: true } },
+      continuation: { role: 'predecessor', predecessor_doc_id: 'old', successor_doc_id: 'scheduled', effective_date: '2026-02-01', in_force: true } },
+    { id: 'scheduled', title: '未来门诊通知', source_type: 'docx', status: 'active', version: 1, chunks: 3, acl_label: '全员可见',
+      summary: '', updated_at: '2026-03-02', in_force: false,
+      continuation: { role: 'successor', predecessor_doc_id: 'current', successor_doc_id: null, effective_date: '2099-01-01', in_force: false } },
     { id: 'contract', title: '独立合同', source_type: 'pdf', status: 'active', version: 1, chunks: 2, acl_label: '全员可见',
       summary: '合同正文', updated_at: '2026-03-01', in_force: true, continuation: null },
   ]
@@ -176,11 +210,13 @@ test('library stacks continuation chains behind the in-force document until it i
   page.run('renderDocs()')
   const html = body.innerHTML
   assert.match(html, /data-doc="current"[^>]*data-stack-head="old"/)
-  assert.match(html, /data-doc="old"[^>]*data-stack-child="old" hidden[^>]*>/)
+  assert.match(html, /aria-expanded="false" aria-controls="doc-stack-old"/)
+  assert.match(html, /展开沿革<\/span><span class="doc-stack-count">2 篇/)
+  assert.match(html, /id="doc-stack-old" hidden>[\s\S]*data-doc="old" href="\/library\/old"[\s\S]*data-doc="scheduled" href="\/library\/scheduled"/)
   assert.match(html, /data-doc="contract"/)
   assert.doesNotMatch(html, /data-stack-head="contract"/)
-  assert.equal(page.element('#doc-count').textContent, '2 篇现行 · 1 篇沿革')
-  assert.equal(page.element('#doc-view-hint').hidden, false)
+  assert.equal(page.element('#doc-count').textContent, '2 篇现行 · 2 篇沿革')
+  assert.equal(page.nodes.has('#doc-view-hint'), false)
 
   // 搜到被延续的旧标题时，链上现行的那篇仍然要出现，否则堆叠视图会像是丢了文档
   page.element('#doc-search').value = '门诊须知'
@@ -188,19 +224,24 @@ test('library stacks continuation chains behind the in-force document until it i
   assert.match(body.innerHTML, /data-doc="current"[^>]*data-stack-head="old"/)
   assert.doesNotMatch(body.innerHTML, /data-doc="contract"/)
 
-  const child = Object.assign(page.element('doc-stack-child'), { dataset: { stackChild: 'old' }, hidden: true })
+  const panel = Object.assign(page.element('#doc-stack-old'), { hidden: true })
+  const label = page.element('[data-stack-label]')
   const toggle = Object.assign(page.element('doc-stack-toggle'), {
-    dataset: { stackToggle: 'old' }, attributes: {} as Record<string, string>,
-    setAttribute(key: string, value: string) { this.attributes[key] = value },
-    querySelector: () => null,
+    dataset: { stackToggle: 'old' }, 'aria-controls': 'doc-stack-old',
   })
   page.context.docStackToggle = toggle
-  page.context.document.querySelectorAll = (selector: string) => selector === '#doc-table-body [data-stack-child]' ? [child] : []
+  page.context.document.getElementById = (id: string) => page.element(`#${id}`)
   page.run('toggleDocStack(docStackToggle)')
-  assert.equal(child.hidden, false)
-  assert.equal(toggle.attributes?.['aria-expanded'], 'true')
+  assert.equal(panel.hidden, false)
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true')
+  assert.equal(label.textContent, '收起沿革')
+  page.run('renderDocs()')
+  assert.match(body.innerHTML, /aria-expanded="true" aria-controls="doc-stack-old"/)
+  assert.match(body.innerHTML, /id="doc-stack-old">/)
   page.run('toggleDocStack(docStackToggle)')
-  assert.equal(child.hidden, true)
+  assert.equal(panel.hidden, true)
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false')
+  assert.equal(label.textContent, '展开沿革')
 
   // 平铺视图保持原有行为：标题和来源交给服务端筛选
   page.element('#doc-search').value = '门诊'
@@ -944,6 +985,7 @@ test('graph overview keeps the selected node in view until local mode is request
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(page.run('state.graphScope'), 'overview')
   assert.equal(page.run('state.entityView'), 'graph')
+  assert.equal(page.element('#graph-hops-picker').hidden, true)
   const canvas = page.element('#graph-canvas')
   assert.equal(allWithClass(canvas, 'g-overview-cluster').length, 0)
   assert.equal(allWithClass(canvas, 'g-node').length, 5)
@@ -985,6 +1027,7 @@ test('graph overview keeps the selected node in view until local mode is request
   local.handlers.click()
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(page.run('state.graphScope'), 'local')
+  assert.equal(page.element('#graph-hops-picker').hidden, false)
   assert.ok(page.calls.some(call => call.url.includes('/graph?focus=isolated&hops=2')))
   assert.match(page.element('#entity-detail').innerHTML, /独立指标/)
 })
@@ -1013,22 +1056,66 @@ test('entity detail groups facts by relation type and marks inbound relations', 
 })
 
 
-test('entity graph requests the focused neighbourhood and widens it to two hops when expanded', async () => {
+test('local graph defaults to two hops and displays the selected depth through ten hops', async () => {
   const page = frontend((url) => {
-    if (url.includes('/graph')) return { focus: 'a', hops: 1, nodes: [], edges: [], hidden: { nodes: 0, edges: 0 } }
+    if (url.includes('/graph')) {
+      const hops = Number(new URL(url, 'http://localhost').searchParams.get('hops'))
+      const nodes = Array.from({ length: hops + 1 }, (_, hop) => ({ id: hop ? `a${hop}` : 'a', name: `实体${hop}`, type: 'concept', degree: 2, hop }))
+      const edges = nodes.slice(1).map((node, index) => ({ id: `e${index}`, source: nodes[index]!.id, target: node.id, predicate: '包括' }))
+      return { focus: 'a', hops, nodes, edges, hidden: { nodes: 0, edges: 0 } }
+    }
     if (url.includes('/entities/')) {
       return { entity: { id: 'a', name: '甲', type: 'concept', acl_label: '全员可见' }, facts: [], documents: [] }
     }
     return { items: [] }
   })
+  const canvas = page.element('#graph-canvas')
+  canvas.clientWidth = 330
+  canvas.clientHeight = 230
+  let changeHops: (value: string) => void = () => assert.fail('跳数控件未初始化')
+  page.context.KnowWeavePickers.choice = (root: unknown, config: { value: string; options: Array<{ value: string }>; onChange: typeof changeHops }) => {
+    assert.equal(root, page.element('#graph-hops-picker'))
+    assert.equal(config.value, '2')
+    assert.equal(config.options.map(option => option.value).join(','), '1,2,3,4,5,6,7,8,9,10')
+    changeHops = config.onChange
+  }
+  page.run('setupEntityView()')
   await page.run('selectEntity("a")')
-  await new Promise((resolve) => setImmediate(resolve))
   const graphUrls = () => page.calls.filter((call) => call.url.includes('/graph')).map((call) => call.url)
-  assert.deepEqual(graphUrls(), ['/api/v1/graph?focus=a&hops=1&limit=80'], '缩略图只要一跳')
+  assert.deepEqual(graphUrls(), ['/api/v1/graph?focus=a&hops=2&limit=80'])
+  assert.equal(allWithClass(canvas, 'g-node').length, 3)
 
+  changeHops('10')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(graphUrls().at(-1), '/api/v1/graph?focus=a&hops=10&limit=80')
+  assert.equal(allWithClass(canvas, 'g-node').length, 11)
+
+  canvas.clientWidth = 720
+  canvas.clientHeight = 480
   page.run('setEntityView("graph")')
-  await new Promise((resolve) => setImmediate(resolve))
-  assert.deepEqual(graphUrls(), ['/api/v1/graph?focus=a&hops=1&limit=80', '/api/v1/graph?focus=a&hops=2&limit=80'], '展开后补取二跳')
+  assert.equal(graphUrls().length, 2)
+  const centers: ReturnType<typeof centerOf>[] = allWithClass(canvas, 'g-node').map(centerOf)
+  assert.equal(centers.length, 11)
+  assert.ok(centers.slice(1).every((point, index) => point.x > centers[index]!.x + 20))
+
+  changeHops('1')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(graphUrls().at(-1), '/api/v1/graph?focus=a&hops=1&limit=80')
+  assert.equal(allWithClass(canvas, 'g-node').length, 2)
+})
+
+test('local graph separates nearby branches at the same depth', () => {
+  const page = frontend()
+  page.context.nodes = [...'abcdefgh'].map(id => ({ id, name: id, degree: 1 }))
+  page.context.edges = ['ab', 'bc', 'bd', 'ce', 'cf', 'dg', 'dh'].map(([source, target]) => ({ source, target }))
+  const points = page.run('graphFocusLayout(nodes, edges, 720, 480, () => 12, "a", false).points')
+  const outer = ['e', 'f', 'g', 'h'].map(id => points.get(id))
+  assert.ok(outer.every(point => point?.ring === 3))
+  outer.forEach((point, index) => {
+    for (const other of outer.slice(index + 1)) {
+      assert.ok(Math.hypot(point.x - other.x, point.y - other.y) > 24)
+    }
+  })
 })
 
 test('duplicate facts between the same pair collapse into one edge with a count', () => {
@@ -1043,4 +1130,42 @@ test('duplicate facts between the same pair collapse into one edge with a count'
   assert.equal(merged.length, 3, '同状态同关系合并，不同状态与不同宾语不合并')
   assert.equal(merged[0].count, 2)
   assert.equal(JSON.stringify(merged[0].predicates), JSON.stringify(['等于', '计算方式为']))
+})
+
+test('the research composer keeps the caret at the end unless the click selects text', () => {
+  const page = frontend()
+  const question = page.element('#question')
+  question.value = '高血压的随访频次是如何规定的'
+  question.setSelectionRange = (start: number, end: number) => {
+    question.selectionStart = start
+    question.selectionEnd = end
+  }
+  page.run('setupAsk()')
+  const handlers = question.handlers
+
+  question.selectionStart = 0
+  question.selectionEnd = 0
+  handlers.focus({})
+  assert.equal(question.selectionStart, question.value.length, '聚焦后插入点落到末尾')
+
+  question.selectionStart = 2
+  question.selectionEnd = 2
+  handlers.mouseup({ detail: 1 })
+  assert.equal(question.selectionStart, question.value.length, '单纯点选也回到末尾，拼音组字不再落在开头')
+
+  // 组字期间不动选区，否则会打断输入法组字、标记停在旧位置
+  handlers.compositionstart({})
+  question.selectionStart = 1
+  question.selectionEnd = 1
+  handlers.focus({})
+  handlers.mouseup({ detail: 1 })
+  assert.equal(question.selectionStart, 1, '组字中不移动插入点')
+  handlers.compositionend({})
+
+  question.selectionStart = 0
+  question.selectionEnd = 6
+  handlers.mouseup({ detail: 1 })
+  assert.deepEqual([question.selectionStart, question.selectionEnd], [0, 6], '拖选保持原生选区')
+  handlers.mouseup({ detail: 2 })
+  assert.deepEqual([question.selectionStart, question.selectionEnd], [0, 6], '双击选词不被改写入点')
 })

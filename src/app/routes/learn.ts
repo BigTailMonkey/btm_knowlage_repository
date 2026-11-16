@@ -229,7 +229,7 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
     return buildEntityGraph(principal, {
       overview: params.scope === 'overview',
       focus: params.focus ? String(params.focus) : null,
-      hops: params.hops === undefined ? 1 : Number(params.hops),
+      hops: params.hops === undefined ? undefined : Number(params.hops),
       limit: params.limit === undefined ? 80 : Number(params.limit),
     })
   })

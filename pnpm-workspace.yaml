@@ -12,3 +12,5 @@ onlyBuiltDependencies:
   - koffi
   - node-pty
   - protobufjs
+patchedDependencies:
+  '@deepseek-ai/dsh-client-ui-sidebar-right@0.2.2-alpha.3': patches/@deepseek-ai__dsh-client-ui-sidebar-right@0.2.2-alpha.3.patch

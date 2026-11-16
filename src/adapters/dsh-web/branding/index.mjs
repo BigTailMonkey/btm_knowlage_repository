@@ -132,16 +132,27 @@ html[data-knowweave-offline] [data-composer-card]::after {
 }
 `
 
-/** Apply presentation before the upstream shell boots; all transport routes stay intact. */
+/** Apply the KnoWeave theme and embedded chat integration before the shell boots. */
 export function transformIndex(html) {
   if (html.includes('data-knowweave-branding')) return html
   return html
+    .replace(/<html(?=[\s>])/i, '<html data-knowweave-sidebar-disabled')
     .replace(/<title>[\s\S]*?<\/title>/i, '<title>知织</title>')
     .replace(/<meta\b[^>]*name=["']apple-mobile-web-app-title["'][^>]*>/gi, '<meta name="apple-mobile-web-app-title" content="知织" />')
     .replace(/<link\b[^>]*rel=["'](?:icon|apple-touch-icon|manifest)["'][^>]*>/gi, '')
     .replace(/<\/head>/i, (head) => `<link rel="icon" href="${iconUrl}" />\n<style data-knowweave-branding-style>${style}</style>\n<script data-knowweave-branding>${bootstrap}</script>\n${head}`)
 }
 
-export function apply(ctx) {
+export function apply(ctx, config = {}) {
   ctx.effect(() => ctx.webServer.tapIndex(transformIndex), 'knowweave: chat presentation')
+  // Present only when started with the matching KnoWeave launch overlay.
+  if (config.policyPath) {
+    ctx.effect(() => ctx.webServer.register({
+      kind: 'exact',
+      path: config.policyPath,
+      handler(_request, response) {
+        response.writeHead(204, { 'cache-control': 'no-store' }).end()
+      },
+    }), 'knowweave: chat policy probe')
+  }
 }

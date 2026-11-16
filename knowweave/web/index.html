@@ -170,6 +170,7 @@
                 <button class="tab" data-source="text" role="tab" aria-selected="false">文本</button>
                 <button class="tab" data-source="web" role="tab" aria-selected="false">网页</button>
                 <button class="tab" data-source="pdf" role="tab" aria-selected="false">PDF</button>
+                <button class="tab" data-source="doc" role="tab" aria-selected="false">DOC</button>
                 <button class="tab" data-source="docx" role="tab" aria-selected="false">DOCX</button>
               </div>
               <div class="segmented doc-view" id="doc-view" role="group" aria-label="文档视图">
@@ -207,7 +208,6 @@
               </table>
             </div>
             <div class="empty-block" id="doc-empty" hidden>暂无文档</div>
-            <p class="doc-hint" id="doc-view-hint" hidden>沿革堆叠只列出当前生效的文档，同一沿革上被延续的旧文档收在标题下方，可点击展开查看。</p>
           </section>
 
           <section class="page" id="page-document" aria-labelledby="doc-page-title">
@@ -231,6 +231,7 @@
                   <dl class="doc-page-status doc-meta" id="doc-page-status" hidden></dl>
                   <div class="doc-page-tabbar" id="doc-page-tabbar" hidden>
                     <div class="tabs doc-tabs" id="doc-page-tabs" role="tablist" aria-label="文档内容"></div>
+                    <button class="btn sm" type="button" data-download-original hidden>下载原文件</button>
                     <button class="text-btn" type="button" data-copy-source>复制全文</button>
                   </div>
                 </header>
@@ -244,10 +245,6 @@
           <!-- 研究台 -->
           <section class="page" id="page-ask">
             <header class="ask-head">
-              <div class="ask-head-main">
-                <h1>研究台</h1>
-                <p>向已入库的文档提问，每条结论都能回到原文。</p>
-              </div>
               <div class="ask-scope" id="ask-scope">
                 <span class="scope-chip"><b id="scope-docs">—</b> 文档</span>
                 <span class="scope-chip"><b id="scope-chunks">—</b> 检索单元</span>
@@ -259,15 +256,15 @@
             <form class="ask-composer" id="ask-form">
               <label class="composer-field">
                 <span class="sr-only">输入问题</span>
-                <textarea id="question" rows="2" placeholder="问点什么，比如「随访频次怎么规定？」" aria-label="输入问题"></textarea>
+                <textarea id="question" rows="2" placeholder="问点什么，比如「随访频次怎么规定？」" aria-label="输入问题" spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off"></textarea>
               </label>
               <div class="ask-composer-bar">
                 <div class="segmented" id="mode-tabs" role="group" aria-label="检索模式">
-                  <button type="button" class="seg active" data-mode="quick" aria-pressed="true">快速</button>
-                  <button type="button" class="seg" data-mode="deep" aria-pressed="false">深度</button>
-                  <button type="button" class="seg" data-mode="graph" aria-pressed="false">图谱</button>
-                  <button type="button" class="seg" data-mode="timeline" aria-pressed="false">时间线</button>
-                  <button type="button" class="seg" data-mode="compare" aria-pressed="false">对比</button>
+                  <button type="button" class="seg active" data-mode="quick" aria-pressed="true" data-hover-tip="单轮混合召回，适合定义与参数">快速</button>
+                  <button type="button" class="seg" data-mode="deep" aria-pressed="false" data-hover-tip="问题拆解与多轮检索，适合跨文档">深度</button>
+                  <button type="button" class="seg" data-mode="graph" aria-pressed="false" data-hover-tip="实体链接 + 事实一跳">图谱</button>
+                  <button type="button" class="seg" data-mode="timeline" aria-pressed="false" data-hover-tip="按事实有效期回答">时间线</button>
+                  <button type="button" class="seg" data-mode="compare" aria-pressed="false" data-hover-tip="多实体并行召回">对比</button>
                 </div>
                 <div class="ask-composer-actions">
                   <div class="ask-asof">
@@ -280,7 +277,6 @@
                   </button>
                 </div>
               </div>
-              <p class="ask-hint" id="mode-hint">单轮混合召回，适合定义与参数</p>
             </form>
 
             <div class="recent-strip" id="conversation-list" aria-label="最近会话" hidden></div>
@@ -290,12 +286,6 @@
                 <div class="ask-result" id="ask-result">
                   <div class="ask-empty">
                     <div class="ask-empty-lead">
-                      <span class="ask-empty-mark" aria-hidden="true">
-                        <svg viewBox="0 0 24 24" fill="none">
-                          <path d="M3 9c4.5 0 4.5-5 9-5s4.5 5 9 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                          <path d="M3 15c4.5 0 4.5 5 9 5s4.5-5 9-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                        </svg>
-                      </span>
                       <h2>从一条具体问题开始</h2>
                       <p>问题问得越具体，召回的片段越准。系统只使用通过阈值筛选的原文作答，证据不足时会直接说明。</p>
                     </div>
@@ -342,6 +332,7 @@
                       <button class="graph-toggle" type="button" data-graph-scope="overview" aria-pressed="false">全景</button>
                       <button class="graph-toggle" type="button" data-graph-scope="local" aria-pressed="true">局部</button>
                     </div>
+                    <div class="graph-hops-picker" id="graph-hops-picker"></div>
                     <button class="graph-toggle" id="graph-overview-size" type="button" aria-pressed="false" hidden>放大节点</button>
                     <button class="graph-toggle entity-rail-btn" id="entity-rail-toggle" type="button" aria-pressed="true" data-hover-tip="显示/隐藏实体列表">
                       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M3 8h10M3 11.5h10"/></svg>
@@ -567,7 +558,7 @@
             <span class="dropzone-main" id="file-drop-label">选择文件</span>
             <span class="file-hint" id="file-drop-hint">可多选或拖入多个文件</span>
           </button>
-          <input type="file" id="file-input" accept=".pdf,.docx,.md,.txt" multiple hidden />
+          <input type="file" id="file-input" accept=".pdf,.doc,.docx,.md,.txt" multiple hidden />
           <ul id="ingest-files" class="ingest-files" aria-label="所选文件" hidden></ul>
           <div class="field" id="file-title-field"><label for="file-title">标题</label><input id="file-title" /></div>
           <div class="field">
@@ -620,7 +611,7 @@
     </div>
   </dialog>
 
-  <dialog class="dialog wide" id="trace-dialog" aria-labelledby="trace-dialog-title">
+  <dialog class="dialog wide trace-dialog" id="trace-dialog" aria-labelledby="trace-dialog-title">
     <div class="dialog-head">
       <h2 id="trace-dialog-title">轨迹</h2>
       <button class="icon-btn" data-close aria-label="关闭"><svg viewBox="0 0 16 16" fill="none"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg></button>

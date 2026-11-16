@@ -11,7 +11,7 @@ import { query, queryOne } from '../src/db/index.js'
 import { testWorkspace } from '../tests/helpers.js'
 const workspace = await testWorkspace()
 harness.ask = async () => ({
-  text: '知织支持本地文档检索，并为回答提供原文引用。[1]',
+  text: '## 检索与引用\n- 知织支持**本地文档检索**。[1]\n- 为回答提供原文引用。[1]',
   model: 'browser-fixture', provider: 'test', ok: true, error: null, tokensIn: 0, tokensOut: 0, latencyMs: 0,
 })
 const app = await createServer(); app.log.level='silent'
@@ -130,6 +130,34 @@ try {
   await until(documentReady)
   assert.equal(await evaluate('document.activeElement.id'), 'doc-page-title')
   assert.equal(await evaluate('getComputedStyle(document.activeElement).outlineStyle'), 'none')
+  await until("document.querySelector('#doc-panel-source .pdf-page.is-rendered canvas')?.width > 0")
+  assert.equal(await evaluate(`document.querySelector('#doc-tab-source').getAttribute('aria-selected') === 'true'
+    && document.querySelector('#doc-panel-text').hidden && document.querySelector('[data-copy-source]').hidden`), true)
+  const downloadInTabBar = `(() => {
+    const download = document.querySelector('#doc-page-tabbar [data-download-original]');
+    const button = download.getBoundingClientRect();
+    const tabs = document.querySelector('#doc-page-tabs').getBoundingClientRect();
+    const bar = download.parentElement.getBoundingClientRect();
+    const preview = document.querySelector('#doc-panel-source');
+    return !download.hidden && !preview.textContent.includes('fixture.pdf')
+      && button.left >= tabs.right && Math.abs(button.right - bar.right) < 1
+      && button.top >= bar.top && button.bottom <= bar.bottom;
+  })()`
+  assert.equal(await evaluate(downloadInTabBar), true)
+  await call('Emulation.setDeviceMetricsOverride', { width: 390, height: 720, deviceScaleFactor: 1, mobile: false })
+  assert.equal(await evaluate(downloadInTabBar), true)
+  await call('Emulation.clearDeviceMetricsOverride')
+  await call('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: directory })
+  await evaluate("document.querySelector('[data-download-original]').click()")
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try { assert.equal(await readFile(join(directory, 'fixture.pdf'), 'utf8'), pdf); break }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || attempt === 99) throw error
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+  }
+  await evaluate("document.querySelector('#doc-tab-text').click()")
+  assert.equal(await evaluate("document.querySelector('[data-download-original]').hidden && !document.querySelector('[data-copy-source]').hidden"), true)
   const entityPillsWrap = `(() => {
     const names = ['跨部门联合知识治理工作组和文档版本溯源项目'.repeat(4), 'KnowledgeGraphEntityWithoutSpaces'.repeat(4)];
     const fragment = document.createRange().createContextualFragment(entityPills(names.map(name => ({ name })), 'done'));
@@ -164,7 +192,7 @@ try {
       && Math.abs(content.bottom - footer.top) < 1 && Math.abs(footer.bottom - (rail.bottom - 1)) < 1;
   })()`), true)
   assert.equal(await evaluate(`(() => {
-    const source = document.querySelector('#doc-panel-source .doc-source');
+    const source = document.querySelector('#doc-panel-text .doc-source');
     const note = document.querySelector('#doc-source-footer');
     const noteTop = note.getBoundingClientRect().top;
     const reachesNote = () => Math.abs(source.getBoundingClientRect().bottom - noteTop) < 1;
@@ -182,16 +210,18 @@ try {
     const panel = document.querySelector('#doc-page-status');
     const status = panel.getBoundingClientRect();
     const rail = document.querySelector('#doc-page-info').getBoundingClientRect();
-    const toolbar = document.querySelector('.doc-page-toolbar').getBoundingClientRect();
+    const back = document.querySelector('.doc-page-toolbar [data-goto=library]').getBoundingClientRect();
     const tabs = document.querySelector('#doc-page-tabbar').getBoundingClientRect();
     const heading = document.querySelector('.doc-page-heading').getBoundingClientRect();
     const copy = document.querySelector('[data-copy-source]').getBoundingClientRect();
-    const source = document.querySelector('#doc-tab-source').getBoundingClientRect();
+    const source = document.querySelector('#doc-tab-text').getBoundingClientRect();
     const facts = document.querySelector('#doc-tab-facts').getBoundingClientRect();
+    const overStatus = document.elementFromPoint(status.left + status.width / 2, back.top + back.height / 2);
     return !panel.querySelector('h2') && status.left >= title.right
-      && Math.abs(status.top - rail.top) < 1 && Math.abs(status.right - header.right) < 1 && status.right < rail.left
+      && Math.abs(status.top - back.top) < 1 && Math.abs(status.top - rail.top) < 1
+      && Math.abs(status.right - header.right) < 1 && status.right < rail.left && panel.contains(overStatus)
       && Math.abs(status.bottom - tabs.bottom) < 1
-      && toolbar.right <= status.left && Math.abs(tabs.top - heading.bottom - 4) < 1 && tabs.right <= status.left
+      && back.right <= status.left && Math.abs(tabs.top - heading.bottom - 4) < 1 && tabs.right <= status.left
       && copy.left >= facts.right && Math.abs(copy.right - tabs.right) < 1 && copy.bottom <= tabs.bottom
       && Math.abs((copy.top + copy.bottom) / 2 - (source.top + source.bottom) / 2) < 1;
   })()`), true)
@@ -203,7 +233,7 @@ try {
     navigator.clipboard.writeText = async (text) => { copied = text; };
     try {
       document.querySelector('[data-copy-source]').click();
-      return Boolean(copied) && copied === document.querySelector('#doc-panel-source .doc-source').textContent;
+      return Boolean(copied) && copied === document.querySelector('#doc-panel-text .doc-source').textContent;
     } finally {
       navigator.clipboard.writeText = writeText;
     }
@@ -211,7 +241,7 @@ try {
   await evaluate("const tab = document.querySelector('#doc-tab-chunks'); tab.focus(); tab.click()")
   assert.equal(await evaluate("!document.querySelector('#doc-panel-chunks').hidden && document.querySelector('#doc-panel-source').hidden && document.querySelector('[data-copy-source]').hidden && document.querySelector('#doc-source-footer').hidden"), true)
   await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'ArrowLeft', code: 'ArrowLeft' })
-  assert.equal(await evaluate("document.activeElement.id === 'doc-tab-source' && !document.querySelector('#doc-panel-source').hidden && !document.querySelector('#doc-source-footer').hidden"), true)
+  assert.equal(await evaluate("document.activeElement.id === 'doc-tab-text' && !document.querySelector('#doc-panel-text').hidden && !document.querySelector('#doc-source-footer').hidden"), true)
   assert.equal(await evaluate('getComputedStyle(document.activeElement).outlineStyle'), 'solid')
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#doc-page-info h3')].map(heading => heading.textContent)"), ['关联实体', '沿革'])
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.nav-item[aria-current=page]')].map(item => item.textContent.trim())"), ['知识库'])
@@ -233,6 +263,19 @@ try {
   await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter' })
   assert.equal(await evaluate("document.querySelector('#entity-type').value"), 'literal')
   await evaluate("document.querySelector('#entity-dialog').close()")
+  await evaluate("navigateToPage('entities')")
+  await until("document.querySelector('#page-entities.active #graph-hops[role=combobox]')?.checkVisibility()")
+  assert.equal(await evaluate("document.querySelector('#graph-hops').textContent"), '2 跳')
+  await evaluate("document.querySelector('#graph-hops').focus(); document.querySelector('#graph-hops').click()")
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#graph-hops-panel:popover-open [role=option]')].map(option => option.textContent)"),
+    Array.from({ length: 10 }, (_, index) => `${index + 1} 跳`))
+  await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'End', code: 'End' })
+  await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter' })
+  assert.equal(await evaluate("state.graphHops === 10 && document.querySelector('#graph-hops').textContent === '10 跳' && !document.querySelector('#graph-hops-panel:popover-open')"), true)
+  await evaluate("document.querySelector('#graph-hops').click(); document.querySelector('[data-graph-scope=overview]').click()")
+  assert.equal(await evaluate("document.querySelector('#graph-hops-picker').hidden && !document.querySelector('#graph-hops-panel:popover-open')"), true)
+  await evaluate("document.querySelector('[data-graph-scope=local]').click(); document.querySelector('#graph-hops').click(); document.querySelector('#graph-hops-panel:popover-open [data-index=\"0\"]').click()")
+  assert.equal(await evaluate("state.graphHops === 1 && document.querySelector('#graph-hops').textContent === '1 跳'"), true)
   await call('Page.navigate',{url})
   await until("document.querySelector('#native-chat-retry')?.hidden === false")
   assert.equal(await evaluate("document.querySelector('.nav-item[data-page=chat]').textContent.trim()"), '对话')
@@ -321,17 +364,71 @@ try {
   await call('Emulation.clearDeviceMetricsOverride')
   await evaluate("document.querySelectorAll('dialog[open]').forEach(dialog=>dialog.close());document.querySelector('#question').value='知织支持什么？';document.querySelector('#ask-form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))")
   await until("document.querySelector('#ask-result [data-cite]') !== null")
+  assert.equal(await evaluate(`(() => {
+    const sheet = document.querySelector('#sheet');
+    const answer = document.querySelector('#ask-result .answer').getBoundingClientRect();
+    const evidence = document.querySelector('.evidence-block').getBoundingClientRect();
+    const footer = document.querySelector('.answer-foot').getBoundingClientRect();
+    return Math.abs(answer.bottom - evidence.bottom) < 1
+      && Math.abs(answer.bottom - footer.bottom) <= 1
+      && sheet.getBoundingClientRect().bottom - answer.bottom <= 24
+      && sheet.scrollHeight === sheet.clientHeight;
+  })()`), true)
+  assert.equal(await evaluate(`(() => {
+    const sheet = document.querySelector('#sheet');
+    const answer = document.querySelector('#ask-result .answer-body');
+    const evidence = document.querySelector('#evidence-body');
+    const longAnswer = document.createElement('p');
+    longAnswer.textContent = '用于验证长回答在栏内滚动。'.repeat(1000);
+    const longEvidence = document.createElement('div');
+    longEvidence.textContent = '用于验证证据列表在栏内滚动。'.repeat(1000);
+    answer.append(longAnswer);
+    evidence.append(longEvidence);
+    answer.scrollTop = 80;
+    evidence.scrollTop = 80;
+    const scrollsIndependently = answer.scrollTop === 80 && evidence.scrollTop === 80 && sheet.scrollTop === 0;
+    longAnswer.remove();
+    longEvidence.remove();
+    return scrollsIndependently;
+  })()`), true)
   assert.equal(await evaluate("document.querySelector('#native-chat-frame').hasAttribute('src')"),false)
+  await evaluate("document.querySelector('#ask-result [data-open-trace]').click()")
+  await until("document.querySelector('#trace-dialog[open] .trace-answer')")
+  assert.equal(await evaluate("document.querySelector('#trace-dialog-title').textContent"), '轨迹 · 问答')
+  assert.equal(await evaluate("document.querySelector('.trace-question p').textContent"), '知织支持什么？')
+  assert.equal(await evaluate("document.querySelector('.trace-answer h4').textContent"), '检索与引用')
+  assert.equal(await evaluate("document.querySelector('.trace-answer li strong').textContent"), '本地文档检索')
+  assert.equal(await evaluate("document.querySelectorAll('.trace-disclosures details:not([open])').length"), 3)
+  assert.equal(await evaluate("document.querySelector('.trace-disclosures .fact-item').checkVisibility()"), false)
+  await call('Emulation.setDeviceMetricsOverride', { width: 390, height: 700, deviceScaleFactor: 1, mobile: true })
+  assert.equal(await evaluate(`(() => {
+    const dialog = document.querySelector('#trace-dialog');
+    const body = document.querySelector('#trace-dialog-body');
+    const header = dialog.querySelector('.dialog-head');
+    return dialog.getBoundingClientRect().width === innerWidth && body.scrollWidth === body.clientWidth
+      && header.getBoundingClientRect().bottom <= body.getBoundingClientRect().top;
+  })()`), true)
+  await evaluate("document.querySelector('.trace-disclosures summary').focus()")
+  assert.equal(await evaluate("document.activeElement.matches('.trace-disclosures summary')"), true)
+  await call('Input.dispatchKeyEvent', { type: 'keyDown', key: ' ', code: 'Space', text: ' ', windowsVirtualKeyCode: 32 })
+  await call('Input.dispatchKeyEvent', { type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 })
+  await until("document.querySelector('.trace-disclosures details[open] .fact-item')?.checkVisibility()")
+  await evaluate("document.querySelector('.trace-disclosures details[open] summary').click(); document.querySelector('#trace-dialog [data-replay]').click()")
+  await until("document.querySelector('#replay-result:not([hidden]) .fact-item')")
+  assert.equal(await evaluate("document.querySelector('#trace-replay-title').textContent"), '检索回放')
+  await evaluate("document.querySelector('#trace-dialog [data-close]').click()")
+  await call('Emulation.clearDeviceMetricsOverride')
   await evaluate("document.querySelector('#ask-result [data-cite]').click()")
   await until("document.querySelector('#page-document.active #source-highlight-target') !== null")
   const highlighted=await evaluate("document.querySelector('#source-highlight-target').textContent")
   assert.match(highlighted,/知织支持本地文档检索/)
+  assert.equal(await evaluate("document.querySelector('#doc-tab-text').getAttribute('aria-selected')"), 'true')
   await call('Emulation.setDeviceMetricsOverride', { width: 1200, height: 400, deviceScaleFactor: 1, mobile: false })
   await evaluate(`(() => {
     const extra = document.createElement('span');
     extra.id = 'long-source-fixture';
     extra.textContent = "\\n" + "用于验证独立滚动的原文段落。\\n".repeat(60);
-    document.querySelector('#doc-panel-source .doc-source').append(extra);
+    document.querySelector('#doc-panel-text .doc-source').append(extra);
   })()`)
   assert.equal(await evaluate(`(() => {
     const main = document.querySelector('.doc-page-main');
@@ -358,8 +455,15 @@ try {
   assert.equal(await evaluate(`(() => {
     const main = document.querySelector('.doc-page-main');
     const back = document.querySelector('#page-document [data-goto=library]');
+    const toolbar = document.querySelector('.doc-page-toolbar');
+    const mainBounds = main.getBoundingClientRect();
+    const { top, bottom } = toolbar.getBoundingClientRect();
+    const source = document.querySelector('#doc-panel-text .doc-source').getBoundingClientRect();
+    const overSource = document.elementFromPoint(mainBounds.left + main.clientWidth - 20, (top + bottom) / 2);
     return document.querySelector('#sheet').scrollTop === 0
-      && back.getBoundingClientRect().top >= main.getBoundingClientRect().top;
+      && back.getBoundingClientRect().top >= mainBounds.top
+      && source.top < top && source.bottom > bottom
+      && toolbar.contains(overSource);
   })()`), true)
   await evaluate("document.querySelector('#long-source-fixture').remove(); document.querySelector('.doc-rail-content').scrollTop = 0")
   await call('Emulation.setDeviceMetricsOverride', { width: 390, height: 720, deviceScaleFactor: 1, mobile: false })
@@ -457,18 +561,38 @@ try {
   await evaluate("document.querySelector('#doc-view [data-view=stack]').click()")
   await until(`(() => {
     const head = document.querySelector('#doc-table-body [data-stack-head]');
-    const child = document.querySelector('#doc-table-body [data-stack-child]');
+    const toggle = head?.querySelector('[data-stack-toggle]');
+    const panel = document.getElementById(toggle?.getAttribute('aria-controls'));
+    const child = panel?.querySelector('.doc-stack-card');
     return head?.dataset.doc === ${JSON.stringify(relatedDocument)}
       && child?.dataset.doc === ${JSON.stringify(source.document_id)}
-      && child.hasAttribute('hidden') && child.getClientRects().length === 0;
+      && panel.hidden && child.getClientRects().length === 0;
   })()`)
-  assert.equal(await evaluate("document.querySelector('#doc-view-hint').hidden"), false)
-  await evaluate("document.querySelector('#doc-table-body [data-stack-toggle]').click()")
-  await until("!document.querySelector('#doc-table-body [data-stack-child]').hasAttribute('hidden') && document.querySelector('#doc-table-body [data-stack-child]').getClientRects().length > 0")
-  await evaluate("document.querySelector('#doc-table-body [data-stack-child]').click()")
+  assert.equal(await evaluate("document.querySelector('#doc-view-hint')"), null)
+  const stackToggle = "document.querySelector('#doc-table-body [data-stack-toggle]')"
+  const stackPanel = "document.querySelector('#doc-table-body .doc-stack-history')"
+  await evaluate(`${stackToggle}.focus()`)
+  assert.equal(await evaluate(`document.activeElement === ${stackToggle}`), true)
+  await call('Input.dispatchKeyEvent', { type: 'keyDown', key: ' ', code: 'Space', text: ' ', windowsVirtualKeyCode: 32 })
+  await call('Input.dispatchKeyEvent', { type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 })
+  await until(`${stackToggle}.getAttribute('aria-expanded') === 'true' && !${stackPanel}.hidden && document.activeElement === ${stackToggle}`)
+  assert.equal(await evaluate(`getComputedStyle(${stackPanel}.querySelector('li'), '::before').borderTopWidth`), '2px')
+  await call('Emulation.setDeviceMetricsOverride', { width: 390, height: 720, deviceScaleFactor: 1, mobile: false })
+  await until(`(() => {
+    const card = ${stackPanel}.querySelector('.doc-stack-card');
+    const box = card.getBoundingClientRect();
+    const tabs = document.querySelector('#doc-tabs');
+    return document.querySelector('#sidebar').getBoundingClientRect().right <= 0
+      && box.width > 0 && box.left >= 0 && box.right <= innerWidth && card.scrollWidth <= card.clientWidth
+      && tabs.scrollWidth <= tabs.clientWidth;
+  })()`)
+  await call('Emulation.clearDeviceMetricsOverride')
+  await evaluate(`${stackToggle}.click()`)
+  await until(`${stackToggle}.getAttribute('aria-expanded') === 'false' && ${stackPanel}.hidden`)
+  await evaluate(`${stackToggle}.click(); ${stackPanel}.querySelector('.doc-stack-card').click()`)
   await until(documentReady)
   await evaluate("document.querySelector('#page-document [data-goto=library]').click()")
-  await until("document.querySelector('#page-library.active #doc-view [data-view=stack]').getAttribute('aria-pressed') === 'true' && !document.querySelector('#doc-table-body [data-stack-child]').hidden")
+  await until(`document.querySelector('#page-library.active #doc-view [data-view=stack]').getAttribute('aria-pressed') === 'true' && !${stackPanel}.hidden`)
   await evaluate("document.querySelector('#doc-view [data-view=flat]').click()")
   await until(`document.querySelector(${JSON.stringify(docRow)}) && !document.querySelector('#doc-table-body [data-stack-head]')`)
   await evaluate(`document.querySelector(${JSON.stringify(docRow)}).click()`)
@@ -570,6 +694,20 @@ try {
   await until(centeredNotice)
   await call('Emulation.clearDeviceMetricsOverride')
   await until(centeredNotice)
+  harness.ask = async () => ({
+    text: '知织有999GB的容量。[1]', model: 'browser-fixture', provider: 'test', ok: true, error: null,
+    tokensIn: 0, tokensOut: 0, latencyMs: 0,
+  })
+  await evaluate(`navigateToPage('ask'); document.querySelector('#mode-tabs [data-mode=quick]').click();
+    document.querySelector('#question').value = '《浏览器验收文档》如何描述知织？';
+    document.querySelector('#ask-form').requestSubmit()`)
+  await until("document.querySelector('#ask-result .failure-draft')?.textContent.includes('999GB')")
+  assert.match(await evaluate("document.querySelector('#ask-result .answer-failure').textContent"), /检索到了什么[\s\S]*浏览器验收文档[\s\S]*哪些片段未采用[\s\S]*为什么无法回答/)
+  const failureConversationId = await evaluate('state.lastAsk.conversation_id')
+  await evaluate("document.querySelector('#ask-result .failure-references [data-failure-source]').click()")
+  await until("document.querySelector('#page-document.active #doc-page-title')?.textContent === '浏览器验收文档'")
+  await evaluate(`continueConversation(${JSON.stringify(failureConversationId)})`)
+  assert.match(await evaluate("document.querySelector('#ask-result .failure-draft').textContent"), /未找到数字或单位.*999GB/)
   assert.deepEqual(errors, [])
   console.log(JSON.stringify({browser:'Chrome headless',directoryCli:true,nativeChatDisabledState:true,nativeChatCitation:true,researchChat:true,citation:true,sourceHighlight:true,documentPage:true,reindex:true,sourcePolicy:true,evaluationImport:true,reviewComparison:true,libraryStack:true,javascriptErrors:errors,artifact}))
 } finally {

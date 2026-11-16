@@ -2,12 +2,13 @@ import { FastifyInstance } from 'fastify'
 
 import { authenticate, currentPrincipal } from '../server.js'
 import { query, queryOne, transaction } from '../../db/index.js'
-import { ask } from '../../core/answering.js'
+import { ask, type AnswerFailure } from '../../core/answering.js'
 import { setConversationArchived } from '../../core/conversation-archive.js'
 import { retrieve } from '../../core/retrieval.js'
 import { newId } from '../../core/ids.js'
 import { TraceRecorder } from '../../core/tracing.js'
 import type { ChunkRow } from '../../core/rows.js'
+import { canRead } from '../../core/security.js'
 
 export async function askRoutes(app: FastifyInstance): Promise<void> {
   app.post('/search', { preHandler: authenticate }, async (request) => {
@@ -109,12 +110,31 @@ export async function askRoutes(app: FastifyInstance): Promise<void> {
       mode: string
       trace_id: string | null
       confidence: number
+      latency_ms: number
       created_at: string
+      answer_failure: AnswerFailure | null
+      refused: boolean
     }>(
-      `SELECT id, role, content, mode, trace_id, confidence, created_at
-       FROM messages WHERE conversation_id = $1 ORDER BY created_at`,
-      [conversationId],
+      `SELECT m.id, m.role, m.content, m.mode, m.trace_id, m.confidence, m.latency_ms,
+              m.created_at, m.answer_failure,
+              COALESCE(t.status = 'refused', false) AS refused
+       FROM messages m LEFT JOIN traces t ON t.id = m.trace_id AND t.tenant_id = $2 AND t.user_id = $3
+       WHERE m.conversation_id = $1 ORDER BY m.created_at`,
+      [conversationId, principal.tenantId, principal.userId],
     )
+    const diagnosticIds = new Set(messages.flatMap(({ answer_failure: failure }) =>
+      failure ? [...failure.selected, ...failure.excluded].map((item) => item.chunk_id) : []))
+    const diagnosticChunks = diagnosticIds.size
+      ? await query<{ id: string; chunk_acl: string[]; document_acl: string[] }>(
+        `SELECT c.id, c.acl_principals AS chunk_acl, d.acl_principals AS document_acl
+         FROM chunks c JOIN documents d ON d.id = c.doc_id
+         WHERE c.id = ANY($1) AND c.tenant_id = $2 AND d.tenant_id = $2 AND d.status = 'active'`,
+        [[...diagnosticIds], principal.tenantId],
+      )
+      : []
+    const readableDiagnosticIds = new Set(diagnosticChunks
+      .filter((row) => canRead(principal, row.document_acl) && canRead(principal, row.chunk_acl))
+      .map((row) => row.id))
     const items: Array<Record<string, unknown>> = []
     const docIds = new Set<string>()
     for (const message of messages) {
@@ -132,6 +152,16 @@ export async function askRoutes(app: FastifyInstance): Promise<void> {
         [message.id],
       )
       for (const citation of citations) if (citation.doc_id) docIds.add(citation.doc_id)
+      const failure = message.answer_failure
+      if (failure) {
+        const selected = failure.selected.filter((item) => readableDiagnosticIds.has(item.chunk_id))
+        failure.excluded = failure.excluded.filter((item) => readableDiagnosticIds.has(item.chunk_id))
+        if (selected.length !== failure.selected.length) {
+          failure.model_reason = ''
+          failure.verification.issues = []
+        }
+        failure.selected = selected
+      }
       items.push({
         id: message.id,
         role: message.role,
@@ -139,8 +169,11 @@ export async function askRoutes(app: FastifyInstance): Promise<void> {
         mode: message.mode,
         trace_id: message.trace_id,
         confidence: message.confidence,
+        latency_ms: message.latency_ms,
         created_at: message.created_at,
         citations,
+        refused: message.role === 'assistant' && (Boolean(failure) || message.refused),
+        failure,
       })
     }
     const titles = new Map<string, string>()

@@ -1,5 +1,6 @@
 import { settings } from '../../config.js'
 import { ensureSidecar } from '../sidecar/index.js'
+import { convertWord } from './word.js'
 
 export interface ParsedDocument {
   title: string
@@ -247,7 +248,10 @@ export async function parseBytes(filename: string, data: Buffer, title?: string 
   const suffix = filename.includes('.') ? `.${filename.split('.').pop()!.toLowerCase()}` : ''
   const baseTitle = cleanParsedText(title || (filename.includes('.') ? filename.slice(0, filename.lastIndexOf('.')) : filename)) || '未命名文档'
   if (['.pdf', '.docx', '.png', '.jpg', '.jpeg', '.tif', '.tiff', '.webp', '.bmp', '.wav', '.mp3', '.m4a', '.mp4', '.webm', '.ogg', '.flac'].includes(suffix)) return sidecarParse(filename, data, title ?? null)
-  if (suffix === '.doc') throw new Error('暂不支持 .doc，请转换为 .docx 或 PDF')
+  if (suffix === '.doc') {
+    const docx = await convertWord(data, 'doc', 'docx')
+    return sidecarParse(`${filename.slice(0, -4)}.docx`, docx, title ?? null)
+  }
   const text = cleanParsedText(data.toString('utf8'))
   if (['.html', '.htm'].includes(suffix)) return parseHtml(text, baseTitle)
   if (['.md', '.markdown', '.txt', '.log', '.csv', '.json', '.yaml', '.yml'].includes(suffix)) return parseMarkdown(text, baseTitle)

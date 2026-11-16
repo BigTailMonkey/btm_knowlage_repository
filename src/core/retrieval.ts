@@ -87,6 +87,7 @@ export class Hit {
 export interface RetrievalResult {
   summaries?: Array<{ text: string; evidence_ids: string[] }>
   hits: Hit[]
+  rankedHits: Hit[]
   facts: Array<Record<string, unknown>>
   entities: EntityRow[]
   stats: Record<string, unknown>
@@ -310,6 +311,7 @@ export async function retrieve(
   if (!visible.length) {
     return {
       hits: [],
+      rankedHits: [],
       facts: [],
       entities: [],
       stats: { candidates: 0, visible: 0, rejected },
@@ -455,6 +457,7 @@ export async function retrieve(
   }
   return {
     hits: final,
+    rankedHits: reranked,
     summaries,
     facts,
     entities,

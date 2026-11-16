@@ -64,7 +64,7 @@ export interface GraphOptions {
   overview?: boolean
   /** 焦点实体；为空时退化为全局按置信度取样 */
   focus?: string | null
-  /** 以焦点为起点的最大跳数，1 表示只看直接关系 */
+  /** 以焦点为起点的最大跳数，范围 1 至 10，默认 2 */
   hops?: number
   /** 节点与关系的上限 */
   limit?: number
@@ -89,9 +89,11 @@ function attributeOf(fact: FactRow): GraphAttribute {
  */
 export async function buildEntityGraph(principal: Principal, options: GraphOptions = {}): Promise<EntityGraph> {
   const limit = Math.min(300, Math.max(10, options.limit ?? 80))
-  const hops = Math.min(3, Math.max(1, options.hops ?? 1))
   const overview = options.overview === true
   const focusId = overview ? null : options.focus ?? null
+  const requestedHops = options.hops ?? (focusId ? 2 : 1)
+  if (!Number.isInteger(requestedHops)) throw Object.assign(new Error('跳数必须为整数'), { statusCode: 400 })
+  const hops = Math.min(10, Math.max(1, requestedHops))
 
   const entityCache = new Map<string, EntityRow | null>()
   async function readEntity(id: string): Promise<EntityRow | null> {

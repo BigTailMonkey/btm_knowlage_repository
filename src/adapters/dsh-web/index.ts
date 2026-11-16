@@ -13,6 +13,21 @@ import {
 const WELCOME_VERSION = '2026-09-28.1'
 /** 对话正文字号（px）：DSH 默认 14px，中文阅读偏小，默认调大一档。 */
 const DEFAULT_CHAT_FONT_SIZE = 18
+const DSH_WEB_POLICY_PATH = '/_knowweave/chat-policy/sidebar-disabled-v1'
+const DISABLED_SIDEBAR_PLUGINS = [
+  'ui-sidebar-documentpreview',
+  'ui-sidebar-browser',
+  'ui-sidebar-terminal',
+  'ui-sidebar-files',
+  'ui-deliverables',
+  'ui-open-in-app',
+  'ui-reference',
+  'terminal-controller',
+  'workspace-files',
+  'office-to-pdf',
+  'open-in-app',
+  'file-reference-local',
+]
 
 /**
  * 关闭 DSH 自带的新手引导弹窗，并把对话正文默认调大一号：
@@ -145,12 +160,20 @@ async function probeDshWeb(url: string): Promise<number | null> {
   }
 }
 
-/** 主服务重载后优先接管仍存活的 DSH，避免重复启动造成端口冲突。 */
-async function adoptExistingDshWeb(): Promise<boolean> {
+/** 端口已有监听时校验禁用策略，通过后才接管，避免把旧进程的接口重新暴露给对话页。 */
+async function reuseListeningDshWeb(): Promise<boolean> {
   const baseUrl = baseDshWebUrl()
+  const baseStatus = await probeDshWeb(baseUrl)
+  if (baseStatus === null) return false
+  if (await probeDshWeb(new URL(DSH_WEB_POLICY_PATH, baseUrl).href) !== 204) {
+    ready = false
+    startupUrl = null
+    lastError = '此端口上的对话服务尚未禁用右侧栏及其接口，请重启对话服务'
+    return true
+  }
   const candidates = [...new Set([startupUrl, savedRuntimeUrl(), baseUrl].filter((url): url is string => Boolean(url)))]
   for (const candidate of candidates) {
-    const status = await probeDshWeb(candidate)
+    const status = candidate === baseUrl ? baseStatus : await probeDshWeb(candidate)
     // DSH 的有效启动令牌会换取 303；无令牌或失效令牌会返回 401。
     // 后一种情况把原地址交给浏览器，沿用该来源已有的登录 Cookie。
     if (status === 303) {
@@ -162,7 +185,10 @@ async function adoptExistingDshWeb(): Promise<boolean> {
       return true
     }
   }
-  return false
+  ready = false
+  startupUrl = null
+  lastError = '此端口上的对话服务未返回有效入口，请重启对话服务'
+  return true
 }
 
 function dshBin(): string {
@@ -215,9 +241,7 @@ const KNOWLEDGE_POLICY = [
 // Web presets mount their own scoped tools and persona, shadowing host defaults.
 // Patch their YAML syntax trees, retaining upstream/native tools, !!js expressions
 // and any user-authored preset composition, rather than replacing the composer.
-function knowledgePresetPatches(): string {
-  const runtimeRequire = createRequire(realpathSync(dshBin()))
-  const webEntry = runtimeRequire.resolve('@deepseek-ai/dsh-web-app')
+function knowledgePresetPatches(webEntry: string): string {
   const yaml = createRequire(webEntry)('yaml') as { parseDocument(source: string): any }
   const profilePath = join(settings.dshWebHome, 'profiles', 'web', 'cordis.patch.yml')
   const profile = yaml.parseDocument(readFileSync(profilePath, 'utf8'))
@@ -245,8 +269,14 @@ function knowledgePresetPatches(): string {
   }).join('\n')
 }
 
-/** 用独立补丁加载知织界面，保留用户已有的运行时配置与完整对话功能。 */
+/** 用独立补丁加载知织界面并强制应用 Web 对话的功能限制。 */
 export function ensureBrandingPatch(): string {
+  const runtimeRequire = createRequire(realpathSync(dshBin()))
+  const webEntry = runtimeRequire.resolve('@deepseek-ai/dsh-web-app')
+  const sidebarClient = createRequire(webEntry).resolve('@deepseek-ai/dsh-client-ui-sidebar-right/client')
+  if (!readFileSync(sidebarClient, 'utf8').includes('data-knowweave-sidebar-disabled')) {
+    throw new Error('对话组件缺少右侧栏禁用补丁，请按项目锁文件安装依赖')
+  }
   const patchPath = join(settings.dshWebHome, 'knowweave-branding.patch.yml')
   const pluginPath = join(settings.rootDir, 'src', 'adapters', 'dsh-web', 'branding', 'index.mjs')
   const content = [
@@ -265,6 +295,8 @@ export function ensureBrandingPatch(): string {
     // branding 插件在 assistant-actions 插槽提供自己的反馈按钮，记录到本系统。
     '- id: ui-message-feedback',
     '  disabled: true',
+    // 右侧栏的渲染和快捷键由依赖补丁关闭。这里卸载相关入口和后端服务。
+    ...DISABLED_SIDEBAR_PLUGINS.flatMap((id) => [`- id: ${id}`, '  disabled: true']),
     '- id: tool-web',
     '  config:',
     `    search: ${settings.dshWebSearchEnabled}`,
@@ -287,8 +319,10 @@ export function ensureBrandingPatch(): string {
     '          X-Knowweave-Native: "true"',
     '    - id: knowweave-branding',
     `      name: ${JSON.stringify(pluginPath)}`,
+    '      config:',
+    `        policyPath: ${DSH_WEB_POLICY_PATH}`,
     '',
-  ].join('\n') + '\n' + knowledgePresetPatches()
+  ].join('\n') + '\n' + knowledgePresetPatches(webEntry)
   if (!existsSync(patchPath) || readFileSync(patchPath, 'utf8') !== content) {
     writeFileSync(patchPath, content, 'utf8')
   }
@@ -391,7 +425,7 @@ export function ensureDshWeb(principal?: Principal): Promise<void> {
   if (ready && managed) return Promise.resolve()
   if (starting) return starting
   starting = (async () => {
-    if (await adoptExistingDshWeb()) return
+    if (await reuseListeningDshWeb()) return
     await spawnAndWait()
   })().finally(() => {
     starting = null

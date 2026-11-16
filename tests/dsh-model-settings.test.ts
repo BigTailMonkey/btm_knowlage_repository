@@ -102,3 +102,22 @@ test('the launch patch keeps the models page, drops account feedback/login and n
     assert.match(patch, /- id: knowweave-branding/)
   })
 })
+
+test('the launch patch disables the sidebar and its transport plugins even for an existing profile', async () => {
+  await withDshHome(async (home) => {
+    ensureQuietProfile()
+    const profile = await readFile(profilePath(home), 'utf8')
+    const edited = profile + '- id: ui-sidebar-browser\n  disabled: false\n'
+    await writeFile(profilePath(home), edited, 'utf8')
+    const patch = await readFile(ensureBrandingPatch(), 'utf8')
+    for (const id of [
+      'ui-sidebar-documentpreview', 'ui-sidebar-browser',
+      'ui-sidebar-terminal', 'ui-sidebar-files', 'ui-deliverables', 'ui-open-in-app', 'ui-reference',
+      'terminal-controller', 'workspace-files', 'office-to-pdf', 'open-in-app', 'file-reference-local',
+    ]) {
+      assert.ok(patch.includes(`- id: ${id}\n  disabled: true\n`), id)
+    }
+    assert.match(patch, /policyPath: \/_knowweave\/chat-policy\/sidebar-disabled-v1/)
+    assert.equal(await readFile(profilePath(home), 'utf8'), edited)
+  })
+})

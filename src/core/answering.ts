@@ -7,7 +7,7 @@ import type { ChunkRow, DocumentRow, EntityRow } from './rows.js'
 import { retrieve, RetrievalResult, Hit, normalizeAsOf } from './retrieval.js'
 import { Principal } from './security.js'
 import { TraceRecorder } from './tracing.js'
-import { validateGrounding, verifySemanticGrounding, type GroundingCheck } from './grounding.js'
+import { checkSemanticGrounding, validateGrounding, type GroundingCheck } from './grounding.js'
 
 const CITATION = /\[(\d+)\]/g
 const REFUSAL_PREFIX = /^(?:REFUSE\b|(?:抱歉[，,。]?\s*)?(?:(?:现有|当前|所提供的?|已有)?(?:资料|信息|证据|片段|内容)(?:不足|不够|未包含|没有)|我(?:无法|不能)|无法(?:可靠|准确)?回答|没有足够(?:资料|证据|信息)|不足以回答))/i
@@ -15,9 +15,9 @@ const FOLLOW_UP = /(它|他|她|这|那|该|此|其|上面|刚才|之前|上述|
 
 export const ANSWER_SYSTEM = `你是 KnoWeave（知织）知识库的问答引擎。规则：
 1. 只能使用给定的「证据」回答，不得使用训练知识补全，不得编造。
-2. 每个事实性句子末尾用 [编号] 标注引用，编号必须是证据编号；一句话可引用多条。
-3. 若证据不足以支撑结论，只输出一行：REFUSE: <缺失原因>。
-4. 回答使用中文，先给结论，再给 2-4 句关键依据；不要复述整段原文。
+2. 每个事实性句子末尾用 [编号] 标注引用，编号必须是证据编号；一句话可引用多条。附带说明也须有出处，缺少出处则省略该说明。
+3. 若证据不足以支撑结论，只输出一行：REFUSE: <缺失原因>。说明最接近的证据实际写了什么，以及问题中哪一项仍缺少支持。只陈述能从已给原文确认的信息。
+4. 回答使用中文，先给结论，再给 2-4 句关键依据。可用自己的话概括或综合多条证据，保留原文的适用对象、条件、数字和单位。
 5. 区分「资料明确支持」与「推测」；推测必须标注「（推测）」。
 6. 涉及时间时按事实有效期判断，不要混用已经失效的旧结论。
 7. 多轮对话中的历史消息仅用于理解指代，不得作为证据；引用编号只对应本轮证据。`
@@ -114,12 +114,6 @@ function retrievalQuestion(question: string, messages: MessageRow[]): string {
   return question
 }
 
-function refusal(hits: Hit[]): string {
-  if (!hits.length) return '现有资料不足以回答这个问题：知识库中没有检索到相关证据。建议先补充相关文档或调整关键词。'
-  const clues = hits.slice(0, 3).map((hit) => `《${hit.document.title}》`).join('；')
-  return `现有资料不足以可靠地回答这个问题。最接近的线索是：${clues}。这些片段没有形成一致的证据链，因此不做推测性回答。`
-}
-
 function confidence(answer: string, hits: Hit[], refused: boolean): number {
   if (refused || !hits.length) return 0.18
   const cited = [...answer.matchAll(CITATION)].map((match) => Number(match[1]))
@@ -192,6 +186,37 @@ interface Citation {
   heading_path: string[]
   quote: string
   rerank: number
+}
+
+type FailureStage = 'no_hits' | 'below_threshold' | 'model_refusal' | 'grounding'
+type ExcludedEvidence = Omit<Citation, 'index'> & { reason: 'query_limit' | 'answer_limit' }
+
+export interface AnswerFailure {
+  stage: FailureStage
+  queries: string[]
+  ranked_count: number
+  acl_excluded_count: number
+  fusion_excluded_count: number
+  top_score: number
+  threshold: number
+  selected: Citation[]
+  excluded_count: number
+  query_limit_count: number
+  excluded: ExcludedEvidence[]
+  model_reason: string
+  verification: Pick<GroundingCheck, 'sentences' | 'supported' | 'issues'> & {
+    format_missing: boolean
+    semantic_rejected: boolean
+  }
+}
+
+function preview(text: string, limit = 220): string {
+  const value = text.replace(/\s+/g, ' ').trim()
+  return value.length > limit ? `${value.slice(0, limit)}…` : value
+}
+
+function failureEvidence(index: number, hit: Hit): Citation {
+  return toCitation(index, hit, preview(hit.chunk.text))
 }
 
 export async function ask(
@@ -280,20 +305,25 @@ export async function ask(
   const hits = [...merged.values()].sort((a, b) => b.rerank - a.rerank).slice(0, topK)
   const memories = input.evaluation ? [] : await memoryContext(principal, question)
   const topScore = hits[0]?.rerank ?? 0
-  let refused = !hits.length || topScore < threshold
+  let failureStage: FailureStage | null = null
   let answer: string
   let citations: Citation[] = []
-  let grounding: GroundingCheck = { valid: false, coverage: 0, sentences: 0, supported: 0, quotes: {}, reason: null }
+  let grounding: GroundingCheck = { valid: false, coverage: 0, sentences: 0, supported: 0, quotes: {}, reason: null, issues: [] }
+  let modelReason = ''
+  let formatMissing = false
+  let semanticRejected = false
   let answerStrategy = 'generated'
 
   if (memoryText) {
     const existing = await queryOne<{ id: string }>('SELECT id FROM memory_items WHERE tenant_id = $1 AND user_id = $2 AND text = $3 AND (expires_at IS NULL OR expires_at > now())', [principal.tenantId, principal.userId, memoryText])
     if (!existing) await query(`INSERT INTO memory_items (id, tenant_id, user_id, scope, kind, text, confidence) VALUES ($1, $2, $3, 'personal', 'conversation_note', $4, 0.7)`, [newId('mem'), principal.tenantId, principal.userId, memoryText])
     answer = '已记入个人记忆，可在记忆页查看与删除。'
-    refused = false
     answerStrategy = 'memory'
-  } else if (refused) {
-    answer = refusal(hits)
+  } else if (!hits.length || topScore < threshold) {
+    failureStage = hits.length ? 'below_threshold' : 'no_hits'
+    answer = hits.length
+      ? `最高检索分 ${topScore.toFixed(3)} 低于作答阈值 ${threshold.toFixed(3)}，本轮未生成回答。`
+      : '在本轮检索范围内没有召回可用的原文片段，本轮未生成回答。'
   } else {
     const evidence = formatEvidence(hits, facts, memories, results.flatMap((result) => result.summaries ?? []))
     const historyBlock = history.length ? `${historyContext(history)}\n\n` : ''
@@ -327,15 +357,26 @@ ${evidence}
     const text = requireModelText(generated, '问答生成')
     const isRefusal = REFUSAL_PREFIX.test(text)
     if (isRefusal) {
-      answer = refusal(hits)
-      refused = true
+      failureStage = 'model_refusal'
+      modelReason = preview((text.split('\n')[0] ?? '').replace(/^REFUSE\s*[:：]?\s*/i, ''), 360)
+      answer = '生成模型判断现有片段不足以回答这个问题。'
     } else {
-      grounding = validateGrounding(text, hits.map((hit) => ({ text: hit.chunk.text })))
+      const groundingSources = hits.map((hit) => ({ text: hit.chunk.text }))
+      grounding = validateGrounding(text, groundingSources, { checkWording: !settings.groundingVerifier })
       if (grounding.valid && settings.groundingVerifier) {
         try {
-          const supported = await verifySemanticGrounding(text, hits.map((hit) => ({ text: hit.chunk.text })))
+          const { supported, unsupportedSentences } = await checkSemanticGrounding(text, groundingSources)
           recorder.addSpan({ stage: 'answer.verify', output: { supported }, inputValue: text })
-          if (!supported) grounding = { ...grounding, valid: false, reason: '独立语义校验未确认全部事实句' }
+          if (!supported) {
+            semanticRejected = true
+            grounding.valid = false
+            grounding.reason = '独立语义校验未确认全部事实句'
+            grounding.issues = unsupportedSentences.filter((sentence) => text.includes(sentence)).map((sentence) => ({
+              claim: sentence.replace(CITATION, '').trim(),
+              evidence_indices: [...new Set([...sentence.matchAll(CITATION)].map((match) => Number(match[1])))].filter((index) => index >= 1 && index <= hits.length),
+              reasons: ['独立语义校验未确认所引原文能支持这条表述'],
+            }))
+          }
         } catch (error) {
           recorder.addSpan({ stage: 'answer.verify', status: 'error' })
           await finishTrace('', 'error')
@@ -343,22 +384,65 @@ ${evidence}
         }
       }
       if (mode === 'compare' && !/^\s*\|.+\|\s*\n\s*\|[-\s|:]+\|/m.test(text)) {
+        formatMissing = true
         grounding = { ...grounding, valid: false, reason: grounding.reason ?? '生成回答未提供要求的对比表格' }
       }
       if (grounding.valid) {
         answer = text
       } else {
         answer = '生成回答未通过核验。' + (grounding.reason ? `原因：${grounding.reason}。` : '')
-        refused = true
+        failureStage = 'grounding'
       }
       const indices = new Set(
         [...answer.matchAll(CITATION)].map((match) => Number(match[1])).filter((index) => index >= 1 && index <= hits.length),
       )
-      citations = refused ? [] : [...indices].sort((a, b) => a - b).map((index) => toCitation(index, hits[index - 1]!, grounding.quotes[index]))
+      citations = failureStage ? [] : [...indices].sort((a, b) => a - b).map((index) => toCitation(index, hits[index - 1]!, grounding.quotes[index]))
     }
   }
 
-  if (refused) answerStrategy = 'refused'
+  const refused = failureStage !== null
+  const aclExcludedCount = results.reduce((sum, result) => sum + result.rejectedCandidates, 0)
+  let failure: AnswerFailure | null = null
+  if (failureStage) {
+    answerStrategy = 'refused'
+    const selectedIds = new Set(hits.map((hit) => hit.chunk.id))
+    const ranked = new Map(merged)
+    for (const result of results) {
+      for (const hit of result.rankedHits) {
+        const previous = ranked.get(hit.chunk.id)
+        if (!previous || hit.rerank > previous.rerank) ranked.set(hit.chunk.id, hit)
+      }
+    }
+    const excluded = [...ranked.values()].filter((hit) => !selectedIds.has(hit.chunk.id)).sort((a, b) => b.rerank - a.rerank)
+    failure = {
+      stage: failureStage,
+      queries: [...tried],
+      ranked_count: ranked.size,
+      acl_excluded_count: aclExcludedCount,
+      fusion_excluded_count: results.reduce((sum, result) => sum + Number(result.stats.fused ?? 0) - result.rankedHits.length, 0),
+      top_score: topScore,
+      threshold,
+      selected: hits.map((hit, index) => failureEvidence(index + 1, hit)),
+      excluded_count: excluded.length,
+      query_limit_count: ranked.size - merged.size,
+      excluded: excluded.slice(0, 5).map((hit) => {
+        const { index: _, ...evidence } = failureEvidence(0, hit)
+        return { ...evidence, reason: merged.has(hit.chunk.id) ? 'answer_limit' : 'query_limit' }
+      }),
+      model_reason: modelReason,
+      verification: {
+        sentences: grounding.sentences,
+        supported: grounding.supported,
+        issues: grounding.issues.slice(0, 6).map((issue) => ({
+          ...issue,
+          claim: preview(issue.claim),
+          reasons: issue.reasons.map((reason) => preview(reason)),
+        })),
+        format_missing: formatMissing,
+        semantic_rejected: semanticRejected,
+      },
+    }
+  }
   const score = memoryText ? 1 : confidence(answer, hits, refused)
   if (refused && !input.evaluation) await upsertGap(principal, question)
 
@@ -385,9 +469,9 @@ ${evidence}
     [newId('msg'), activeConversation.id, question, mode, recorder.traceId],
   )
   await query(
-    `INSERT INTO messages (id, conversation_id, role, content, mode, latency_ms, trace_id, confidence)
-     VALUES ($1, $2, 'assistant', $3, $4, $5, $6, $7)`,
-    [assistantId, activeConversation.id, answer, mode, recorder.latencyMs, recorder.traceId, score],
+    `INSERT INTO messages (id, conversation_id, role, content, mode, latency_ms, trace_id, confidence, answer_failure)
+     VALUES ($1, $2, 'assistant', $3, $4, $5, $6, $7, $8::jsonb)`,
+    [assistantId, activeConversation.id, answer, mode, recorder.latencyMs, recorder.traceId, score, failure ? JSON.stringify(failure) : null],
   )
   for (const citation of citations) {
     await query('UPDATE fact_evidence SET last_used_at=now() WHERE chunk_id=$1', [citation.chunk_id])
@@ -431,6 +515,7 @@ ${evidence}
   return {
     answer,
     refused,
+    failure,
     confidence: score,
     citations,
     evidence: hits.map((hit) => hit.toDict()),
@@ -452,7 +537,7 @@ ${evidence}
       top_score: Number(topScore.toFixed(4)),
       threshold: Number(threshold.toFixed(4)),
       evidence_count: hits.length,
-      rejected_candidates: results.reduce((sum, result) => sum + result.rejectedCandidates, 0),
+      rejected_candidates: aclExcludedCount,
       subqueries: [...tried],
       retrieval_rounds: rounds,
     },

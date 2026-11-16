@@ -17,6 +17,7 @@ const state = {
   entities: [],
   graph: { nodes: [], edges: [] },
   graphScope: "local",
+  graphHops: 2,
   graphOverviewZoom: false,
   activeEntity: null,
   entityView: localStorage.getItem("kw_entity_view") === "graph" ? "graph" : "entity",
@@ -60,6 +61,7 @@ const SOURCE_LABEL = {
   text: "文本",
   web: "网页",
   pdf: "PDF",
+  doc: "DOC",
   docx: "DOCX",
 };
 
@@ -188,11 +190,11 @@ function money(value) {
   return amount < 0.01 && amount > 0 ? `¥${amount.toFixed(5)}` : `¥${amount.toFixed(2)}`;
 }
 
-function shortDate(value) {
+function shortDate(value, { year } = {}) {
   if (!value) return "无";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Shanghai" });
+  return date.toLocaleString("zh-CN", { year, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Shanghai" });
 }
 
 function dayOnly(value) {
@@ -233,7 +235,7 @@ function setBusy(button, busy, label = "处理中") {
   }
 }
 
-async function api(path, options = {}) {
+async function api(path, { responseType, ...options } = {}) {
   const headers = Object.assign({ Authorization: `Bearer ${state.token}` }, options.headers || {});
   let body = options.body;
   if (body && !(body instanceof FormData) && typeof body === "object") {
@@ -253,6 +255,7 @@ async function api(path, options = {}) {
     throw error;
   }
   if (response.status === 204) return {};
+  if (responseType === "blob") return response.blob();
   return response.json();
 }
 
@@ -324,6 +327,7 @@ function restorePageFromUrl() {
 function showPage(page, detail = null) {
   if (hoverTooltipTarget) hideHoverTooltip();
   if (state.page === "chat" && page !== "chat") closeChatCitation();
+  if (state.page === "document") closeDocumentFile();
   state.page = page;
   state.document = detail;
   document.body.dataset.page = page;
@@ -388,6 +392,7 @@ async function loadMetaAndHealth() {
   }
   renderRuntime();
   renderDashboardConfig();
+  applyModeHints();
 }
 
 function runtimeView() {
@@ -863,21 +868,51 @@ const expandedDocStacks = new Set();
 
 function toggleDocStack(button) {
   const key = button.dataset.stackToggle;
-  const expanded = expandedDocStacks.has(key);
-  if (expanded) expandedDocStacks.delete(key);
-  else expandedDocStacks.add(key);
-  button.setAttribute("aria-expanded", expanded ? "false" : "true");
-  const caret = button.querySelector("[data-stack-caret]");
-  if (caret) caret.textContent = expanded ? "展开" : "收起";
-  $$("#doc-table-body [data-stack-child]").forEach((row) => {
-    if (row.dataset.stackChild === key) row.hidden = expanded;
-  });
+  const panel = document.getElementById(button.getAttribute("aria-controls"));
+  const expanded = panel.hidden;
+  if (expanded) expandedDocStacks.add(key);
+  else expandedDocStacks.delete(key);
+  panel.hidden = !expanded;
+  button.setAttribute("aria-expanded", String(expanded));
+  button.querySelector("[data-stack-label]").textContent = expanded ? "收起沿革" : "展开沿革";
 }
 
 function docMatchesFilter(doc, query, source) {
   if (source && doc.source_type !== source) return false;
   if (!query) return true;
   return String(doc.title ?? "").toLowerCase().includes(query.toLowerCase());
+}
+
+function docStackHistory(docs, panelId, expanded) {
+  return `
+    <tr class="doc-stack-history" id="${panelId}"${expanded ? "" : " hidden"}>
+      <td colspan="6">
+        <div class="doc-stack-panel">
+          <div class="doc-stack-panel-head"><strong id="${panelId}-heading">文档沿革</strong><span>按延续顺序</span></div>
+          <ol class="doc-stack-timeline" role="list" aria-labelledby="${panelId}-heading">
+            ${docs.map((doc) => {
+              const summary = plain(doc.summary);
+              return `<li>
+                <a class="doc-stack-card" data-doc="${esc(doc.id)}" href="${esc(documentPagePath(doc.id))}">
+                  <span class="doc-stack-card-main">
+                    <span class="doc-stack-card-title"><strong>${esc(doc.title)}</strong>${continuationBadge(doc)}</span>
+                    ${summary ? `<span class="doc-stack-card-summary">${esc(summary)}</span>` : ""}
+                    <span class="doc-stack-card-meta">
+                      <span>${esc(SOURCE_LABEL[doc.source_type] || doc.source_type)}</span>
+                      <span>v${esc(doc.version)}</span>
+                      <span>${num(doc.chunks)} 个检索单元</span>
+                      <span>${esc(doc.acl_label)}</span>
+                    </span>
+                  </span>
+                  ${doc.updated_at ? `<span class="doc-stack-card-date">更新于 <time datetime="${esc(doc.updated_at)}">${esc(shortDate(doc.updated_at, { year: "numeric" }))}</time></span>` : ""}
+                  <span class="doc-stack-card-arrow" aria-hidden="true"></span>
+                </a>
+              </li>`;
+            }).join("")}
+          </ol>
+        </div>
+      </td>
+    </tr>`;
 }
 
 /** 沿革堆叠：每条链只留当前生效的一篇，被延续的收在它下面，点开才显示。 */
@@ -892,15 +927,20 @@ function docStackRows() {
     const index = stack.docs.findIndex((doc) => doc.in_force);
     const active = stack.docs[index >= 0 ? index : stack.docs.length - 1];
     const rest = stack.docs.filter((doc) => doc !== active);
-    const key = esc(stack.key);
-    const expanded = expandedDocStacks.has(stack.key);
     current += 1;
     folded += rest.length;
-    const toggle = rest.length
-      ? `<button class="doc-stack-toggle" type="button" data-stack-toggle="${key}" aria-expanded="${expanded ? "true" : "false"}"><span data-stack-caret>${expanded ? "收起" : "展开"}</span>沿革 ${num(stack.docs.length)} 篇</button>`
-      : "";
-    rows.push(docRowHtml(active, { attributes: rest.length ? ` data-stack-head="${key}"` : "", titleExtra: toggle }));
-    rest.forEach((doc) => rows.push(docRowHtml(doc, { attributes: ` data-stack-child="${key}"${expanded ? "" : " hidden"}` })));
+    if (!rest.length) {
+      rows.push(docRowHtml(active));
+      continue;
+    }
+    const key = esc(stack.key);
+    const panelId = `doc-stack-${esc(encodeURIComponent(stack.key))}`;
+    const expanded = expandedDocStacks.has(stack.key);
+    const toggle = `<button class="doc-stack-toggle" type="button" data-stack-toggle="${key}" aria-expanded="${expanded}" aria-controls="${panelId}">
+      <span data-stack-label>${expanded ? "收起沿革" : "展开沿革"}</span><span class="doc-stack-count">${num(rest.length)} 篇</span><span class="doc-stack-chevron" aria-hidden="true"></span>
+    </button>`;
+    rows.push(docRowHtml(active, { attributes: ` data-stack-head="${key}"`, titleExtra: toggle }));
+    rows.push(docStackHistory(rest, panelId, expanded));
   }
   return { rows, current, folded };
 }
@@ -908,8 +948,6 @@ function docStackRows() {
 function renderDocs() {
   const target = $("#doc-table-body");
   const empty = $("#doc-empty");
-  const hint = $("#doc-view-hint");
-  if (hint) hint.hidden = state.libraryView !== "stack";
   const stacked = state.libraryView === "stack" ? docStackRows() : null;
   const rows = stacked ? stacked.rows : state.docs.map((doc) => docRowHtml(doc));
   empty.hidden = Boolean(rows.length);
@@ -927,13 +965,12 @@ function renderDocs() {
       event.stopPropagation();
       toggleDocStack(button);
     });
-    button.addEventListener("keydown", (event) => event.stopPropagation());
   });
-  $$("#doc-table-body [data-doc]").forEach((row) => {
-    row.addEventListener("click", (event) => {
+  $$("#doc-table-body [data-doc]").forEach((item) => {
+    item.addEventListener("click", (event) => {
       if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       event.preventDefault();
-      openDoc(row.dataset.doc);
+      openDoc(item.dataset.doc);
     });
   });
 }
@@ -944,8 +981,6 @@ function applyLibraryViewUI() {
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", active ? "true" : "false");
   });
-  const table = $(".docs-table");
-  if (table) table.classList.toggle("is-stacked", state.libraryView === "stack");
 }
 
 function setupLibraryView() {
@@ -1084,6 +1119,49 @@ function openCitation(citation) {
 }
 
 let docOpenRequest = 0;
+let documentFile = null;
+
+function closeDocumentFile() {
+  if (!documentFile) return;
+  documentFile.controller.abort();
+  releasePdf(documentFile);
+  documentFile.download.onclick = null;
+  documentFile.download.disabled = false;
+  documentFile = null;
+}
+
+function openDocumentFile(file, path, body, download) {
+  const controller = new AbortController();
+  const token = state.token;
+  const preview = documentFile = {
+    controller, path, download, data: {}, isCurrent: () => documentFile === preview && state.token === token,
+  };
+  download.onclick = async () => {
+    download.disabled = true;
+    try {
+      const blob = await api(`${path}&format=original`, { signal: controller.signal, responseType: "blob" });
+      if (!preview.isCurrent()) return;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = file.filename;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      if (preview.isCurrent()) toast(error.message);
+    } finally {
+      if (preview.isCurrent()) download.disabled = false;
+    }
+  };
+  body.setAttribute("aria-busy", "true");
+  body.innerHTML = loadingLines();
+  void fetchPdfPreview(preview).then(() => renderPdfInto(preview, body, null)).catch((error) => {
+    releasePdf(preview);
+    if (!preview.isCurrent()) return;
+    body.setAttribute("aria-busy", "false");
+    body.innerHTML = `<p class="empty-block" role="status">${esc(error.message || "版式预览暂不可用")}</p>`;
+  });
+}
 
 const ENRICHMENT_LABEL = {
   pending: "等待抽取事实与实体",
@@ -1136,6 +1214,7 @@ async function loadDocument(citation, refresh = false) {
   const status = $("#doc-page-status");
   const tabBar = $("#doc-page-tabbar");
   const tabList = $("#doc-page-tabs");
+  const downloadOriginal = $("[data-download-original]", tabBar);
   const copySource = $("[data-copy-source]", tabBar);
   const body = $("#doc-page-body");
   const sourceFooter = $("#doc-source-footer");
@@ -1168,10 +1247,14 @@ async function loadDocument(citation, refresh = false) {
     const ranges = sourceRanges(data, citation);
     const version = data.source?.version ?? doc.version;
     const sourceText = data.source?.text ?? "";
-    const sourceLabel = SOURCE_LABEL[doc.source_type] || doc.source_type;
     const locating = Boolean(citation?.chunk_id || citation?.quote || citation?.spans?.length);
     const hasChain = Boolean(doc.continuation) || (continuation?.chain?.length ?? 0) > 1;
     const activeVersionId = data.source?.version_id;
+    const file = data.source?.file;
+    const sourceType = file?.type ?? doc.source_type;
+    const sourceLabel = SOURCE_LABEL[sourceType] || sourceType;
+    const hasFileTab = Boolean(file) || (version === doc.version && ["pdf", "doc", "docx"].includes(sourceType));
+    const textTab = hasFileTab ? "text" : "source";
     title.textContent = doc.title;
     badges.innerHTML = `${continuationBadge(doc)}${version !== doc.version ? `<span class="pill warn">历史版本</span>` : ""}`;
     meta.innerHTML = `
@@ -1187,10 +1270,13 @@ async function loadDocument(citation, refresh = false) {
       <div><dt>内容哈希</dt><dd class="mono">${esc(doc.content_hash)}</dd></div>`;
     status.hidden = false;
 
-    const sourcePanel = `
+    const textPanel = `
       ${locating ? `<div class="doc-panel-toolbar"><span class="pill info">已定位引用</span></div>` : ""}
-      ${locating && !ranges.length ? `<p class="doc-hint">该引用暂无精确坐标，可在下方原文中核对。</p>` : ""}
-      <pre class="doc-source">${sourceHtml(sourceText, ranges) || '<span class="muted">暂无原文</span>'}</pre>`;
+      ${locating && !ranges.length ? `<p class="doc-hint">该引用暂无精确坐标，可在下方文字中核对。</p>` : ""}
+      <pre class="doc-source">${sourceHtml(sourceText, ranges) || '<span class="muted">暂无内容文字</span>'}</pre>`;
+    const filePanel = file
+      ? `<div class="doc-file-preview" role="region" aria-label="${esc(sourceLabel)} 版式预览"></div>`
+      : `<p class="empty-block" role="status">此版本未保存原文件。</p>`;
 
     const chunksPanel = data.chunks.length
       ? `<div class="doc-chunk-list">${data.chunks.map((chunk) => `
@@ -1242,19 +1328,25 @@ async function loadDocument(citation, refresh = false) {
       && (successor || !doc.continuation?.successor_doc_id);
 
     const selectedTab = refresh ? $('[data-doc-tab][aria-selected="true"]', tabList)?.dataset.docTab : null;
+    const originalPath = file ? documentCitationPath(docId, activeVersionId) : null;
+    const oldFilePanel = originalPath && documentFile?.path === originalPath ? $("#doc-panel-source", body) : null;
+    if (!oldFilePanel) closeDocumentFile();
     tabList.innerHTML = `
       ${docTabButton("source", "原文", null, true)}
+      ${hasFileTab ? docTabButton("text", "内容文字", null, false) : ""}
       ${docTabButton("chunks", "检索单元", data.chunks.length, false)}
       ${docTabButton("versions", "版本", data.versions.length, false)}
       ${docTabButton("facts", "事实", data.facts.length, false)}`;
     tabBar.hidden = false;
     body.innerHTML = `
       <section class="doc-main" aria-label="文档内容">
-        ${docTabPanel("source", sourcePanel, true)}
+        ${docTabPanel("source", hasFileTab ? filePanel : textPanel, true)}
+        ${hasFileTab ? docTabPanel("text", textPanel, false) : ""}
         ${docTabPanel("chunks", chunksPanel, false)}
         ${docTabPanel("versions", versionsPanel, false)}
         ${docTabPanel("facts", factsPanel, false)}
       </section>`;
+    if (oldFilePanel) $("#doc-panel-source", body).replaceWith(oldFilePanel);
 
     rail.innerHTML = `
       <div class="doc-rail-content">
@@ -1303,10 +1395,14 @@ async function loadDocument(citation, refresh = false) {
         tab.tabIndex = active ? 0 : -1;
       }
       for (const panel of panels) panel.hidden = panel.dataset.docPanel !== id;
-      copySource.hidden = id !== "source";
-      sourceFooter.hidden = id !== "source";
+      downloadOriginal.hidden = id !== "source" || !file;
+      copySource.hidden = id !== textTab;
+      sourceFooter.hidden = id !== textTab;
+      if (id === "source" && file && !documentFile) {
+        openDocumentFile(file, originalPath, $(".doc-file-preview", body), downloadOriginal);
+      }
     };
-    activateTab(selectedTab ?? "source");
+    activateTab((selectedTab === "text" ? textTab : selectedTab) ?? (locating ? textTab : "source"));
     for (const tab of tabs) tab.addEventListener("click", () => activateTab(tab.dataset.docTab));
     tabList.onkeydown = (event) => {
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
@@ -1348,6 +1444,7 @@ async function loadDocument(citation, refresh = false) {
     }
   } catch (error) {
     if (isCurrent()) {
+      closeDocumentFile();
       badges.innerHTML = "";
       meta.innerHTML = "";
       status.hidden = true;
@@ -1872,8 +1969,9 @@ function openIngest(doc = null) {
   renderIngestFiles();
   $("#ingest-title").textContent = doc ? "更新文档" : "添加文档";
   for (const type of ["file", "text", "url"]) $("#" + type + "-title").value = doc?.title || "";
-  if (doc?.source_type === "web") $("#url-input").value = doc.uri || "";
-  selectIngestTab(doc?.source_type === "web" ? "url" : doc?.source_type === "text" ? "text" : "file");
+  const fromUrl = doc?.source_type === "web" || (doc?.source_type === "pdf" && /^https?:\/\//i.test(doc.uri ?? ""));
+  if (fromUrl) $("#url-input").value = doc.uri || "";
+  selectIngestTab(fromUrl ? "url" : doc?.source_type === "text" ? "text" : "file");
   $("#ingest-dialog").showModal();
   loadAclOptions().catch((error) => toast(error.message));
 }
@@ -2112,6 +2210,14 @@ function loadPdfjs() {
   return pdfjsModule;
 }
 
+async function fetchPdfPreview(preview) {
+  const signal = preview.controller.signal;
+  const blob = await api(`${preview.path}&format=pdf`, { signal, responseType: "blob" });
+  if (blob.type !== "application/pdf") throw new Error("版式预览暂不可用");
+  signal.throwIfAborted();
+  preview.url = URL.createObjectURL(blob);
+}
+
 function pdfFlatText(value) {
   return String(value ?? "").replace(/\s+/g, "");
 }
@@ -2167,7 +2273,7 @@ async function renderPdfPage(preview, entry, body) {
   entry.rendering = (async () => {
     const lib = await loadPdfjs();
     const page = await preview.pdf.getPage(entry.number);
-    if (chatCitation !== preview) return;
+    if (!preview.isCurrent()) return;
     const base = page.getViewport({ scale: 1 });
     const width = entry.page.clientWidth || body.clientWidth || 480;
     const scale = width / base.width;
@@ -2175,8 +2281,8 @@ async function renderPdfPage(preview, entry, body) {
     const viewport = page.getViewport({ scale: scale * dpr });
     entry.canvas.width = Math.floor(viewport.width);
     entry.canvas.height = Math.floor(viewport.height);
-    await page.render({ canvasContext: entry.canvas.getContext("2d"), viewport }).promise;
-    if (chatCitation !== preview) return;
+    await page.render({ canvas: entry.canvas, viewport }).promise;
+    if (!preview.isCurrent()) return;
     entry.page.style.aspectRatio = `${base.width} / ${base.height}`;
     entry.page.classList.add("is-rendered");
     entry.rendered = true;
@@ -2184,6 +2290,7 @@ async function renderPdfPage(preview, entry, body) {
     const cssViewport = page.getViewport({ scale });
     const quote = pdfFlatText(preview.data.chunks[0]?.text);
     const rects = pdfHighlightRects(await page.getTextContent(), cssViewport, lib, quote);
+    if (!preview.isCurrent()) return;
     for (const rect of rects) {
       const mark = document.createElement("span");
       mark.className = "pdf-citation-highlight";
@@ -2206,9 +2313,9 @@ async function renderPdfPage(preview, entry, body) {
   return entry.rendering;
 }
 
-async function renderPdfInto(preview, body) {
+async function renderPdfInto(preview, body, root = body) {
   const lib = await loadPdfjs();
-  if (chatCitation !== preview) return;
+  if (!preview.isCurrent()) return;
   preview.pdfTask ??= lib.getDocument({
     url: preview.url,
     cMapUrl: "/vendor/pdfjs/cmaps/",
@@ -2216,10 +2323,10 @@ async function renderPdfInto(preview, body) {
     standardFontDataUrl: "/vendor/pdfjs/standard_fonts/",
   });
   const pdf = await preview.pdfTask.promise;
-  if (chatCitation !== preview) return;
+  if (!preview.isCurrent()) return;
   preview.pdf = pdf;
   const first = await pdf.getPage(1);
-  if (chatCitation !== preview || $("#chat-citation-file").getAttribute("aria-pressed") !== "true") return;
+  if (!preview.isCurrent() || preview.isVisible?.() === false) return;
   const base = first.getViewport({ scale: 1 });
   const cited = Number(preview.data.page) || 0;
   const pages = document.createElement("div");
@@ -2248,7 +2355,7 @@ async function renderPdfInto(preview, body) {
       const entry = entries[Number(record.target.dataset.page) - 1];
       if (entry) void renderPdfPage(preview, entry, body);
     }
-  }, { root: body, rootMargin: "320px 0px" });
+  }, { root, rootMargin: "320px 0px" });
   preview.observer = observer;
   entries.forEach((entry) => observer.observe(entry.page));
   if (cited) entries[cited - 1]?.page.scrollIntoView({ block: "start" });
@@ -2275,18 +2382,7 @@ async function showChatCitationFile(preview) {
   body.setAttribute("aria-busy", "true");
   body.innerHTML = loadingLines();
   try {
-    preview.file ??= (async () => {
-      const response = await fetch(`${API}${preview.path}&format=pdf`, {
-        headers: { Authorization: `Bearer ${state.token}` },
-        signal: preview.controller.signal,
-      });
-      if (!response.ok || response.headers.get("Content-Type")?.split(";")[0] !== "application/pdf") {
-        throw new Error("版式预览暂不可用，已显示引用文本。");
-      }
-      const blob = await response.blob();
-      preview.controller.signal.throwIfAborted();
-      preview.url = URL.createObjectURL(blob);
-    })();
+    preview.file ??= fetchPdfPreview(preview);
     await preview.file;
     if (chatCitation !== preview || $("#chat-citation-file").getAttribute("aria-pressed") !== "true") return;
     await renderPdfInto(preview, body);
@@ -2307,7 +2403,11 @@ function documentCitationPath(docId, versionId, chunkId) {
 async function openChatCitation(docId, versionId, chunkId) {
   closeChatCitation();
   const path = documentCitationPath(docId, versionId, chunkId);
-  const preview = chatCitation = { controller: new AbortController(), path };
+  const preview = chatCitation = {
+    controller: new AbortController(), path,
+    isCurrent: () => chatCitation === preview,
+    isVisible: () => $("#chat-citation-file").getAttribute("aria-pressed") === "true",
+  };
   const body = $("#chat-citation-body");
   $("#chat-citation").hidden = false;
   $("#chat-citation-title").textContent = "引用原文";
@@ -2775,7 +2875,7 @@ function answerHtml(text, refused) {
 }
 
 // 模型输出带轻度 markdown：只处理粗体、行内代码、小标题、列表与分隔线。
-function renderMarkdown(text) {
+function renderMarkdown(text, headingTag = "h3") {
   const inline = (value) => value
     .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
     .replace(/`([^`\n]+)`/g, "<code>$1</code>");
@@ -2798,7 +2898,7 @@ function renderMarkdown(text) {
     const line = raw.trim();
     if (!line) { flush(); continue; }
     const heading = line.match(/^#{2,4}\s+(.+)$/);
-    if (heading) { flush(); out.push(`<h3>${inline(heading[1])}</h3>`); continue; }
+    if (heading) { flush(); out.push(`<${headingTag}>${inline(heading[1])}</${headingTag}>`); continue; }
     if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(line)) { flush(); out.push("<hr>"); continue; }
     const bullet = line.match(/^(?:[-*·]\s+|\d+[.)]\s+)(.+)$/);
     if (bullet) {
@@ -2816,6 +2916,7 @@ function renderMarkdown(text) {
 }
 
 function setupAsk() {
+  let composing = false;
   $$("#mode-tabs [data-mode]").forEach((button) => {
     button.addEventListener("click", () => {
       state.mode = button.dataset.mode;
@@ -2824,24 +2925,42 @@ function setupAsk() {
         item.classList.toggle("active", active);
         item.setAttribute("aria-pressed", active ? "true" : "false");
       });
-      updateModeHint();
+      applyModeHints();
     });
   });
   $("#ask-form").addEventListener("submit", (event) => {
     event.preventDefault();
     runAsk();
   });
-  $("#question").addEventListener("keydown", (event) => {
+  const question = $("#question");
+  question.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") runAsk();
   });
-  $("#question").addEventListener("input", resizeAskInput);
+  question.addEventListener("input", (event) => {
+    // 输入法组字期间不动输入框：改高度/选区会打断组字，标记可能停在旧位置。
+    if (event.isComposing || composing) return;
+    resizeAskInput();
+  });
+  question.addEventListener("compositionstart", () => { composing = true; });
+  question.addEventListener("compositionend", () => { composing = false; resizeAskInput(); });
+  // 已有文字时插入点默认落在末尾：否则点进输入框会在旧文字开头继续写，
+  // 拼音组字的标记也跟着画在开头。拖选、双击选词仍然保持原生行为。
+  question.addEventListener("focus", () => {
+    if (composing) return;
+    moveCaretToEnd(question);
+  });
+  question.addEventListener("mouseup", (event) => {
+    if (composing || event.detail > 1) return;
+    if (question.selectionStart !== question.selectionEnd) return;
+    moveCaretToEnd(question);
+  });
   $("#ask-result").addEventListener("click", (event) => {
     const sample = event.target.closest("[data-sample]");
     if (!sample) return;
     fillAsk(sample.dataset.sample);
     runAsk();
   });
-  updateModeHint();
+  applyModeHints();
   resizeAskInput();
 }
 
@@ -2850,6 +2969,13 @@ function resizeAskInput() {
   if (!input) return;
   input.style.height = "auto";
   input.style.height = `${Math.min(input.scrollHeight, 132)}px`;
+}
+
+function moveCaretToEnd(input) {
+  if (typeof input.setSelectionRange !== "function") return;
+  const end = input.value.length;
+  if (input.selectionStart === end && input.selectionEnd === end) return;
+  input.setSelectionRange(end, end);
 }
 
 function latencyLabel(value) {
@@ -2908,14 +3034,8 @@ function askEmptyHtml() {
   const samples = askSamples();
   return `<div class="ask-empty">
     <div class="ask-empty-lead">
-      <span class="ask-empty-mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none">
-          <path d="M3 9c4.5 0 4.5-5 9-5s4.5 5 9 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-          <path d="M3 15c4.5 0 4.5 5 9 5s4.5-5 9-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-        </svg>
-      </span>
       <h2>从一条具体问题开始</h2>
-      <p>问题问得越具体，召回的片段越准。系统只使用通过阈值筛选的原文作答，证据不足时会直接说明。</p>
+      <p>问题问得越具体，召回的片段越准。最高检索分达到阈值后，系统才会根据排序入围的原文生成回答。</p>
       <div class="ask-samples">
         <span class="ask-samples-label">试着问</span>
         ${samples.map((question) => `<button class="ask-sample" type="button" data-sample="${esc(question)}">${esc(question)}</button>`).join("")}
@@ -2923,7 +3043,7 @@ function askEmptyHtml() {
     </div>
     <div class="ask-empty-steps">
       <div class="ask-step"><span>1</span><div><b>召回</b><p>混合检索从全部文档中取候选片段</p></div></div>
-      <div class="ask-step"><span>2</span><div><b>重排与阈值</b><p>低分片段被淘汰，不进入生成上下文</p></div></div>
+      <div class="ask-step"><span>2</span><div><b>重排与阈值</b><p>按分数排序选取片段，检查最高分是否达到作答阈值</p></div></div>
       <div class="ask-step"><span>3</span><div><b>成文与引用</b><p>答案逐句标注编号，可回到原文定位</p></div></div>
     </div>
   </div>`;
@@ -2956,11 +3076,12 @@ function renderScope(stats) {
   write("scope-facts", stats?.facts_active);
 }
 
-function updateModeHint() {
-  const hint = $("#mode-hint");
-  if (!hint) return;
-  const mode = state.meta?.modes?.find((item) => item.id === state.mode);
-  hint.textContent = mode?.description || "";
+function applyModeHints() {
+  const modes = state.meta?.modes || [];
+  $$("#mode-tabs [data-mode]").forEach((button) => {
+    const description = modes.find((item) => item.id === button.dataset.mode)?.description;
+    if (description) button.setAttribute("data-hover-tip", description);
+  });
 }
 
 function fillAsk(question) {
@@ -2971,9 +3092,74 @@ function fillAsk(question) {
   input.focus();
 }
 
+function answerFailureHtml(answer, failure) {
+  const { stage, queries, selected, excluded, verification } = failure;
+  const score = (value) => Number(value).toFixed(3);
+  const reachedDraft = stage === "grounding" || stage === "model_refusal";
+  const sourceButton = (item, position, label) =>
+    `<button type="button" class="text-btn failure-source" data-failure-source="${position}">${esc(label || item.doc_title)}</button>`;
+  const sourceRow = (item, position, status) => {
+    const location = [item.page ? `第 ${item.page} 页` : "", ...(item.heading_path || [])].filter(Boolean).join(" · ");
+    return `<li>
+      ${item.index ? `<span class="failure-source-index">[${num(item.index)}]</span> ` : ""}${sourceButton(item, position)}
+      <span class="failure-meta">${location ? `${esc(location)} · ` : ""}重排分 ${score(item.rerank)}${status ? ` · ${esc(status)}` : ""}</span>
+      <blockquote>${esc(item.quote)}</blockquote>
+    </li>`;
+  };
+  const rows = (items) => `<ul class="failure-list">${items.join("")}</ul>`;
+  const selectedRows = selected.map((item, position) => sourceRow(item, position, ""));
+  const excludedRows = excluded.map((item, position) => sourceRow(item, position + selected.length,
+    item.reason === "query_limit" ? "排序超出单次检索保留名额" : "排序超出本轮作答片段名额"));
+  const issues = verification.issues.map((issue) => {
+    const referenced = issue.evidence_indices.flatMap((index) => {
+      const position = selected.findIndex((item) => item.index === index);
+      return position < 0 ? [] : [sourceButton(selected[position], position, `片段 [${num(index)}]`)];
+    });
+    return `<li>
+      ${issue.claim ? `<blockquote>${esc(issue.claim)}</blockquote>` : ""}
+      <p>${esc(issue.reasons.join("；"))}。${issue.claim && !issue.evidence_indices.length ? "系统无法根据引用定位这句话对应的原文。" : ""}</p>
+      ${referenced.length ? `<p class="failure-references">模型标注的原文 ${referenced.join(" ")}</p>` : ""}
+    </li>`;
+  });
+  return `<div class="answer-failure">
+    <p class="failure-summary">${esc(cleanAnswer(answer, true))}</p>
+    <section>
+      <h3>检索到了什么</h3>
+      <p>执行了 ${num(queries.length)} 条检索语句，重排后共有 ${num(failure.ranked_count)} 条不同的原文片段。${
+        failure.ranked_count ? `排序入围 ${num(failure.ranked_count - failure.excluded_count)} 条。${reachedDraft ? "" : "因最高分未达作答阈值，这些片段未送入回答生成。"}` : ""}</p>
+      ${selectedRows.length ? rows(selectedRows.slice(0, 3)) : ""}
+      ${selectedRows.length > 3 ? `<details><summary>查看其余 ${num(selectedRows.length - 3)} 条入围片段</summary>${rows(selectedRows.slice(3))}</details>` : ""}
+      ${queries.length ? `<details><summary>查看实际检索语句</summary>${rows(queries.map((query) => `<li>${esc(query)}</li>`))}</details>` : ""}
+    </section>
+    <section>
+      <h3>哪些片段未采用</h3>
+      <p>${failure.excluded_count ? `${num(failure.excluded_count)} 条原文片段因排序名额未入围。` : "排序后没有因名额被排除的片段。"}${
+        failure.fusion_excluded_count || failure.acl_excluded_count ? " 以下次数按检索语句累计。" : ""}</p>
+      ${failure.query_limit_count ? `<p>${num(failure.query_limit_count)} 条超出单次检索保留名额。</p>` : ""}
+      ${failure.excluded_count > failure.query_limit_count ? `<p>${num(failure.excluded_count - failure.query_limit_count)} 条超出本轮作答片段名额。</p>` : ""}
+      ${failure.fusion_excluded_count ? `<p>${num(failure.fusion_excluded_count)} 次候选排序超出重排名额，未进入重排。</p>` : ""}
+      ${failure.acl_excluded_count ? `<p>${num(failure.acl_excluded_count)} 次候选因访问权限被过滤。</p>` : ""}
+      ${excludedRows.length ? rows(excludedRows.slice(0, 2)) : ""}
+      ${excludedRows.length > 2 ? `<details><summary>查看其余 ${num(excludedRows.length - 2)} 条未入围样例</summary>${rows(excludedRows.slice(2))}</details>` : ""}
+    </section>
+    ${reachedDraft ? `<section>
+      <h3>为什么无法回答</h3>
+      <p>最高检索分 ${score(failure.top_score)} 已达到作答阈值 ${score(failure.threshold)}。</p>
+      ${failure.model_reason ? `<p><strong>模型给出的原因</strong> ${esc(failure.model_reason)}</p>` : ""}
+      ${stage === "grounding" ? `<p>问答模型收到你的问题和本轮入围的原文片段，先生成一份回答草稿。系统再逐条检查模型标注的引用能否支持对应表述。</p>
+      <p>${verification.sentences
+        ? `模型草稿中的 ${num(verification.sentences)} 条表述有 ${num(verification.supported)} 条通过原文核验。全部表述核验通过后，回答才会发布。`
+        : "草稿中没有可核对的事实表述。"}${verification.semantic_rejected ? "独立语义核验未确认原文支持全部表述。" : ""}${verification.format_missing ? "草稿缺少对比模式要求的表格。" : ""}</p>` : ""}
+      ${issues.length ? `<div class="failure-draft"><strong>模型生成的表述（未通过核验）</strong>${rows(issues)}</div>` : ""}
+    </section>` : ""}
+  </div>`;
+}
+
 function renderAsk(result, question = $("#question").value.trim() || "检索结果") {
   $(".ask-layout").classList.remove("is-empty");
   const refused = Boolean(result.refused);
+  const failure = refused ? result.failure : null;
+  const refusalLabel = failure?.stage === "grounding" ? "核验未通过" : "证据不足";
   const compact = refused || String(result.answer || "").length < 220;
   const modeName = state.meta?.modes?.find((mode) => mode.id === result.mode)?.name || result.mode || "";
   const confidence = Number(result.confidence) > 0 ? Math.round(Number(result.confidence) * 100) : 0;
@@ -2982,20 +3168,26 @@ function renderAsk(result, question = $("#question").value.trim() || "检索结�
       <header class="answer-head">
         <h2 class="answer-question" data-hover-tip="${esc(question)}">${esc(question)}</h2>
         <div class="answer-meta">
-          <span class="pill ${refused ? "warn" : "ok"}">${refused ? "证据不足" : "已回答"}</span>
+          <span class="pill ${refused ? "warn" : "ok"}">${refused ? refusalLabel : "已回答"}</span>
           <span class="meta-sep" aria-hidden="true"></span>
           <span>${esc(modeName)}</span>
           ${confidence ? `<span class="meta-sep" aria-hidden="true"></span><span>置信度 ${confidence}%</span>` : ""}
           ${result.latency_ms ? `<span class="meta-sep" aria-hidden="true"></span><span>${latencyLabel(result.latency_ms)}</span>` : ""}
         </div>
       </header>
-      <div class="answer-body">${answerHtml(result.answer, refused)}</div>
+      <div class="answer-body">${failure ? answerFailureHtml(result.answer, failure) : answerHtml(result.answer, refused)}</div>
       <footer class="answer-foot">
-        <span class="answer-source">${result.evidence?.length ? `基于 ${num(result.evidence.length)} 条证据` : "无引用片段"}</span>
+        <span class="answer-source">${refused ? "未发布回答或正式引用" : result.evidence?.length ? `基于 ${num(result.evidence.length)} 条证据` : "无引用片段"}</span>
         <div class="answer-actions">
-          <button class="text-btn" type="button" data-feedback="1">有帮助</button>
-          <button class="text-btn" type="button" data-feedback="-1">需改进</button>
-          ${result.trace_id ? `<button class="text-btn" type="button" data-open-trace="${esc(result.trace_id)}">查看轨迹</button>` : ""}
+          <button class="icon-btn" type="button" data-feedback="1" aria-label="有帮助" data-hover-tip="有帮助" data-hover-tip-delay="200">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.6 7.1 7.6 3.5a1.4 1.4 0 0 1 2.5 1.2L9.6 7h2.6a1.4 1.4 0 0 1 1.35 1.83l-1.1 3.6A1.4 1.4 0 0 1 11.1 13H5.6"/><rect x="2.4" y="7.1" width="2.4" height="5.9" rx="1.2"/></svg>
+          </button>
+          <button class="icon-btn is-flip" type="button" data-feedback="-1" aria-label="需改进" data-hover-tip="需改进" data-hover-tip-delay="200">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.6 7.1 7.6 3.5a1.4 1.4 0 0 1 2.5 1.2L9.6 7h2.6a1.4 1.4 0 0 1 1.35 1.83l-1.1 3.6A1.4 1.4 0 0 1 11.1 13H5.6"/><rect x="2.4" y="7.1" width="2.4" height="5.9" rx="1.2"/></svg>
+          </button>
+          ${result.trace_id ? `<button class="icon-btn" type="button" data-open-trace="${esc(result.trace_id)}" aria-label="查看轨迹" data-hover-tip="查看轨迹" data-hover-tip-delay="200">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.7" cy="11.3" r="1.5"/><circle cx="8.2" cy="7.3" r="1.5"/><circle cx="12.3" cy="4" r="1.5"/><path d="M4.9 10.2l2-1.8m2.4-1.9 1.8-1.6"/></svg>
+          </button>` : ""}
         </div>
       </footer>
     </article>`;
@@ -3012,6 +3204,12 @@ function renderAsk(result, question = $("#question").value.trim() || "检索结�
       openCitation(findCitation(result.citations, number) || result.evidence?.[number - 1]);
     });
   });
+  if (failure) {
+    const sources = [...failure.selected, ...failure.excluded];
+    $$("[data-failure-source]", $("#ask-result")).forEach((button) => {
+      button.addEventListener("click", () => openCitation(sources[Number(button.dataset.failureSource)]));
+    });
+  }
   renderEvidence(result);
   renderRecentState();
 }
@@ -3030,9 +3228,9 @@ function gateHtml(stats) {
 }
 
 function renderEvidence(result) {
-  const evidence = result.evidence || [];
+  const evidence = result.evidence ?? result.failure?.selected ?? [];
   const facts = result.facts || [];
-  const stats = result.stats || {};
+  const stats = result.stats || result.failure || {};
   const gate = $("#evidence-gate");
   const body = $("#evidence-body");
   const countEl = $("#evidence-count");
@@ -3042,17 +3240,15 @@ function renderEvidence(result) {
     body.innerHTML = facts.length ? factsHtml(facts) : `<div class="rail-empty">暂无证据</div>`;
     return;
   }
-  const rejected = Number(stats.rejected_candidates) || 0;
-  countEl.textContent = stats.top_score != null
-    ? `入选 ${num(evidence.length)} · 淘汰 ${num(rejected)}`
-    : `${num(evidence.length)} 条`;
+  countEl.textContent = `${result.failure?.stage === "below_threshold" ? "候选" : "入围"} ${num(evidence.length)} 条`;
   body.innerHTML = evidence.map((item, index) => {
-    const score = Number(item.scores?.rerank);
+    const number = item.index ?? index + 1;
+    const score = Number(item.scores?.rerank ?? item.rerank);
     const path = (item.heading_path || []).slice(-2).join(" / ");
     const meta = [item.page ? `第 ${esc(item.page)} 页` : "正文", path ? esc(path) : ""].filter(Boolean).join(" · ");
-    return `<button class="evr-item" type="button" data-evidence-index="${index + 1}">
+    return `<button class="evr-item" type="button" data-evidence-index="${num(number)}">
       <span class="evr-head">
-        <span class="evr-num">${index + 1}</span>
+        <span class="evr-num">${num(number)}</span>
         <span class="evr-doc">${esc(item.doc_title || "未命名文档")}</span>
         ${Number.isFinite(score) ? `<span class="evr-score">${score.toFixed(3)}</span>` : ""}
       </span>
@@ -3060,11 +3256,11 @@ function renderEvidence(result) {
       <span class="evr-meta">${meta} · 查看原文</span>
     </button>`;
   }).join("") + factsHtml(facts);
-  $$("#evidence-body [data-evidence-index]").forEach((item) => {
+  $$("#evidence-body [data-evidence-index]").forEach((item, position) => {
     item.addEventListener("click", () => {
       $$("#evidence-body [data-evidence-index]").forEach((row) => row.classList.toggle("is-target", row === item));
       flashAskCite(Number(item.dataset.evidenceIndex));
-      openCitation(evidence[Number(item.dataset.evidenceIndex) - 1]);
+      openCitation(evidence[position]);
     });
   });
 }
@@ -3108,7 +3304,7 @@ async function sendFeedback(messageId, value) {
 
 async function loadAsk() {
   loadConversations();
-  updateModeHint();
+  applyModeHints();
   if (state.stats) renderScope(state.stats);
   if ($("#ask-result .answer")) return;
   $(".ask-layout").classList.add("is-empty");
@@ -3168,7 +3364,7 @@ async function continueConversation(conversationId) {
     const answer = [...messages].reverse().find((message) => message.role === "assistant");
     const question = [...messages].reverse().find((message) => message.role === "user");
     if (answer) {
-      const result = { ...answer, answer: answer.content, conversation_id: conversationId };
+      const result = { ...answer, answer: answer.content, message_id: answer.id, conversation_id: conversationId };
       state.lastAsk = result;
       renderAsk(result, question?.content || data.title);
     }
@@ -3231,17 +3427,27 @@ function setEntityView(view) {
   state.entityView = next;
   localStorage.setItem("kw_entity_view", next);
   applyEntityViewUI(next);
-  // 缩略图只看一跳，展开后取两跳：重新取一次数据，再按新画布重绘
-  loadGraph();
+  drawGraph();
 }
 
 function setupEntityView() {
   applyEntityViewUI(state.entityView);
+  const hopsPicker = KnowWeavePickers.choice($("#graph-hops-picker"), {
+    id: "graph-hops",
+    label: "局部图谱跳数",
+    value: String(state.graphHops),
+    options: Array.from({ length: 10 }, (_, index) => ({ value: String(index + 1), label: `${index + 1} 跳` })),
+    onChange: (value) => {
+      state.graphHops = Number(value);
+      loadGraph();
+    },
+  });
   $$("[data-graph-scope]").forEach((button) => {
     button.addEventListener("click", () => {
+      if (button.dataset.graphScope === "overview") hopsPicker.close();
       setGraphScope(button.dataset.graphScope);
       if (state.graphScope === "overview" && state.entityView !== "graph") setEntityView("graph");
-      else loadGraph();
+      loadGraph();
     });
   });
   const size = $("#graph-overview-size");
@@ -3271,6 +3477,7 @@ function setupEntityView() {
 function setGraphScope(scope) {
   state.graphScope = scope;
   $("#graph-overview-size").hidden = scope !== "overview";
+  $("#graph-hops-picker").hidden = scope !== "local";
   $$("[data-graph-scope]").forEach((button) => {
     button.setAttribute("aria-pressed", String(button.dataset.graphScope === scope));
   });
@@ -3513,7 +3720,7 @@ function entityFactHtml(fact, entity) {
 
 let graphRequest = 0;
 
-/* 取当前焦点的邻域：缩略图看一跳，展开看两跳；只认实体关系，字面值走属性条 */
+/* 取当前焦点指定跳数内的邻域；只认实体关系，字面值走属性条 */
 async function loadGraph() {
   const focusId = state.activeEntity;
   const overview = state.graphScope === "overview";
@@ -3524,14 +3731,14 @@ async function loadGraph() {
     renderGraph();
     return;
   }
-  const hops = state.entityView === "graph" ? 2 : 1;
-  if (state.graph.overview !== overview || (!overview && state.graph.focus !== focusId)) {
+  const hops = state.graphHops;
+  if (state.graph.overview !== overview || (!overview && (state.graph.focus !== focusId || state.graph.hops !== hops))) {
     state.graph = { overview, nodes: [], edges: [], loading: true };
     renderGraph();
   }
   try {
     const data = await api(overview ? "/graph?scope=overview" : `/graph?focus=${encodeURIComponent(focusId)}&hops=${hops}&limit=80`);
-    if (token !== graphRequest) return;   // 只渲染最新一次请求，避免快速切换实体时串图
+    if (token !== graphRequest) return;   // 快速切换焦点或跳数时只渲染最新结果
     state.graph = { ...data, overview };
     renderGraph();
   } catch (error) {
@@ -3549,7 +3756,7 @@ async function loadGraph() {
 /*
  * 阅读约定（与图例一致）：
  *   节点 = 有身份的实体；字面值不占节点，作为主语「属性」挂在节点上（图下方的属性条）。
- *   半径 = 跳数：焦点在中心，内环是一跳直接关系，外环是二跳中介实体。
+ *   半径 = 跳数：焦点在中心，每一环对应与焦点的最短关系距离。
  *   连线 = 一条事实，箭头由主语指向宾语；线旁标出原文谓语（“筛查和发现”），
  *   不是归一后的类别名（“举措”）；类别只在悬停提示里说明，避免把动词读丢。
  *   位置不是装饰：同一关系类型的邻居相邻排列，肉眼能看出「这一类关系」。
@@ -3789,12 +3996,10 @@ function graphClampCandidate(candidate, textWidth, width, height) {
 
 /**
  * 焦点辐射布局：按 BFS 跳数分环，内环按关系类型分组排布，外环挂在父节点的角度上。
- * 关系只有两种端点在同一环时（兄弟之间）才弯曲线条，避免从中心横穿。
  */
-function graphFocusLayout(nodes, edges, width, height, radiusOf, focusId, compact) {
+function graphFocusLayout(nodes, edges, viewportWidth, viewportHeight, radiusOf, focusId, compact) {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const focus = byId.get(focusId) || nodes[0];
-  const center = { x: width / 2, y: height / 2 };
   const adjacency = new Map(nodes.map((node) => [node.id, []]));
   const focusEdge = new Map();
   edges.forEach((edge) => {
@@ -3819,7 +4024,7 @@ function graphFocusLayout(nodes, edges, width, height, radiusOf, focusId, compac
       queue.push(other);
     });
   }
-  const hopOf = (id) => hop.get(id) ?? Infinity;
+  const hopOf = (id) => hop.get(id);
 
   const relationKey = (id) => {
     const edge = focusEdge.get(id);
@@ -3831,39 +4036,45 @@ function graphFocusLayout(nodes, edges, width, height, radiusOf, focusId, compac
       || (b.degree || 0) - (a.degree || 0)
       || a.name.localeCompare(b.name, "zh"));
   const farther = nodes
-    .filter((node) => node.id !== focus.id && hopOf(node.id) !== 1)
+    .filter((node) => hopOf(node.id) > 1)
     .sort((a, b) => hopOf(a.id) - hopOf(b.id)
       || (b.degree || 0) - (a.degree || 0)
       || a.name.localeCompare(b.name, "zh"));
 
-  const focusRadius = radiusOf(focus);
-  const maxRing = Math.max(40, Math.min(width, height) / 2 - (compact ? 18 : 42));
-  // 环是椭圆：横向留出更多字位，竖向受画布高度限制。半径仍编码跳数，只是两个半轴不同
-  const ringRadii = (radius) => ({
-    rx: compact ? Math.min(Math.max(46, width / 2 - 70), Math.max(radius, 40) * 2.1) : Math.min(width / 2 - 70, radius * 1.35),
-    ry: compact ? Math.max(26, Math.min(height / 2 - 34, Math.max(radius, 40) * 1.12)) : radius,
-  });
-  const perimeter = (radius) => {
-    const { rx, ry } = ringRadii(radius);
-    return Math.PI * (rx + ry);
-  };
-  const ringNeed = (list) => list.reduce((sum, node) => sum + radiusOf(node) * 2 + (compact ? 20 : 34), 0) / (Math.PI * 2);
+  const gaps = Math.max(0, Math.max(...hop.values()) - 1);
+  const ringGap = compact ? 32 : 48;
+  const r1Floor = radiusOf(focus) + (compact ? 20 : 34);
+  const marginX = compact ? 54 : 70;
+  const marginY = compact ? 26 : 42;
+  // 跳数较多时扩大 SVG 的坐标空间，保留环间距，并让整张图仍可缩放查看。
+  const minimumRadius = r1Floor + gaps * ringGap;
+  const scale = Math.max(1, 2 * (minimumRadius + marginX) / viewportWidth, 2 * (minimumRadius + marginY) / viewportHeight);
+  const width = Math.ceil(viewportWidth * scale);
+  const height = Math.ceil(viewportHeight * scale);
+  const center = { x: width / 2, y: height / 2 };
+  const maxRing = Math.min(width / 2 - marginX, height / 2 - marginY);
+  const stretch = Math.min(compact ? 2.1 : 1.35, (width / 2 - marginX) / maxRing);
+  const ringNeed = (list) => list.reduce((sum, node) => sum + radiusOf(node) * 2 + (compact ? 20 : 34), 0) / (Math.PI * (stretch + 1));
 
   let inner = neighbours;
-  const r1Floor = focusRadius + (compact ? 20 : 34);
   // 环半径既要容得下所有邻居，也要把画布用起来：邻居很少时不要把图缩成中间一小团
-  const r1Comfortable = maxRing * 0.72;
-  const r1Ceiling = Math.max(r1Floor, maxRing * 0.8);
+  const r1Comfortable = maxRing * 0.72 / Math.max(1, (gaps + 1) / 2);
+  const r1Ceiling = Math.max(r1Floor, Math.min(maxRing * 0.8, maxRing - gaps * ringGap));
   let r1 = r1Floor;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     r1 = Math.min(Math.max(ringNeed(inner), r1Floor, r1Comfortable), r1Ceiling);
-    const capacity = Math.max(1, Math.floor(perimeter(r1) / (compact ? 26 : 40)));
+    const capacity = Math.max(1, Math.floor(Math.PI * r1 * (stretch + 1) / (compact ? 26 : 40)));
     const allowed = compact ? Math.min(capacity, 3) : capacity;
     if (inner.length <= allowed) break;
     inner = inner.slice(0, allowed);
   }
 
-  const angles = new Map();
+  const step = (maxRing - r1) / Math.max(1, gaps);
+  const points = new Map([[focus.id, { ...center, angle: 0, ring: 0 }]]);
+  const place = (node, angle, ring) => {
+    const radius = r1 + (ring - 1) * step;
+    points.set(node.id, { x: center.x + Math.cos(angle) * radius * stretch, y: center.y + Math.sin(angle) * radius, angle, ring });
+  };
   // 邻居很少时横着摆，读起来像「中心 —关系→ 邻居」；多了才从正上方开始绕圈
   const angleAt = (index, count) => {
     if (count === 1) return 0;
@@ -3871,42 +4082,66 @@ function graphFocusLayout(nodes, edges, width, height, radiusOf, focusId, compac
     return -Math.PI / 2 + (Math.PI * 2 * index) / count;
   };
   inner.forEach((node, index) => {
-    angles.set(node.id, angleAt(index, inner.length));
+    place(node, angleAt(index, inner.length), 1);
   });
 
   const childrenByParent = new Map();
   farther.forEach((node) => {
-    const owner = parent.get(node.id) || focus.id;
+    const owner = parent.get(node.id);
     const list = childrenByParent.get(owner) || [];
     list.push(node);
     childrenByParent.set(owner, list);
   });
-  const outer = [];
-  childrenByParent.forEach((children, owner) => {
-    const base = angles.get(owner) ?? -Math.PI / 4;
-    const shown = compact ? [] : children.slice(0, 6);
-    shown.forEach((node, index) => {
+  for (let ring = 2; ring <= gaps + 1; ring += 1) {
+    const entries = [];
+    childrenByParent.forEach((children, owner) => {
+      const point = points.get(owner);
+      if (point?.ring !== ring - 1) return;
+      const shown = children.slice(0, compact ? 2 : 6);
       const spread = Math.min(0.42, 1.5 / (shown.length + 1));
-      angles.set(node.id, base + (index - (shown.length - 1) / 2) * spread);
-      outer.push(node);
+      shown.forEach((node, index) => {
+        entries.push({ node, angle: point.angle + (index - (shown.length - 1) / 2) * spread });
+      });
     });
-  });
+    const radius = r1 + (ring - 1) * step;
+    separateGraphRing(entries, (compact ? 24 : 36) / radius);
+    entries.forEach(({ node, angle }) => place(node, angle, ring));
+  }
 
-  const r2 = Math.max(r1 + 34, Math.min(maxRing, r1 * 1.6));
-  const innerRing = ringRadii(r1);
-  const outerRing = ringRadii(r2);
-  const points = new Map();
-  points.set(focus.id, { x: center.x, y: center.y, angle: 0, ring: 0 });
-  inner.forEach((node) => {
-    const angle = angles.get(node.id) ?? 0;
-    points.set(node.id, { x: center.x + Math.cos(angle) * innerRing.rx, y: center.y + Math.sin(angle) * innerRing.ry, angle, ring: 1 });
-  });
-  outer.forEach((node) => {
-    const angle = angles.get(node.id) ?? 0;
-    points.set(node.id, { x: center.x + Math.cos(angle) * outerRing.rx, y: center.y + Math.sin(angle) * outerRing.ry, angle, ring: 2 });
-  });
+  return { focus, points, center, width, height, hidden: nodes.length - points.size };
+}
 
-  return { focus, points, center, hidden: nodes.length - points.size };
+function separateGraphRing(entries, minGap) {
+  if (entries.length < 2) return;
+  const turn = 2 * Math.PI;
+  const wrap = (angle) => (angle % turn + turn) % turn;
+  entries.forEach((entry) => { entry.angle = wrap(entry.angle); });
+  entries.sort((a, b) => a.angle - b.angle);
+
+  // 从最宽的空隙切开圆环，逐个拉开可能来自不同分支的重叠节点。
+  let widest = -1;
+  let start = 0;
+  entries.forEach(({ angle }, index) => {
+    const next = entries[index + 1]?.angle ?? entries[0].angle + turn;
+    if (next - angle <= widest) return;
+    widest = next - angle;
+    start = angle + widest / 2;
+  });
+  entries.forEach((entry) => { entry.angle = wrap(entry.angle - start); });
+  entries.sort((a, b) => a.angle - b.angle);
+  const gap = Math.min(minGap, turn / entries.length);
+  let floor = gap / 2;
+  for (const entry of entries) {
+    entry.angle = Math.max(floor, entry.angle);
+    floor = entry.angle + gap;
+  }
+  let ceiling = turn - gap / 2;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    ceiling = Math.min(ceiling, entry.angle);
+    entry.angle = start + ceiling;
+    ceiling -= gap;
+  }
 }
 
 function positionGraphArrow(arrow, tip, direction) {
@@ -3949,6 +4184,7 @@ function setupHoverTooltip() {
     if (!target || target === hoverTooltipTarget || event.pointerType === "touch") return;
     hideHoverTooltip();
     hoverTooltipTarget = target;
+    const delay = Number(target.getAttribute("data-hover-tip-delay")) || 300;
     hoverTooltipTimer = setTimeout(() => {
       if (!target.isConnected || !target.getClientRects().length) return;
       const text = target.getAttribute("data-hover-tip");
@@ -3958,7 +4194,7 @@ function setupHoverTooltip() {
       tooltip.textContent = text;
       tooltip.hidden = false;
       position(event);
-    }, 300);
+    }, delay);
   });
   document.addEventListener("pointermove", (event) => {
     if (tooltip.hidden || !hoverTooltipTarget?.contains(event.target)) return;
@@ -4254,20 +4490,20 @@ function drawGraph() {
   svg.style.width = "";
   svg.style.height = "";
   graphWheelScale = 1;
-  const height = Math.max(200, Math.round(svg.clientHeight || 420));
+  const viewportHeight = Math.max(200, Math.round(svg.clientHeight || 420));
   const allNodes = data.nodes || [];
   const allEdges = data.edges || [];
   svg.classList.toggle("is-pannable", allNodes.length > 0);
-  const width = Math.max(300, Math.round(svg.clientWidth || 620));
-  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  const viewportWidth = Math.max(300, Math.round(svg.clientWidth || 620));
+  svg.setAttribute("viewBox", `0 0 ${viewportWidth} ${viewportHeight}`);
   svg.innerHTML = "";
   const legend = $("#graph-legend");
   if (legend) legend.innerHTML = "";
 
   if (!allNodes.length) {
     const text = graphEl("text", "g-empty");
-    text.setAttribute("x", String(width / 2));
-    text.setAttribute("y", String(height / 2));
+    text.setAttribute("x", String(viewportWidth / 2));
+    text.setAttribute("y", String(viewportHeight / 2));
     text.setAttribute("text-anchor", "middle");
     text.textContent = data.loading ? "正在加载图谱…" : data.error || "暂无实体关系";
     svg.appendChild(text);
@@ -4276,19 +4512,20 @@ function drawGraph() {
   }
 
   if (data.overview) {
-    drawGraphOverview(svg, data, width, height);
+    drawGraphOverview(svg, data, viewportWidth, viewportHeight);
     return;
   }
 
-  const compact = width < 430;
+  const compact = viewportWidth < 430;
   const nodeFont = compact ? 9.5 : 11;
   const edgeFont = compact ? 9 : 10;
   const focusId = data.focus || state.activeEntity || allNodes[0].id;
   const nodeById = new Map(allNodes.map((node) => [node.id, node]));
   const radiusOf = (node) => graphNodeRadius(node, compact, focusId);
   const drawnEdges = allEdges.filter((edge) => edge.target && nodeById.has(edge.source) && nodeById.has(edge.target));
-  const layout = graphFocusLayout(allNodes, drawnEdges, width, height, radiusOf, focusId, compact);
-  const points = layout.points;
+  const layout = graphFocusLayout(allNodes, drawnEdges, viewportWidth, viewportHeight, radiusOf, focusId, compact);
+  const { points, width, height } = layout;
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   const drawnNodes = allNodes.filter((node) => points.has(node.id));
   const edgeUpdates = new Map(drawnNodes.map((node) => [node.id, new Set()]));
   let edges = graphMergeEdges(drawnEdges.filter((edge) => points.has(edge.source) && points.has(edge.target)));
@@ -5289,67 +5526,89 @@ async function loadTraces() {
 
 async function openTrace(traceId) {
   const dialog = $("#trace-dialog");
-  $("#trace-dialog-title").textContent = "轨迹";
-  $("#trace-dialog-body").innerHTML = loadingLines();
+  const title = $("#trace-dialog-title");
+  const body = $("#trace-dialog-body");
+  title.textContent = "轨迹";
+  body.innerHTML = loadingLines();
+  const loading = body.firstElementChild;
+  body.scrollTop = 0;
   if (!dialog.open) dialog.showModal();
   try {
-    const data = await api(`/traces/${traceId}`);
-    const trace = data.trace;
-    $("#trace-dialog-title").textContent = `轨迹 · ${featureLabel(trace.feature)}`;
-    $("#trace-dialog-body").innerHTML = `
-      <div class="detail-pills">
-        ${statusPill(trace.status)}
-        <span class="pill">${num(trace.latency_ms)} ms</span>
-        <span class="pill mono">${esc(trace.id)}</span>
-        <span class="pill">${shortDate(trace.created_at)}</span>
+    const { trace, spans, usage } = await api(`/traces/${traceId}`);
+    if (loading !== body.firstElementChild) return;
+    title.textContent = `轨迹 · ${featureLabel(trace.feature)}`;
+    body.innerHTML = `
+      <dl class="trace-overview">
+        <div><dt>状态</dt><dd>${statusPill(trace.status)}</dd></div>
+        <div><dt>耗时</dt><dd>${num(trace.latency_ms)} ms</dd></div>
+        <div><dt>时间</dt><dd>${esc(shortDate(trace.created_at, { year: "numeric" }))}</dd></div>
+      </dl>
+      <div class="trace-exchange">
+        <section class="trace-question" aria-labelledby="trace-question-title">
+          <h3 id="trace-question-title">问题</h3>
+          <p>${esc(trace.question || "无")}</p>
+        </section>
+        <section class="trace-answer" aria-labelledby="trace-answer-title">
+          <h3 id="trace-answer-title">回答</h3>
+          <div class="answer-body">${renderMarkdown(esc(trace.answer || "无"), "h4")}</div>
+        </section>
       </div>
-      <div class="section">
-        <h3>问题</h3>
-        <p class="detail-summary" style="margin-top:0;color:var(--text)">${esc(trace.question || "无")}</p>
-      </div>
-      <div class="section">
-        <h3>回答</h3>
-        <p class="detail-summary" style="margin-top:0">${esc(trace.answer || "无")}</p>
-      </div>
-      <div class="section">
-        <h3>阶段</h3>
-        ${data.spans.map((span) => `
-          <div class="fact-item">
-            <div class="fact-line">${esc(runtimeText(span.stage))} <span class="pred">${num(span.latency_ms)} ms · ${esc(runtimeText(span.status))}</span></div>
-            <div class="fact-quote">${esc(runtimeText(JSON.stringify(span.output || {})).slice(0, 280))}</div>
-          </div>`).join("") || `<div class="empty-block">暂无阶段</div>`}
-      </div>
-      <div class="section">
-        <h3>成本</h3>
-        ${data.usage.length ? data.usage.map((row) => `
-          <div class="version-row">
-            <span>${esc(modelLabel(row.model))}</span>
-            <span class="meta">${num(row.tokens_in)} / ${num(row.tokens_out)} tokens · ${money(row.amount)}</span>
-          </div>`).join("") : `<span class="muted small">无模型调用</span>`}
-      </div>
-      <div class="detail-actions">
-        <button class="btn primary" data-replay="${esc(trace.id)}">回放检索阶段</button>
-      </div>
-      <div id="replay-result"></div>
-      <div class="section">
-        <h3>Meta</h3>
-        <pre class="code">${esc(runtimeText(JSON.stringify(trace.meta || {}, null, 2)))}</pre>
-      </div>`;
-    $$("[data-replay]", $("#trace-dialog-body")).forEach((button) => {
-      button.addEventListener("click", () => replayTrace(button.dataset.replay, button));
-    });
+      <section class="trace-details" aria-labelledby="trace-details-title">
+        <header class="trace-details-head">
+          <h3 id="trace-details-title">执行详情</h3>
+          <button class="btn" type="button" data-replay="${esc(trace.id)}">回放检索阶段</button>
+        </header>
+        <div id="replay-result" hidden></div>
+        <div class="trace-disclosures">
+          <details>
+            <summary>执行阶段 <span class="trace-count">${spans.length ? `${num(spans.length)} 个阶段` : "暂无阶段"}</span></summary>
+            <div class="trace-disclosure-body">
+              ${spans.map((span) => `
+                <div class="fact-item">
+                  <div class="trace-stage-head">
+                    <strong>${esc(runtimeText(span.stage))}</strong>
+                    <span>${num(span.latency_ms)} ms ${statusPill(span.status)}</span>
+                  </div>
+                  <div class="fact-quote">${esc(runtimeText(JSON.stringify(span.output || {})).slice(0, 280))}</div>
+                </div>`).join("") || `<p class="muted small">暂无阶段</p>`}
+            </div>
+          </details>
+          <details>
+            <summary>模型成本 <span class="trace-count">${usage.length ? `${num(usage.length)} 次调用` : "无模型调用"}</span></summary>
+            <div class="trace-disclosure-body">
+              ${usage.map((row) => `
+                <div class="version-row">
+                  <span>${esc(modelLabel(row.model))}</span>
+                  <span class="meta">${num(row.tokens_in)} / ${num(row.tokens_out)} tokens · ${money(row.amount)}</span>
+                </div>`).join("") || `<p class="muted small">无模型调用</p>`}
+            </div>
+          </details>
+          <details>
+            <summary>轨迹元数据</summary>
+            <div class="trace-disclosure-body">
+              <dl class="trace-overview">
+                <div><dt>轨迹 ID</dt><dd class="mono">${esc(trace.id)}</dd></div>
+              </dl>
+              <pre class="code">${esc(runtimeText(JSON.stringify(trace.meta || {}, null, 2)))}</pre>
+            </div>
+          </details>
+        </div>
+      </section>`;
+    const button = $("[data-replay]", body);
+    const result = $("#replay-result", body);
+    button.addEventListener("click", () => replayTrace(button.dataset.replay, button, result));
   } catch (error) {
-    $("#trace-dialog-body").innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
+    if (loading === body.firstElementChild) body.innerHTML = `<div class="empty-block">${esc(error.message)}</div>`;
   }
 }
 
-async function replayTrace(traceId, button) {
+async function replayTrace(traceId, button, result) {
   setBusy(button, true, "回放中");
   try {
     const data = await api(`/traces/${traceId}/replay`, { method: "POST", body: { target_stage: "retrieve", top_k: 8 } });
-    $("#replay-result").innerHTML = `
-      <div class="section">
-        <h3>检索回放</h3>
+    result.innerHTML = `
+      <section aria-labelledby="trace-replay-title">
+        <h4 id="trace-replay-title">检索回放</h4>
         <div class="version-row">
           <span>新增 ${num(data.diff.added.length)} 条 · 移除 ${num(data.diff.removed.length)} 条</span>
           <span class="meta">top ${Number(data.diff.top_score || 0).toFixed(3)}</span>
@@ -5359,7 +5618,8 @@ async function replayTrace(traceId, button) {
             <div class="fact-line">${esc(hit.doc_title)} <span class="pred">${Number(hit.scores.rerank).toFixed(3)}</span></div>
             <div class="fact-quote">${esc(plain(hit.quote))}</div>
           </div>`).join("")}
-      </div>`;
+      </section>`;
+    result.hidden = false;
     toast("回放完成");
   } catch (error) {
     toast(error.message);
@@ -5621,6 +5881,7 @@ async function boot() {
   fillEntityTypes();
   KnowWeavePickers.date($("#as-of-picker"), { id: "as-of", label: "截至日期", labelId: "as-of-label" });
   accountPicker.trigger.addEventListener("change", async (event) => {
+    closeDocumentFile();
     state.token = event.target.value;
     localStorage.setItem("kw_token", state.token);
     state.me = null;

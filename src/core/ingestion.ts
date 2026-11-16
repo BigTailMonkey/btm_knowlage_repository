@@ -135,6 +135,7 @@ interface IngestOptions {
   acl?: string[] | null
   progress?: (stage: string, percent: number) => void
   jobId?: string | null
+  sourcePdfHash?: string | null
   duplicatePolicy?: 'ask' | 'continue'
 }
 
@@ -250,6 +251,7 @@ async function ingestParsedVersion(
   const meta = {
     ...parsed.meta,
     ...(options.jobId ? { source_job_id: options.jobId } : {}),
+    ...(options.sourcePdfHash ? { source_pdf_hash: options.sourcePdfHash } : {}),
     coordinate_system: 'normalized-text-utf16',
     chunk_spans: Object.fromEntries(chunks.map((chunk) => [chunk.id, chunk.sourceSpans])),
   }
@@ -404,9 +406,11 @@ async function runIngestJob(
   try {
     let parsed: ParsedDocument
     const saved = await queryOne<{ payload: Record<string, unknown> }>('SELECT payload FROM jobs WHERE id=$1', [jobId])
-    const checkpoint = saved?.payload.checkpoint as { parsed: ParsedDocument; sourceType: string; uri: string | null } | undefined
+    const checkpoint = saved?.payload.checkpoint as { parsed: ParsedDocument; sourceType: string; uri: string | null; sourcePdfHash?: string | null } | undefined
     let sourceType: string
     let uri: string | null = null
+    let sourcePdfHash = checkpoint?.sourcePdfHash ?? null
+    let fetchedPdf: { filename: string; data: string } | null = null
     if (checkpoint) {
       parsed = checkpoint.parsed
       sourceType = checkpoint.sourceType
@@ -430,11 +434,19 @@ async function runIngestJob(
       parsed = fetched.parsed
       sourceType = fetched.sourceType
       uri = options.url
+      if (fetched.pdf) {
+        sourcePdfHash = sha256(fetched.pdf.bytes)
+        fetchedPdf = { filename: fetched.pdf.filename, data: fetched.pdf.bytes.toString('base64') }
+      }
       report('切分', 40)
     }
 
-    await query(`UPDATE jobs SET payload = payload || $1::jsonb, updated_at=now() WHERE id=$2`,
-      [JSON.stringify({ checkpoint: { parsed, sourceType, uri } }), jobId])
+    await query(`UPDATE jobs SET payload = payload || $1::jsonb ||
+      CASE WHEN $3::jsonb IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('source_pdfs',
+        jsonb_build_object($4::text, $3::jsonb) || coalesce(payload->'source_pdfs', '{}'::jsonb)) END,
+      updated_at=now() WHERE id=$2`,
+      [JSON.stringify({ checkpoint: { parsed, sourceType, uri, sourcePdfHash } }), jobId,
+        fetchedPdf ? JSON.stringify(fetchedPdf) : null, sourcePdfHash])
     if (parsed.quality < settings.parseMinQuality || !parsed.blocks.some((block) => block.text.trim())) {
       throw new ParseQualityError('解析质量不足，需人工修正')
     }
@@ -446,6 +458,7 @@ async function runIngestJob(
       acl: options.acl ?? null,
       progress: report,
       jobId,
+      sourcePdfHash,
       duplicatePolicy: saved?.payload.duplicate_decision === 'continue' ? 'continue' : options.confirmDuplicates ? 'ask' : undefined,
     })
     if (result.awaiting_duplicate) {
@@ -500,7 +513,9 @@ async function runIngestJob(
   }
 }
 
-async function fetchUrl(url: string, title: string | null): Promise<{ parsed: ParsedDocument; sourceType: string }> {
+async function fetchUrl(url: string, title: string | null): Promise<{
+  parsed: ParsedDocument; sourceType: string; pdf?: { filename: string; bytes: Buffer }
+}> {
   if (!/^https?:\/\//i.test(url)) throw new Error('仅支持 http/https URL')
   const response = await fetch(url, {
     headers: { 'user-agent': 'KnoWeave/0.1' },
@@ -509,9 +524,11 @@ async function fetchUrl(url: string, title: string | null): Promise<{ parsed: Pa
   })
   if (!response.ok) throw new Error(`抓取失败：HTTP ${response.status}`)
   const contentType = response.headers.get('content-type') ?? ''
-  if (contentType.includes('pdf') || url.toLowerCase().endsWith('.pdf')) {
-    const buffer = Buffer.from(await response.arrayBuffer())
-    return { parsed: await parseBytes(url, buffer, title), sourceType: 'pdf' }
+  const pathName = new URL(response.url || url).pathname.split('/').at(-1) || ''
+  if (contentType.includes('pdf') || pathName.toLowerCase().endsWith('.pdf')) {
+    const bytes = Buffer.from(await response.arrayBuffer())
+    const filename = pathName.toLowerCase().endsWith('.pdf') ? pathName : `${pathName || 'document'}.pdf`
+    return { parsed: await parseBytes(filename, bytes, title), sourceType: 'pdf', pdf: { filename, bytes } }
   }
   return { parsed: parseHtml(cleanParsedText(await response.text()), title || url), sourceType: 'web' }
 }
@@ -590,7 +607,12 @@ export async function retryIngestJob(principal: Principal, id: string, stage: 'p
     if (!request) throw Object.assign(new Error('旧任务缺少原始输入，无法人工修正'), { statusCode: 409 })
     const parsed = parseTextContent(correctedText, request.title || request.filename || '人工修正文档')
     parsed.meta.corrected_by = principal.userId
-    const checkpoint = { parsed, sourceType: source === 'url' ? 'web' : source === 'file' ? request.filename?.split('.').pop() || 'file' : 'text', uri: source === 'file' ? request.sourceUri || `upload:${request.filename}` : source === 'url' ? request.url : null }
+    const sourcePdfHash = source === 'url' ? row.payload.checkpoint?.sourcePdfHash ?? null : null
+    const checkpoint = {
+      parsed, sourcePdfHash,
+      sourceType: source === 'url' ? (sourcePdfHash ? 'pdf' : 'web') : source === 'file' ? request.filename?.split('.').pop() || 'file' : 'text',
+      uri: source === 'file' ? request.sourceUri || `upload:${request.filename}` : source === 'url' ? request.url : null,
+    }
     await query("UPDATE jobs SET payload=(payload - 'duplicate_decision') || $1::jsonb WHERE id=$2", [JSON.stringify({ checkpoint }), id])
     stage = 'index'
   }

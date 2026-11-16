@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@deepseek-ai/dsh-client-ui-sidebar-right@0.2.2-alpha.3':
+    hash: bd882515ad6bc90a088c5a721fd68365d9cbf7642d9dd0065a615d5aaa60a816
+    path: patches/@deepseek-ai__dsh-client-ui-sidebar-right@0.2.2-alpha.3.patch
+
 importers:
 
   .:
@@ -5705,7 +5710,7 @@ snapshots:
     dependencies:
       '@deepseek-ai/cordis': 4.0.6-alpha.2(@deepseek-ai/cordis-plugin-include@1.0.11-alpha.2)(@deepseek-ai/cordis-plugin-loader@1.0.7-alpha.2)
 
-  '@deepseek-ai/dsh-client-ui-sidebar-right@0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2)':
+  '@deepseek-ai/dsh-client-ui-sidebar-right@0.2.2-alpha.3(patch_hash=bd882515ad6bc90a088c5a721fd68365d9cbf7642d9dd0065a615d5aaa60a816)(@deepseek-ai/cordis@4.0.6-alpha.2)':
     dependencies:
       '@deepseek-ai/cordis': 4.0.6-alpha.2(@deepseek-ai/cordis-plugin-include@1.0.11-alpha.2)(@deepseek-ai/cordis-plugin-loader@1.0.7-alpha.2)
 
@@ -8066,7 +8071,7 @@ snapshots:
       '@deepseek-ai/dsh-client-ui-sidebar-browser': 0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2)
       '@deepseek-ai/dsh-client-ui-sidebar-documentpreview': 0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2)
       '@deepseek-ai/dsh-client-ui-sidebar-files': 0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2)
-      '@deepseek-ai/dsh-client-ui-sidebar-right': 0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2)
+      '@deepseek-ai/dsh-client-ui-sidebar-right': 0.2.2-alpha.3(patch_hash=bd882515ad6bc90a088c5a721fd68365d9cbf7642d9dd0065a615d5aaa60a816)(@deepseek-ai/cordis@4.0.6-alpha.2)
       '@deepseek-ai/dsh-client-ui-sidebar-terminal': 0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2)
       '@deepseek-ai/dsh-client-ui-skill': 0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2)
       '@deepseek-ai/dsh-client-ui-subagent': 0.2.2-alpha.3(@deepseek-ai/cordis@4.0.6-alpha.2)

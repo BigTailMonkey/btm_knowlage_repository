@@ -9,7 +9,7 @@ const headers = { authorization: `Bearer ${process.env.KNOWWEAVE_TOKEN || 'owner
 const cachePath = join(root,'.knowweave-sync.json')
 let cache: Record<string,{ hash: string; docId: string; version: number }> = {}
 try { cache = JSON.parse(await readFile(cachePath,'utf8')) } catch { /* first sync */ }
-const extensions = new Set(['.txt','.md','.markdown','.html','.htm','.pdf','.docx','.csv','.json','.yaml','.yml','.png','.jpg','.jpeg','.tiff','.tif','.webp','.bmp','.wav','.mp3','.m4a','.mp4','.webm','.ogg','.flac'])
+const extensions = new Set(['.txt','.md','.markdown','.html','.htm','.pdf','.doc','.docx','.csv','.json','.yaml','.yml','.png','.jpg','.jpeg','.tiff','.tif','.webp','.bmp','.wav','.mp3','.m4a','.mp4','.webm','.ogg','.flac'])
 let stopping = false
 process.once('SIGINT',()=>{ stopping=true }); process.once('SIGTERM',()=>{ stopping=true })
 async function api(path: string, init: RequestInit = {}) {

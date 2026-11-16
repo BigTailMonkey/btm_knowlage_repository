@@ -79,6 +79,7 @@ test('entity graph focuses on one entity, keeps hops on the ring and values as a
     const twoHops = await inject('/graph?focus=metric&hops=2')
     assert.equal(twoHops.body.nodes.find((node: { id: string }) => node.id === 'province')?.hop, 2)
     assert.ok(twoHops.body.edges.some((edge: { id: string }) => edge.id === 'province'))
+    assert.deepEqual((await inject('/graph?focus=metric')).body, twoHops.body)
 
     const missing = await inject('/graph?focus=missing')
     assert.equal(missing.status, 404)
@@ -108,6 +109,27 @@ test('entity graph focuses on one entity, keeps hops on the ring and values as a
     assert.deepEqual(overview.body.edges.map((edge: { id: string }) => edge.id).sort(),
       ['definition', 'frequency', 'province', 'responsible'])
     assert.equal(overview.body.nodes.find((node: { id: string }) => node.id === 'isolated').attrs[0].value, '95%')
+
+    await query(
+      `INSERT INTO entities(id,tenant_id,canonical_name,normalized_name,type,acl_principals)
+       SELECT 'chain-' || hop, $1, '关联实体' || hop, '关联实体' || hop, 'concept', $2::jsonb
+       FROM generate_series(3, 11) AS hop`,
+      [tenant, acl],
+    )
+    await query(
+      `INSERT INTO facts(id,tenant_id,subject_id,predicate,object_id,status,confidence,acl_principals)
+       SELECT 'chain-fact-' || hop, $1, CASE WHEN hop = 3 THEN 'province' ELSE 'chain-' || (hop - 1) END,
+         '相关于', 'chain-' || hop, 'active', 0.85, $2::jsonb
+       FROM generate_series(3, 11) AS hop`,
+      [tenant, acl],
+    )
+    const tenHops = await inject('/graph?focus=metric&hops=10')
+    assert.equal(tenHops.status, 200)
+    assert.equal(tenHops.body.hops, 10)
+    assert.equal(tenHops.body.nodes.find((node: { id: string }) => node.id === 'chain-10')?.hop, 10)
+    assert.ok(!tenHops.body.nodes.some((node: { id: string }) => node.id === 'chain-11'))
+    assert.deepEqual((await inject('/graph?focus=metric&hops=11')).body, tenHops.body)
+    assert.equal((await inject('/graph?focus=metric&hops=1.5')).status, 400)
   } finally {
     await app.close()
     await workspace.close()

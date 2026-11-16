@@ -7,9 +7,10 @@ import { ingestParsed } from '../src/core/ingestion.js'
 import { parseText } from '../src/adapters/parsing/index.js'
 import { harness } from '../src/adapters/harness/index.js'
 import { embedder } from '../src/adapters/embeddings/index.js'
-import { ask } from '../src/core/answering.js'
+import { ask, type AnswerFailure } from '../src/core/answering.js'
 import { validateGrounding } from '../src/core/grounding.js'
 import { createServer } from '../src/app/server.js'
+import { settings } from '../src/config.js'
 
 let workspace: Awaited<ReturnType<typeof testWorkspace>>
 let app: Awaited<ReturnType<typeof createServer>>
@@ -51,12 +52,98 @@ test('valid generated claims keep actual references and expose sentence coverage
   assert.equal((result.grounding as { citation_coverage: number }).citation_coverage, 1)
 })
 
+test('the configured semantic verifier judges cited paraphrases after citation and number checks', async () => {
+  const question = '知织的回答有什么？'
+  const paraphrase = '作答时会注明资料的出处。[1]'
+  assert.equal(validateGrounding(paraphrase, [{ text }]).valid, false)
+
+  const original = settings.groundingVerifier
+  settings.groundingVerifier = true
+  let checks = 0
+  let supported = true
+  harness.ask = async () => generated(paraphrase)
+  harness.complete = async (prompt) => {
+    checks += 1
+    const request = JSON.parse(prompt)
+    assert.equal(request.answer, paraphrase)
+    assert.match(request.evidence[0].text, /回答附带原文引用/)
+    return generated(JSON.stringify({ supported, unsupported_sentences: supported ? [] : [paraphrase] }))
+  }
+  try {
+    const accepted = await ask(workspace.principal, { question, evaluation: true })
+    assert.equal(accepted.refused, false)
+    assert.equal(accepted.answer, paraphrase)
+    assert.equal((accepted.citations as unknown[]).length, 1)
+    supported = false
+    const rejected = await ask(workspace.principal, { question, evaluation: true })
+    assert.equal(rejected.refused, true)
+    assert.equal((rejected.failure as AnswerFailure).verification.semantic_rejected, true)
+    assert.equal(checks, 2)
+
+    for (const invalid of ['作答时会注明资料的出处。', '文件容量上限为999GB。[1]']) {
+      harness.ask = async () => generated(invalid)
+      const invalidResult = await ask(workspace.principal, { question, evaluation: true })
+      assert.equal(invalidResult.refused, true)
+      assert.equal((invalidResult.failure as AnswerFailure).verification.supported, 0)
+    }
+    assert.equal(checks, 2)
+  } finally {
+    settings.groundingVerifier = original
+  }
+})
+
 test('unsupported generated answers are rejected without substituting excerpts', async () => {
   harness.ask = async () => generated('知织文件上限为999GB。[1]知织会公开所有上传内容。')
-  const result = await ask(workspace.principal, { question: '知织文件大小上限是多少？' })
+  await ingestParsed(workspace.principal, parseText('其他仓库支持按标签分类。', '其他仓库'), { sourceType: 'text', uri: 'fixture:other' })
+  const result = await ask(workspace.principal, { question: '知织文件大小上限是多少？', topK: 1 })
   assert.equal(result.refused, true)
   assert.match(String(result.answer), /未通过核验/)
   assert.deepEqual(result.citations, [])
+  assert.doesNotMatch(String(result.answer), /999GB/)
+
+  const failure = result.failure as AnswerFailure
+  assert.equal(failure.stage, 'grounding')
+  assert.ok(failure.top_score >= failure.threshold)
+  assert.equal(failure.selected[0]!.doc_title, '知织文档')
+  assert.match(failure.selected[0]!.quote, /30MB/)
+  assert.equal(failure.excluded_count, 1)
+  assert.equal(failure.query_limit_count, 1)
+  assert.equal(failure.excluded[0]!.doc_title, '其他仓库')
+  assert.equal(failure.excluded[0]!.reason, 'query_limit')
+  assert.equal(failure.verification.sentences, 2)
+  assert.equal(failure.verification.supported, 0)
+  assert.deepEqual(failure.verification.issues[0]!.evidence_indices, [1])
+  assert.match(failure.verification.issues[0]!.reasons.join(' '), /未找到数字或单位.*999GB/)
+  assert.match(failure.verification.issues[1]!.reasons[0]!, /没有引用/)
+
+  const conversation = () => app.inject({ method: 'GET', url: `/api/v1/conversations/${result.conversation_id}`, headers: workspace.headers })
+  const message = (await conversation()).json().messages.at(-1)
+  assert.equal(message.refused, true)
+  assert.deepEqual(message.failure, failure)
+  await query('UPDATE documents SET acl_principals = $1::jsonb WHERE id = $2', ['["user:someone-else"]', failure.selected[0]!.doc_id])
+  const hidden = (await conversation()).json().messages.at(-1).failure
+  assert.deepEqual(hidden.selected, [])
+  assert.deepEqual(hidden.verification.issues, [])
+  assert.equal(hidden.excluded[0].doc_title, '其他仓库')
+})
+
+test('reports whether generation was skipped at the threshold or the model identified a gap', async () => {
+  const question = '知织的回答有什么？'
+  harness.ask = async () => generated('REFUSE: 片段只有回答格式，缺少所问规则。')
+  const declined = await ask(workspace.principal, { question })
+  const modelFailure = declined.failure as AnswerFailure
+  assert.equal(modelFailure.stage, 'model_refusal')
+  assert.equal(modelFailure.model_reason, '片段只有回答格式，缺少所问规则。')
+  const original = embedder.embedQuery
+  embedder.embedQuery = async () => ({ dense: [0.1, 1], sparse: {}, model: 'test', dim: 2 })
+  harness.ask = async () => { throw new Error('should not generate at this score') }
+  try {
+    const blocked = await ask(workspace.principal, { question: '完全无关' })
+    const blockedFailure = blocked.failure as AnswerFailure
+    assert.equal(blockedFailure.stage, 'below_threshold')
+    assert.equal(blockedFailure.selected[0]!.doc_title, '知织文档')
+    assert.ok(blockedFailure.top_score < blockedFailure.threshold)
+  } finally { embedder.embedQuery = original }
 })
 
 test('model outage returns 503 without writing an answer or evidence gap', async () => {
@@ -118,6 +205,7 @@ test('deep mode retries distinct queries at most three retrieval rounds and reco
   try {
     const result = await ask(workspace.principal, { question: '完全缺失的问题', mode: 'deep' })
     assert.equal(result.refused, true)
+    assert.equal((result.failure as AnswerFailure).stage, 'no_hits')
     assert.equal((result.stats as { retrieval_rounds: number }).retrieval_rounds, 3)
     const spans = await query<{ stage: string }>('SELECT stage FROM trace_spans WHERE trace_id=$1', [result.trace_id])
     assert.equal(spans.filter(span => span.stage === 'recall.dense').length, count)

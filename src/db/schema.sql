@@ -83,7 +83,7 @@ COMMENT ON TABLE documents IS '文档主表：文档的当前状态与元数据�
 COMMENT ON COLUMN documents.id IS '文档 ID（doc_ 前缀）';
 COMMENT ON COLUMN documents.tenant_id IS '所属租户 ID';
 COMMENT ON COLUMN documents.title IS '文档标题';
-COMMENT ON COLUMN documents.source_type IS '来源类型：text 纯文本 / web 网页 / pdf、docx 等文件扩展名（小写）';
+COMMENT ON COLUMN documents.source_type IS '来源类型：text 纯文本 / web 网页 / pdf、doc、docx 等文件扩展名（小写）';
 COMMENT ON COLUMN documents.uri IS '来源定位符（可空）：上传为 upload:<文件名>[:<内容哈希>]，网页为 URL，目录同步为 file:// URI，记忆晋升为 memory:<记忆ID>';
 COMMENT ON COLUMN documents.content_hash IS '当前版本全文的 SHA-256 十六进制哈希，用于内容去重';
 COMMENT ON COLUMN documents.acl_principals IS 'JSONB 字符串数组：允许读取的主体列表（user:<用户ID> / group:<组名> / tenant:public）；空数组表示默认拒绝';
@@ -142,7 +142,7 @@ COMMENT ON COLUMN document_versions.version IS '版本号：从 1 递增，最�
 COMMENT ON COLUMN document_versions.hash IS '该版本全文的 SHA-256 十六进制哈希';
 COMMENT ON COLUMN document_versions.parser IS '解析器名称：plain-text / markdown / html / docling / mineru 等';
 COMMENT ON COLUMN document_versions.text IS '解析后的规范化全文（结构块以空行连接）；meta.chunk_spans 的偏移以此为基准';
-COMMENT ON COLUMN document_versions.meta IS 'JSONB 解析元数据：chars/engine/pages、coordinate_system（normalized-text-utf16）、chunk_spans（chunk ID → 原文 UTF-16 偏移区间数组）、source_job_id、corrected_by 等';
+COMMENT ON COLUMN document_versions.meta IS 'JSONB 解析元数据：chars/engine/pages、coordinate_system（normalized-text-utf16）、chunk_spans（chunk ID → 原文 UTF-16 偏移区间数组）、source_job_id（入库任务 ID）、source_pdf_hash（从 URL 获取的该版 PDF 的原始字节 SHA-256，对应任务 payload.source_pdfs 的键）、corrected_by 等';
 COMMENT ON COLUMN document_versions.created_at IS '版本创建时间';
 
 CREATE TABLE IF NOT EXISTS blocks (
@@ -383,6 +383,11 @@ COMMENT ON COLUMN messages.latency_ms IS '回答耗时（毫秒；用户消息�
 COMMENT ON COLUMN messages.trace_id IS '关联调用轨迹 ID（traces.id）';
 COMMENT ON COLUMN messages.confidence IS '回答置信度（0–1；用户消息为 0，拒答约 0.18）';
 COMMENT ON COLUMN messages.created_at IS '创建时间';
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS answer_failure JSONB;
+COMMENT ON COLUMN messages.answer_failure IS '研究台未作答时的诊断快照，用户消息、成功回答和旧记录为 NULL。
+JSONB 字段 stage 表示停止阶段（no_hits 无召回 / below_threshold 最高分未达阈值 / model_refusal 模型拒答 / grounding 草稿核验失败）。queries 是实际检索语句数组。ranked_count 是重排后去重片段数，acl_excluded_count 和 fusion_excluded_count 分别是权限过滤及融合后未进入重排的按语句累计次数。top_score 和 threshold 分别是 0–1 的最高检索分及作答阈值。
+selected 和 excluded 是原文片段数组，条目含 chunk_id、doc_id、doc_title、version_id、page（页码，可为 NULL）、heading_path（章节路径数组）、quote（摘录）和 rerank（0–1 重排分）。selected 条目另含从 1 开始的 index。excluded_count 是重排后未入围的去重片段数，query_limit_count 是其中超出单次检索名额且未获任何检索语句保留的片段数。excluded 至多保存 5 个高分样例，条目另含 reason（query_limit 单次检索名额 / answer_limit 本轮作答名额）。
+model_reason 是模型拒答说明，没有说明时为空字符串。verification 含 sentences（规则核验的草稿表述总数）、supported（通过规则核验的表述数）、issues（至多 6 个核验失败样例，各含 claim 草稿摘录、evidence_indices 有效引用编号数组、reasons 原因数组）、format_missing（缺少对比表格）及 semantic_rejected（独立语义核验失败）。';
 
 CREATE TABLE IF NOT EXISTS citations (
   id TEXT PRIMARY KEY,
@@ -451,7 +456,7 @@ COMMENT ON COLUMN jobs.status IS '状态：pending 排队 / running 运行中 / 
 COMMENT ON COLUMN jobs.attempts IS '已尝试次数（入库任务自动重试最多 3 次）';
 COMMENT ON COLUMN jobs.error IS '最近一次失败原因（截断至 300 字符；成功时清空）';
 COMMENT ON COLUMN jobs.input_hash IS '入库内容的 SHA-256 哈希（目录同步据此跳过未变化文件）';
-COMMENT ON COLUMN jobs.payload IS 'JSONB 任务数据：ingest 存 source/user_id/request（含 base64 原始文件及 confirmDuplicates 重复确认开关）/checkpoint（解析断点）/indexed_result（与索引一起提交的结果，供崩溃恢复）/duplicate_decision（continue 继续或 skip 跳过）/result（最终结果）/view（任务界面状态）；enrich 存 document_id/version/user_id/checkpoint（抽取断点）/promotion（记忆晋升）';
+COMMENT ON COLUMN jobs.payload IS 'JSONB 任务数据：ingest 存 source/user_id/request（含 base64 原始上传文件及 confirmDuplicates 重复确认开关）/checkpoint（解析断点，URL PDF 的 sourcePdfHash 指向抓取字节）/source_pdfs（URL PDF 原始字节 SHA-256 → {filename, data: base64}）/indexed_result（与索引一起提交的结果，供崩溃恢复）/duplicate_decision（continue 继续或 skip 跳过）/result（最终结果）/view（任务界面状态）；enrich 存 document_id/version/user_id/checkpoint（抽取断点）/promotion（记忆晋升）';
 COMMENT ON COLUMN jobs.created_at IS '创建时间';
 COMMENT ON COLUMN jobs.updated_at IS '最近更新时间：运行中每 30 秒心跳刷新；超过 2 分钟无心跳视为崩溃，任务可被重新抢占';
 
