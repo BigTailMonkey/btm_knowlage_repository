@@ -37,7 +37,7 @@ async function versionAndChunk(docId: string, text: string, chunkId = `${docId}-
   )
   await query(
     `INSERT INTO chunks (id, version_id, doc_id, tenant_id, seq, text, acl_principals, dense, sparse)
-     VALUES ($1, $2, $3, $4, 0, $5, '["tenant:public"]', '[1,0]', $6::jsonb)`,
+     VALUES ($1, $2, $3, $4, 0, $5, '["tenant:public"]', ARRAY[1.0,0.0], $6::jsonb)`,
     [chunkId, versionId, docId, settings.defaultTenantId, text, JSON.stringify(sparseVector(tokenize(text)))],
   )
   return { versionId, chunkId }

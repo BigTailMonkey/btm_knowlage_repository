@@ -12,7 +12,7 @@ export async function reindexDocument(tenantId: string, docId: string) {
     if (!documents.length) throw Object.assign(new Error('文档已在回收站，请先恢复后再重建索引'), { statusCode: 409 })
     for (let i=0;i<chunks.length;i++) {
       const vector=vectors[i]!
-      await client.query('UPDATE chunks SET dense=$1::jsonb,sparse=$2::jsonb,embedding_model=$3,embedding_dim=$4 WHERE id=$5', [JSON.stringify(vector.dense),JSON.stringify(vector.sparse),vector.model,vector.dim,chunks[i]!.id])
+      await client.query('UPDATE chunks SET dense=$1::double precision[],sparse=$2::jsonb,embedding_model=$3,embedding_dim=$4 WHERE id=$5', [vector.dense,JSON.stringify(vector.sparse),vector.model,vector.dim,chunks[i]!.id])
     }
   })
   return { document_id: docId, status: 'done', chunks: chunks.length, model: vectors[0]?.model ?? embedder.model }

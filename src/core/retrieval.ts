@@ -1,7 +1,7 @@
 import { settings } from '../config.js'
 import { semanticRerank } from '../adapters/reranking/index.js'
 import { query, queryOne } from '../db/index.js'
-import { cosine, embedder, keywordOverlap, sparseDot, tokenize } from '../adapters/embeddings/index.js'
+import { embedder, keywordOverlap, sparseDot, tokenize } from '../adapters/embeddings/index.js'
 import type { ChunkRow, DocumentRow, EntityRow } from './rows.js'
 import { canRead, Principal, principalSet } from './security.js'
 import type { TraceRecorder } from './tracing.js'
@@ -10,6 +10,7 @@ import { todayLocal } from './ids.js'
 const RRF_K = 60
 
 type RetrievalDocument = DocumentRow & { selected_version?: number }
+type RetrievalChunk = Omit<ChunkRow, 'dense' | 'sparse'>
 
 /** Historical queries use calendar dates in the configured workspace timezone. */
 export function normalizeAsOf(value?: string | null): string | null {
@@ -47,7 +48,7 @@ function snippet(text: string, limit = 220): string {
 
 export class Hit {
   constructor(
-    readonly chunk: ChunkRow,
+    readonly chunk: RetrievalChunk,
     readonly document: RetrievalDocument,
     readonly dense: number,
     readonly sparse: number,
@@ -100,7 +101,7 @@ async function loadCandidates(
   tenantId: string,
   asOf: string | null,
   includeDocIds: string[] = [],
-): Promise<Array<[ChunkRow, RetrievalDocument]>> {
+): Promise<Array<[RetrievalChunk, RetrievalDocument]>> {
   const effectiveDate = asOf ?? todayLocal(settings.timezone)
   // A document that participates in a continuation chain represents one policy
   // generation; its content revisions are not historical policy generations.
@@ -119,13 +120,18 @@ async function loadCandidates(
                           AND historical.created_at < (($4::date + interval '1 day') AT TIME ZONE $5)
                         ORDER BY historical.created_at DESC, historical.version DESC LIMIT 1) END`
   }
-  const rows = await query<{ chunk: ChunkRow; document: RetrievalDocument }>(
+  const rows = await query<{ chunk: RetrievalChunk; document: RetrievalDocument }>(
     `SELECT to_jsonb(c) AS chunk,
             to_jsonb(d) || jsonb_build_object('selected_version', v.version) AS document
-     FROM chunks c
+     FROM (
+       SELECT id, version_id, doc_id, tenant_id, seq, heading_path, page, bbox, block_type, text,
+              token_count, parent_id, is_parent, acl_principals, acl_version, embedding_model,
+              embedding_dim, weight, created_at
+       FROM chunks
+     ) c
      JOIN documents d ON c.doc_id = d.id
      JOIN document_versions v ON c.version_id = v.id
-     WHERE d.tenant_id = $1 AND d.status = 'active'
+     WHERE d.tenant_id = $1 AND c.tenant_id = $1 AND d.status = 'active'
        AND ${versionFilter} AND c.is_parent = false
        AND (
          d.id = ANY($3::text[])
@@ -142,6 +148,24 @@ async function loadCandidates(
     params,
   )
   return rows.map((row) => [row.chunk, row.document])
+}
+
+function scoreVisibleChunks(principal: Principal, chunkIds: string[], dense: number[]) {
+  // Read both embeddings together and recheck ACLs after the embedding request.
+  return query<{ id: string; dense_score: number; sparse: ChunkRow['sparse'] }>(
+    `WITH query_embedding AS MATERIALIZED (
+       SELECT $3::double precision[] AS dense, coalesce(sqrt(sum(component * component)), 0) AS norm
+       FROM unnest($3::double precision[]) AS input(component)
+     )
+     SELECT c.id, chunk_dense_cosine(c.dense, q.dense, q.norm) AS dense_score, c.sparse
+     FROM chunks c
+     JOIN documents d ON d.id = c.doc_id AND d.tenant_id = $1 AND d.status = 'active'
+     CROSS JOIN query_embedding q
+     WHERE c.tenant_id = $1 AND c.id = ANY($2::text[])
+       AND jsonb_typeof(d.acl_principals) = 'array' AND d.acl_principals ?| $4::text[]
+       AND jsonb_typeof(c.acl_principals) = 'array' AND c.acl_principals ?| $4::text[]`,
+    [principal.tenantId, chunkIds, dense, [...principalSet(principal)]],
+  )
 }
 
 function rrf(rankedLists: string[][]): Map<string, number> {
@@ -325,7 +349,10 @@ export async function retrieve(
   const queryTokens = tokenize(text)
 
   let t0 = Date.now()
-  const denseScores: Array<[string, number]> = visible.map(([chunk]) => [chunk.id, cosine(queryVec.dense, chunk.dense ?? [])])
+  const scored = await scoreVisibleChunks(principal, visible.map(([chunk]) => chunk.id), queryVec.dense)
+  const scores = new Map(scored.map((row) => [row.id, row]))
+  visible = visible.filter(([chunk]) => scores.has(chunk.id))
+  const denseScores: Array<[string, number]> = visible.map(([chunk]) => [chunk.id, scores.get(chunk.id)!.dense_score])
   denseScores.sort((a, b) => b[1] - a[1])
   const denseRanked = denseScores.filter(([, score]) => score > 0.02).slice(0, 50).map(([id]) => id)
   options.recorder?.addSpan({
@@ -338,7 +365,7 @@ export async function retrieve(
   t0 = Date.now()
   const sparseScores: Array<[string, number]> = visible.map(([chunk]) => [
     chunk.id,
-    sparseDot(queryVec.sparse, chunk.sparse ?? {}),
+    sparseDot(queryVec.sparse, scores.get(chunk.id)!.sparse),
   ])
   sparseScores.sort((a, b) => b[1] - a[1])
   const sparseRanked = sparseScores.filter(([, score]) => score > 0).slice(0, 50).map(([id]) => id)
@@ -450,7 +477,9 @@ export async function retrieve(
     .filter((row) => canRead(principal, row.acl_principals) && row.evidence_ids.length > 0 && row.evidence_ids.every((id) => selected.has(id))).slice(0, 3) : []
   for (const hit of final) {
     if (hit.chunk.parent_id) {
-      const parent = await queryOne<ChunkRow>('SELECT * FROM chunks WHERE id = $1', [hit.chunk.parent_id])
+      const parent = await queryOne<Pick<ChunkRow, 'doc_id' | 'version_id' | 'tenant_id' | 'acl_principals' | 'text'>>(
+        'SELECT doc_id, version_id, tenant_id, acl_principals, text FROM chunks WHERE id = $1', [hit.chunk.parent_id],
+      )
       if (parent && parent.doc_id === hit.chunk.doc_id && parent.version_id === hit.chunk.version_id
         && parent.tenant_id === principal.tenantId && canRead(principal, parent.acl_principals)) hit.parentText = parent.text
     }

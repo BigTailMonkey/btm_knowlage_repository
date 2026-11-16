@@ -187,13 +187,29 @@ CREATE TABLE IF NOT EXISTS chunks (
   is_parent BOOLEAN NOT NULL DEFAULT false,
   acl_principals JSONB NOT NULL DEFAULT '[]'::jsonb,
   acl_version INTEGER NOT NULL DEFAULT 1,
-  dense JSONB NOT NULL DEFAULT '[]'::jsonb,
+  dense DOUBLE PRECISION[] NOT NULL DEFAULT '{}',
   sparse JSONB NOT NULL DEFAULT '{}'::jsonb,
   embedding_model TEXT NOT NULL DEFAULT '',
   embedding_dim INTEGER NOT NULL DEFAULT 0,
   weight DOUBLE PRECISION NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+DO $$
+BEGIN
+  IF pg_typeof((NULL::chunks).dense) = 'jsonb'::regtype THEN
+    LOCK TABLE chunks IN ACCESS EXCLUSIVE MODE;
+    IF pg_typeof((NULL::chunks).dense) = 'jsonb'::regtype THEN
+      -- 原列由应用写入 JSON 数值数组，仅需转换数组定界符即可按原顺序读取分量。
+      ALTER TABLE chunks ALTER COLUMN dense DROP DEFAULT;
+      ALTER TABLE chunks ALTER COLUMN dense TYPE DOUBLE PRECISION[]
+        USING CASE WHEN jsonb_typeof(dense) = 'array'
+          THEN translate(dense::text, '[]', '{}')::double precision[]
+          ELSE '{}'::double precision[] END;
+      ALTER TABLE chunks ALTER COLUMN dense SET DEFAULT '{}';
+    END IF;
+  END IF;
+END
+$$;
 CREATE INDEX IF NOT EXISTS ix_chunks_doc_version ON chunks (doc_id, version_id);
 CREATE INDEX IF NOT EXISTS ix_chunks_tenant ON chunks (tenant_id);
 COMMENT ON TABLE chunks IS '检索单元（chunk）表：切分后的检索与引用单元；向量是派生数据，可由文本重建；父块（is_parent=true）仅作上下文，不参与召回';
@@ -212,12 +228,30 @@ COMMENT ON COLUMN chunks.parent_id IS '所属章节父块 ID（父块自身为 N
 COMMENT ON COLUMN chunks.is_parent IS '是否章节父块：true 时仅用于补充上下文，不生成向量、不参与召回';
 COMMENT ON COLUMN chunks.acl_principals IS 'JSONB 字符串数组：写入时冗余的文档 ACL 允许列表，检索时与文档 ACL 双重校验';
 COMMENT ON COLUMN chunks.acl_version IS '写入时对应的文档 ACL 版本号';
-COMMENT ON COLUMN chunks.dense IS 'JSONB 浮点数组：稠密向量（父块为空数组）';
+COMMENT ON COLUMN chunks.dense IS '双精度浮点数组：按维度顺序存放稠密向量，供 PostgreSQL 计算余弦相似度；默认空数组，父块不生成向量';
 COMMENT ON COLUMN chunks.sparse IS 'JSONB 对象 {词元: 权重}：稀疏向量；hybrid 服务返回的 learned sparse，或本地分词的 1+log(词频)（最多 96 项）';
 COMMENT ON COLUMN chunks.embedding_model IS '生成向量的嵌入模型名（父块或未向量化时为空串）';
 COMMENT ON COLUMN chunks.embedding_dim IS '稠密向量维度（未向量化时为 0）';
 COMMENT ON COLUMN chunks.weight IS '检索权重（默认 1）：用户反馈按 ±0.12 调整，范围 0.5–1.6，用于微调重排得分';
 COMMENT ON COLUMN chunks.created_at IS '创建时间';
+
+CREATE OR REPLACE FUNCTION chunk_dense_cosine(
+  stored_vector DOUBLE PRECISION[], query_vector DOUBLE PRECISION[], query_norm DOUBLE PRECISION
+) RETURNS DOUBLE PRECISION
+LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE
+AS $$
+  SELECT CASE
+    WHEN query_norm = 0 OR cardinality(stored_vector) <> cardinality(query_vector) THEN 0
+    ELSE (
+      SELECT coalesce(
+        sum(component * query_component) / nullif(sqrt(sum(component * component)) * query_norm, 0),
+        0
+      )
+      FROM unnest(stored_vector, query_vector) AS components(component, query_component)
+    )
+  END
+$$;
+COMMENT ON FUNCTION chunk_dense_cosine(DOUBLE PRECISION[], DOUBLE PRECISION[], DOUBLE PRECISION) IS '使用查询向量及其预先计算的 L2 范数，与切块的稠密向量计算精确余弦相似度；空向量、零范数或维度不符时返回 0';
 
 CREATE TABLE IF NOT EXISTS entities (
   id TEXT PRIMARY KEY,

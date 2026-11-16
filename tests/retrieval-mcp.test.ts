@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { after, before, beforeEach, test } from 'node:test'
 
 import { testWorkspace, clearKnowledge } from './helpers.js'
-import { query } from '../src/db/index.js'
+import { initSchema, query } from '../src/db/index.js'
 import { settings } from '../src/config.js'
 import { createServer } from '../src/app/server.js'
 import { sparseVector, tokenize } from '../src/adapters/embeddings/index.js'
@@ -40,7 +40,7 @@ async function version(docId: string, number: number, text: string, createdAt = 
 async function chunk(docId: string, versionId: string, id: string, text: string, seq = 0) {
   await query(
     `INSERT INTO chunks (id, version_id, doc_id, tenant_id, seq, text, page, bbox, acl_principals, dense, sparse)
-     VALUES ($1, $2, $3, $4, $5, $6, 2, '[1,2,3,4]', '["tenant:public"]', '[1,0]', $7::jsonb)`,
+     VALUES ($1, $2, $3, $4, $5, $6, 2, '[1,2,3,4]', '["tenant:public"]', ARRAY[1.0,0.0], $7::jsonb)`,
     [id, versionId, docId, settings.defaultTenantId, seq, text, JSON.stringify(sparseVector(tokenize(text)))],
   )
 }
@@ -75,6 +75,53 @@ async function mcp(name: string, args: Record<string, unknown>, native = false) 
   assert.equal(body.error, undefined, JSON.stringify(body.error))
   return JSON.parse(body.result.content[0].text)
 }
+
+test('schema initialization migrates existing JSONB dense vectors once', async () => {
+  await document('legacy')
+  const v = await version('legacy', 1, 'Aurora legacy')
+  await chunk('legacy', v, 'legacy-chunk', 'Aurora legacy')
+  await query('ALTER TABLE chunks ALTER COLUMN dense DROP DEFAULT')
+  await query('ALTER TABLE chunks ALTER COLUMN dense TYPE jsonb USING to_jsonb(dense)')
+  await query("ALTER TABLE chunks ALTER COLUMN dense SET DEFAULT '[]'::jsonb")
+  await query("UPDATE chunks SET dense = '[3,-4.25]'::jsonb WHERE id = 'legacy-chunk'")
+
+  await initSchema()
+  await initSchema()
+  const rows = await query("SELECT dense, pg_typeof(dense)::text AS type FROM chunks WHERE id = 'legacy-chunk'")
+  assert.deepEqual(rows, [{ dense: [3, -4.25], type: 'double precision[]' }])
+  const result = await retrieve(workspace.principal, 'Aurora')
+  assert.ok(Math.abs(result.hits[0]!.dense - 3 / Math.hypot(3, 4.25)) < 1e-12)
+})
+
+test('database cosine ranks visible chunks and keeps dense scores for sparse-only hits', async () => {
+  await document('vectors')
+  const v = await version('vectors', 1, 'Aurora vectors')
+  const vectors = [
+    { id: 'matching', dense: [3, 4], score: 0.6 },
+    { id: 'sparse-only', dense: [1, 100], score: 1 / Math.sqrt(10001) },
+    { id: 'negative', dense: [-1, 0], score: 0 },
+    { id: 'zero', dense: [0, 0], score: 0 },
+    { id: 'empty', dense: [], score: 0 },
+    { id: 'old-dimension', dense: [1], score: 0 },
+    { id: 'hidden', dense: [1, 0], score: 1 },
+  ]
+  for (const { id, dense } of vectors) {
+    await chunk('vectors', v, id, 'Aurora vectors')
+    await query('UPDATE chunks SET dense = $1::double precision[] WHERE id = $2', [dense, id])
+  }
+  await query("UPDATE chunks SET acl_principals = '[]'::jsonb WHERE id = 'hidden'")
+
+  const result = await retrieve(workspace.principal, 'Aurora')
+  assert.equal(result.stats.dense, 1)
+  assert.equal(result.rejectedCandidates, 1)
+  assert.equal(result.hits[0]?.chunk.id, 'matching')
+  assert.equal(result.hits.length, vectors.length - 1)
+  for (const { id, score } of vectors.filter((vector) => vector.id !== 'hidden')) {
+    const hit = result.hits.find((item) => item.chunk.id === id)
+    assert.ok(hit, id)
+    assert.ok(Math.abs(hit.dense - score) < 1e-12, id)
+  }
+})
 
 test('as_of selects the latest version actually stored by that date and exposes source coordinates', async () => {
   await document('history', 'text', 2)

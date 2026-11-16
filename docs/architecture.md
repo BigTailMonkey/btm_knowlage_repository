@@ -87,7 +87,7 @@ flowchart TB
 要点：
 
 - 只有一个 Node 主进程承载 API、队列 worker、维护定时器和 DSH / 边车的进程管理；没有独立的消息中间件，队列就是 `jobs` 表。
-- 向量以 JSONB 存在 `chunks.dense / chunks.sparse`，没有启用 pgvector。
+- `chunks.dense` 使用 PostgreSQL 双精度数组，`chunks.sparse` 使用 JSONB。PostgreSQL 对可读候选计算精确余弦相似度，应用只接收稠密得分和稀疏向量。旧库首次初始化时会锁定并重写 `chunks` 表，将现有稠密向量转换为数组。
 - DSH 原生对话不直连数据库，它通过 `POST /api/v1/mcp` 回到主服务的只读工具，沿用绑定身份的知识库 ACL。
 
 ## 2. 存储视图（核心表关系）
@@ -114,8 +114,8 @@ erDiagram
   users ||--o{ memory_items : memory
 
   chunks {
-    text dense
-    text sparse
+    float8_array dense
+    json sparse
     text embedding_model
     int embedding_dim
     json acl_principals
@@ -203,7 +203,7 @@ flowchart TD
   C --> D["ACL 过滤 documents + chunks<br/>显式《标题》作为确定来源范围"]
   D -->|"无可读候选"| E["拒答"]
   D --> F["embedQuery 查询向量 + tokenize"]
-  F --> G["dense 余弦 top 50"]
+  F --> G["PostgreSQL 计算 dense 余弦相似度<br/>应用取 top 50"]
   F --> H["sparse 词频 / learned sparse top 50"]
   F --> I["实体链接 linkEntities<br/>按名称 token 匹配"]
   I --> J["图遍历 facts<br/>默认 2 跳 / 最多 3 跳<br/>只取有可见原文证据的有效事实"]

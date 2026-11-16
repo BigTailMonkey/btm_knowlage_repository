@@ -58,11 +58,11 @@ export async function insertChunkRows(
           token_count, parent_id, is_parent, acl_principals, acl_version, dense, sparse,
           embedding_model, embedding_dim, weight)
        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb, $9, $10, $11, $12, $13,
-               $14::jsonb, $15, $16::jsonb, $17::jsonb, $18, $19, 1.0)`,
+               $14::jsonb, $15, $16::double precision[], $17::jsonb, $18, $19, 1.0)`,
       [chunk.id, versionId, docId, tenantId, chunk.seq, JSON.stringify(chunk.headingPath),
         chunk.page, chunk.bbox ? JSON.stringify(chunk.bbox) : null, chunk.blockType, chunk.text,
         chunk.tokenCount, chunk.parentId, chunk.isParent, JSON.stringify(acl), aclVersion,
-        JSON.stringify(vector?.dense ?? []), JSON.stringify(vector?.sparse ?? {}), vector?.model ?? '', vector?.dim ?? 0],
+        vector?.dense ?? [], JSON.stringify(vector?.sparse ?? {}), vector?.model ?? '', vector?.dim ?? 0],
     )
   }
 }
