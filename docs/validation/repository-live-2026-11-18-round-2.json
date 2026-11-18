@@ -1,0 +1,1630 @@
+{
+  "corpus": "20 repository source excerpts; 50 explicit excerpt/citation questions",
+  "corpus_version": 2,
+  "live": true,
+  "database": "knowweave_eval_mwm49614_454cef0f",
+  "run_id": "er_e5a353da92ffa77a2276",
+  "metrics": {
+    "cases": 50,
+    "mode": "answer",
+    "recall_at_10": 1,
+    "doc_recall": 1,
+    "context_precision": 1,
+    "citation_accuracy": 1,
+    "rule_groundedness": 1,
+    "refusal_accuracy": 0.94,
+    "keyword_recall": 0.94,
+    "pass_rate": 0.94,
+    "p95_latency_ms": 11104,
+    "model_calls": 50,
+    "model_successes": 50,
+    "generated_answers": 47,
+    "failed_cases": 0,
+    "refusals": 3
+  },
+  "results": [
+    {
+      "case_id": "repo-01",
+      "error": null,
+      "question": "请从《src/core/ingestion.ts》的已提供片段中，摘录包含 `submitIngest` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_keywords": [
+        "submitIngest"
+      ],
+      "answer": "```ts\nexport async function submitIngest(\n  principal: Principal,\n  source: 'file' | 'text' | 'url',\n  options: {\n    title?: string | null\n    filename?: string | null\n```\n\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 6082,
+      "trace_id": "tr_bd8b21afecbfa6169f32",
+      "top_score": 0.4616,
+      "pass": true
+    },
+    {
+      "case_id": "repo-02",
+      "error": null,
+      "question": "请从《src/core/ingestion.ts》的已提供片段中，摘录包含 `processIngestQueue` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_keywords": [
+        "processIngestQueue"
+      ],
+      "answer": "```ts\n  void processIngestQueue().catch(() => undefined)\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 4338,
+      "trace_id": "tr_d39e167c1ec1a22fb5d1",
+      "top_score": 0.4228,
+      "pass": true
+    },
+    {
+      "case_id": "repo-03",
+      "error": null,
+      "question": "请从《src/core/ingestion.ts》的已提供片段中，摘录包含 `retryIngestJob` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_keywords": [
+        "retryIngestJob"
+      ],
+      "answer": "```ts\nexport async function retryIngestJob(principal: Principal, id: string, stage: 'parse' | 'index' = 'index', correctedText?: string): Promise<Record<string, unknown>> {\n  if (correctedText?.trim()) {\n    const row = await queryOne<SavedJob>(\"SELECT * FROM jobs WHERE id=$1 AND tenant_id=$2 AND payload->>'user_id'=$3 AND status IN('failed','done')\", [id, principal.tenantId, principal.userId])\n    if (!row) throw Object.assign(new Error('任务不存在或正在运行'), { statusCode: 409 })\n    const source = row.payload.source\n    const request = row.payload.request\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3817,
+      "trace_id": "tr_3d4f9544aa92c2e217ab",
+      "top_score": 0.4408,
+      "pass": true
+    },
+    {
+      "case_id": "repo-04",
+      "error": null,
+      "question": "请从《src/core/chunking.ts》的已提供片段中，摘录包含 `chunkBlocks` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_keywords": [
+        "chunkBlocks"
+      ],
+      "answer": "```ts\nexport function chunkBlocks(blocks: ParsedBlock[]): ChunkDraft[] {\n  // Offsets follow ingestion's join, even for empty blocks.\n  let offset = 0\n  const sections: Array<{ key: string[]; segments: Segment[] }> = []\n  for (const block of blocks) {\n    const base = offset\n```\n\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 4249,
+      "trace_id": "tr_b3d317a5f35b59d30b1b",
+      "top_score": 0.4314,
+      "pass": true
+    },
+    {
+      "case_id": "repo-05",
+      "error": null,
+      "question": "请从《src/core/chunking.ts》的已提供片段中，摘录包含 `estimateTokens` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_keywords": [
+        "estimateTokens"
+      ],
+      "answer": "```ts\nexport function estimateTokens(text: string): number {\n  let chinese = 0\n  for (const ch of text) {\n    const code = ch.codePointAt(0) ?? 0\n    if ((code >= 0x3400 && code <= 0x9fff) || (code >= 0xf900 && code <= 0xfaff)) chinese += 1\n  }\n```\n[1]\n\n```ts\nexport const MAX_TOKENS = 512\nconst OVERLAP_TOKENS = 64\nconst ATOMIC_TYPES = new Set(['table', 'code', 'formula'])\n\nexport function estimateTokens(text: string): number {\n  let chinese = 0\n```\n[2]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 6170,
+      "trace_id": "tr_fbef774d29489f3f6b9b",
+      "top_score": 0.4375,
+      "pass": true
+    },
+    {
+      "case_id": "repo-06",
+      "error": null,
+      "question": "请从《src/core/chunking.ts》的已提供片段中，摘录包含 `MAX_TOKENS` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_keywords": [
+        "MAX_TOKENS"
+      ],
+      "answer": "```ts\nexport const MAX_TOKENS = 512\n```\n\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3434,
+      "trace_id": "tr_aa459de28ac2aeb1980c",
+      "top_score": 0.448,
+      "pass": true
+    },
+    {
+      "case_id": "repo-07",
+      "error": null,
+      "question": "请从《src/adapters/parsing/index.ts》的已提供片段中，摘录包含 `parseBytes` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_keywords": [
+        "parseBytes"
+      ],
+      "answer": "```ts\nexport async function parseBytes(filename: string, data: Buffer, title?: string | null): Promise<ParsedDocument> {\n  const suffix = filename.includes('.') ? `.${filename.split('.').pop()!.toLowerCase()}` : ''\n  const baseTitle = cleanParsedText(title || (filename.includes('.') ? filename.slice(0, filename.lastIndexOf('.')) : filename)) || '未命名文档'\n  if (['.pdf', '.docx', '.png', '.jpg', '.jpeg', '.tif', '.tiff', '.webp', '.bmp', '.wav', '.mp3', '.m4a', '.mp4', '.webm', '.ogg', '.flac'].includes(suffix)) return sidecarParse(filename, data, title ?? null)\n  if (suffix === '.doc') {\n    const docx = await convertWord(data, 'doc', 'docx')\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 4374,
+      "trace_id": "tr_5da27c71d50c7ac5ad2c",
+      "top_score": 0.4075,
+      "pass": true
+    },
+    {
+      "case_id": "repo-08",
+      "error": null,
+      "question": "请从《src/adapters/parsing/index.ts》的已提供片段中，摘录包含 `parseMarkdown` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_keywords": [
+        "parseMarkdown"
+      ],
+      "answer": "```ts\nexport function parseMarkdown(text: string, title: string): ParsedDocument {\n  const blocks: ParsedBlock[] = []\n  const headingStack: Array<[number, string]> = []\n  const lines = text.split('\\n')\n  let buffer: string[] = []\n  const headingPath = (): string[] => headingStack.map(([, name]) => name)\n```\n\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 5849,
+      "trace_id": "tr_18c04b3f07628f43fec5",
+      "top_score": 0.4224,
+      "pass": true
+    },
+    {
+      "case_id": "repo-09",
+      "error": null,
+      "question": "请从《src/adapters/parsing/index.ts》的已提供片段中，摘录包含 `normalizeCjkSpaces` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_keywords": [
+        "normalizeCjkSpaces"
+      ],
+      "answer": "```ts\nexport function normalizeCjkSpaces(text: string): string {\n  return text.replace(CJK_SPACE, '')\n}\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3853,
+      "trace_id": "tr_c3a1efed204116b102c9",
+      "top_score": 0.4903,
+      "pass": true
+    },
+    {
+      "case_id": "repo-10",
+      "error": null,
+      "question": "请从《src/core/retrieval.ts》的已提供片段中，摘录包含 `retrieve` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_keywords": [
+        "retrieve"
+      ],
+      "answer": "```ts\nexport async function retrieve(\n  principal: Principal,\n  text: string,\n  options: RetrievalOptions = {},\n): Promise<RetrievalResult> {\n  const started = Date.now()\n```\n\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 4218,
+      "trace_id": "tr_38d014877a7be011b466",
+      "top_score": 0.4468,
+      "pass": true
+    },
+    {
+      "case_id": "repo-11",
+      "error": null,
+      "question": "请从《src/core/retrieval.ts》的已提供片段中，摘录包含 `factIsEffective` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_keywords": [
+        "factIsEffective"
+      ],
+      "answer": "```ts\nexport function factIsEffective(\n  fact: { status: string; valid_from: string | Date | null; valid_to: string | Date | null },\n  asOf: string | null,\n): boolean {\n  if (!['active', ...(asOf ? ['superseded'] : [])].includes(fact.status)) return false\n  const date = asOf ?? todayLocal(settings.timezone)\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 6359,
+      "trace_id": "tr_92a8b4db99e284a8241b",
+      "top_score": 0.4499,
+      "pass": true
+    },
+    {
+      "case_id": "repo-12",
+      "error": null,
+      "question": "请从《src/core/retrieval.ts》的已提供片段中，摘录包含 `normalizeAsOf` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_keywords": [
+        "normalizeAsOf"
+      ],
+      "answer": "```ts\n/** Historical queries use calendar dates in the configured workspace timezone. */\nexport function normalizeAsOf(value?: string | null): string | null {\n  if (!value) return null\n  const normalized = value.trim()\n  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(normalized)) {\n    throw Object.assign(new Error('as_of 必须为 YYYY-MM-DD 日期'), { statusCode: 400 })\n  }\n```\n\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 5487,
+      "trace_id": "tr_5298b5d1f985736a7f7c",
+      "top_score": 0.4495,
+      "pass": true
+    },
+    {
+      "case_id": "repo-13",
+      "error": null,
+      "question": "请从《src/core/answering.ts》的已提供片段中，摘录包含 `ask` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_keywords": [
+        "ask"
+      ],
+      "answer": "```ts\nexport async function ask(\n  principal: Principal,\n  input: {\n    question: string\n    mode?: string\n    topK?: number\n```\n[3]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3983,
+      "trace_id": "tr_2108e90aee88b903e5eb",
+      "top_score": 0.468,
+      "pass": true
+    },
+    {
+      "case_id": "repo-14",
+      "error": null,
+      "question": "请从《src/core/answering.ts》的已提供片段中，摘录包含 `ANSWER_SYSTEM` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答中的数字或文字无法与所引证据核对。",
+      "failure": {
+        "stage": "grounding",
+        "queries": [
+          "请从《src/core/answering.ts》的已提供片段中，摘录包含 `ANSWER_SYSTEM` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。"
+        ],
+        "ranked_count": 3,
+        "acl_excluded_count": 0,
+        "fusion_excluded_count": 0,
+        "top_score": 0.5228,
+        "threshold": 0.36,
+        "selected": [
+          {
+            "index": 1,
+            "chunk_id": "ch_1c8325f89e3e966d39fb",
+            "doc_id": "doc_cadd66404c735edfd604",
+            "doc_title": "src/core/answering.ts",
+            "version_id": "ver_4991e01610c8d06b6604",
+            "page": null,
+            "heading_path": [
+              "src/core/answering.ts",
+              "ANSWER_SYSTEM"
+            ],
+            "quote": "export const ANSWER_SYSTEM = `你是 KnoWeave（知织）知识库的问答引擎。规则： 1. 只能使用给定的「证据」回答，不得使用训练知识补全，不得编造。 2. 每个事实性句子末尾用 [编号] 标注引用，编号必须是证据编号；一句话可引用多条。附带说明也须有出处，缺少出处则省略该说明。 3. 若证据不足以支撑结论，只输出一行：REFUSE: <缺失原因>。说明最接近的证据实际写了什么，以及问题中哪一项仍缺少支持…",
+            "rerank": 0.5228
+          },
+          {
+            "index": 2,
+            "chunk_id": "ch_3672d9355cb08449a0ee",
+            "doc_id": "doc_cadd66404c735edfd604",
+            "doc_title": "src/core/answering.ts",
+            "version_id": "ver_4991e01610c8d06b6604",
+            "page": null,
+            "heading_path": [
+              "src/core/answering.ts",
+              "reflectQueries"
+            ],
+            "quote": "async function reflectQueries(question: string, hits: Hit[], tried: Set<string>, recorder: TraceRecorder, round: number): Promise<string[]> { const prompt = `将知识库问题改写成最多3条用于补充证据的检索语句。不要回答问题，不要重复已检索内容。只返回JSON：{\"queries\":[…",
+            "rerank": 0.2812
+          },
+          {
+            "index": 3,
+            "chunk_id": "ch_08402c7a8a3bf10880b2",
+            "doc_id": "doc_cadd66404c735edfd604",
+            "doc_title": "src/core/answering.ts",
+            "version_id": "ver_4991e01610c8d06b6604",
+            "page": null,
+            "heading_path": [
+              "src/core/answering.ts",
+              "ask"
+            ],
+            "quote": "export async function ask( principal: Principal, input: { question: string mode?: string topK?: number",
+            "rerank": 0.1747
+          }
+        ],
+        "excluded_count": 0,
+        "query_limit_count": 0,
+        "excluded": [],
+        "model_reason": "",
+        "verification": {
+          "sentences": 2,
+          "supported": 1,
+          "issues": [
+            {
+              "claim": "export const ANSWER_SYSTEM = `你是 KnoWeave（知织）知识库的问答引擎。规则： 1. 只能使用给定的「证据」回答，不得使用训练知识补全，不得编造。 2. 每个事实性句子末尾用 [编号] 标注引用，编号必须是证据编号；一句话可引用多条。附带说明也须有出处，缺少出处则省略该说明。 3. 若证据不足以支撑结论，只输出一行：REFUSE: <缺失原因>。说明最接近的证据实际写了什么，以及问题中哪一项仍缺少支持…",
+              "evidence_indices": [
+                1
+              ],
+              "reasons": [
+                "代码摘录与所引原文不一致"
+              ]
+            }
+          ],
+          "format_missing": false,
+          "semantic_rejected": false
+        }
+      },
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.5,
+      "latency_ms": 10745,
+      "trace_id": "tr_58df3871d4a1befbbcec",
+      "top_score": 0.5228,
+      "pass": false
+    },
+    {
+      "case_id": "repo-15",
+      "error": null,
+      "question": "请从《src/core/answering.ts》的已提供片段中，摘录包含 `reflectQueries` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_keywords": [
+        "reflectQueries"
+      ],
+      "answer": "```ts\nasync function reflectQueries(question: string, hits: Hit[], tried: Set<string>, recorder: TraceRecorder, round: number): Promise<string[]> {\n  const prompt = `将知识库问题改写成最多3条用于补充证据的检索语句。不要回答问题，不要重复已检索内容。只返回JSON：{\"queries\":[\"...\"]}。\\n问题：${question}\\n已检索：${JSON.stringify([...tried])}\\n已有线索：${hits.slice(0, 3).map((hit) => `${hit.document.title}: ${hit.chunk.text.slice(0, 200)}`).join('\\n')}`\n  const result = await completeStructured(prompt, '你是知识库检索规划器，只改写查询，不生成事实。')\n  const text = requireModelText(result, '补充检索规划')\n  let parsed: { queries?: unknown } | null = null\n  try {\n```\n[2]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 4074,
+      "trace_id": "tr_3e310c1744093d23ea4e",
+      "top_score": 0.4505,
+      "pass": true
+    },
+    {
+      "case_id": "repo-16",
+      "error": null,
+      "question": "请从《src/core/learning.ts》的已提供片段中，摘录包含 `getOrCreateEntity` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_keywords": [
+        "getOrCreateEntity"
+      ],
+      "answer": "```ts\nexport async function getOrCreateEntity(\n  tenantId: string,\n  name: string,\n  entityType = 'concept',\n  acl?: string[] | null,\n  semanticVectors?: Map<string, number[]>,\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3685,
+      "trace_id": "tr_b74519650da1f0f50334",
+      "top_score": 0.4886,
+      "pass": true
+    },
+    {
+      "case_id": "repo-17",
+      "error": null,
+      "question": "请从《src/core/learning.ts》的已提供片段中，摘录包含 `extractFactsForDocument` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_keywords": [
+        "extractFactsForDocument"
+      ],
+      "answer": "```ts\nexport async function extractFactsForDocument(principal: Principal, docId: string, expectedVersion?: number): Promise<Record<string, unknown>> {\n  const document = await queryOne<DocumentRow>('SELECT * FROM documents WHERE id = $1', [docId])\n  if (!document || document.tenant_id !== principal.tenantId || document.status !== 'active') return { error: '文档不存在' }\n  if (expectedVersion !== undefined && document.current_version !== expectedVersion) return { status: 'stale' }\n  const key = `${principal.tenantId}:${docId}:${document.current_version}`\n  const existing = extractionTasks.get(key)\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 9381,
+      "trace_id": "tr_cd21225251fc1a58a3be",
+      "top_score": 0.4429,
+      "pass": true
+    },
+    {
+      "case_id": "repo-18",
+      "error": null,
+      "question": "请从《src/core/learning.ts》的已提供片段中，摘录包含 `runReflection` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_keywords": [
+        "runReflection"
+      ],
+      "answer": "```ts\nexport async function runReflection(tenantId: string): Promise<Record<string, unknown>> {\n  const started = Date.now()\n  const entities = await query<EntityRow>(\n    `SELECT * FROM entities WHERE tenant_id = $1 AND status = 'active'`,\n    [tenantId],\n  )\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 6569,
+      "trace_id": "tr_514b2ff8198461fb2eeb",
+      "top_score": 0.4348,
+      "pass": true
+    },
+    {
+      "case_id": "repo-19",
+      "error": null,
+      "question": "请从《src/db/index.ts》的已提供片段中，摘录包含 `initSchema` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_keywords": [
+        "initSchema"
+      ],
+      "answer": "```ts\nexport async function initSchema(): Promise<void> {\n  const candidates = [\n    join(settings.rootDir, 'src', 'db', 'schema.sql'),\n    join(settings.rootDir, 'dist', 'src', 'db', 'schema.sql'),\n  ]\n  const path = candidates.find((candidate) => existsSync(candidate))\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3512,
+      "trace_id": "tr_d2dc0868a24eba801414",
+      "top_score": 0.4342,
+      "pass": true
+    },
+    {
+      "case_id": "repo-20",
+      "error": null,
+      "question": "请从《src/db/index.ts》的已提供片段中，摘录包含 `seedIfEmpty` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_keywords": [
+        "seedIfEmpty"
+      ],
+      "answer": "```ts\nexport async function seedIfEmpty(): Promise<void> {\n  const existing = await queryOne<{ id: string }>('SELECT id FROM tenants LIMIT 1')\n  if (existing) return\n\nawait transaction(async (client) => {\n    await client.query('INSERT INTO tenants (id, name) VALUES ($1, $2)', [\n```\n\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 4453,
+      "trace_id": "tr_825c333c58caabab3b6d",
+      "top_score": 0.447,
+      "pass": true
+    },
+    {
+      "case_id": "repo-21",
+      "error": null,
+      "question": "请从《src/db/index.ts》的已提供片段中，摘录包含 `closePool` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_keywords": [
+        "closePool"
+      ],
+      "answer": "```ts\nexport async function closePool(): Promise<void> {\n  if (!driverPromise) return\n  const db = await driverPromise\n  await db.close()\n  driverPromise = null\n}\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3017,
+      "trace_id": "tr_26ca85131cdb47e91540",
+      "top_score": 0.4636,
+      "pass": true
+    },
+    {
+      "case_id": "repo-22",
+      "error": null,
+      "question": "请从《src/core/security.ts》的已提供片段中，摘录包含 `canRead` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_keywords": [
+        "canRead"
+      ],
+      "answer": "```ts\nexport function canRead(principal: Principal, aclPrincipals: unknown): boolean {\n  if (!Array.isArray(aclPrincipals) || aclPrincipals.length === 0) {\n    // 默认拒绝：没有显式授权的资源不进入检索。\n    return false\n  }\n  const allowed = principalSet(principal)\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 5560,
+      "trace_id": "tr_b837848bee04929403bd",
+      "top_score": 0.4814,
+      "pass": true
+    },
+    {
+      "case_id": "repo-23",
+      "error": null,
+      "question": "请从《src/core/security.ts》的已提供片段中，摘录包含 `requireEditor` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_keywords": [
+        "requireEditor"
+      ],
+      "answer": "```ts\nexport function requireEditor(principal: Principal): void {\n  if (!['owner', 'admin', 'editor'].includes(principal.role)) {\n    throw Object.assign(new Error('当前主体没有写入权限'), { statusCode: 403 })\n  }\n}\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3581,
+      "trace_id": "tr_36c4fc0f5d589d224141",
+      "top_score": 0.4525,
+      "pass": true
+    },
+    {
+      "case_id": "repo-24",
+      "error": null,
+      "question": "请从《src/core/security.ts》的已提供片段中，摘录包含 `requireAdmin` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_keywords": [
+        "requireAdmin"
+      ],
+      "answer": "```ts\nexport function requireAdmin(principal: Principal): void {\n  if (!['owner', 'admin'].includes(principal.role)) {\n    throw Object.assign(new Error('需要管理员权限'), { statusCode: 403 })\n  }\n}\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3016,
+      "trace_id": "tr_146f9e5ad0b79c72805d",
+      "top_score": 0.4586,
+      "pass": true
+    },
+    {
+      "case_id": "repo-25",
+      "error": null,
+      "question": "请从《src/core/tracing.ts》的已提供片段中，摘录包含 `TraceRecorder` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答中的数字或文字无法与所引证据核对。",
+      "failure": {
+        "stage": "grounding",
+        "queries": [
+          "请从《src/core/tracing.ts》的已提供片段中，摘录包含 `TraceRecorder` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。"
+        ],
+        "ranked_count": 3,
+        "acl_excluded_count": 0,
+        "fusion_excluded_count": 0,
+        "top_score": 0.4576,
+        "threshold": 0.36,
+        "selected": [
+          {
+            "index": 1,
+            "chunk_id": "ch_14db485df13d5d761ff7",
+            "doc_id": "doc_fde38e20369267e303ed",
+            "doc_title": "src/core/tracing.ts",
+            "version_id": "ver_c9f667f2dd2f3c3059cd",
+            "page": null,
+            "heading_path": [
+              "src/core/tracing.ts",
+              "TraceRecorder"
+            ],
+            "quote": "export class TraceRecorder { readonly traceId = newId('tr') private started = Date.now() private spans: Span[] = [] private usage: Usage[] = [] meta: Record<string, unknown> = {}",
+            "rerank": 0.4576
+          },
+          {
+            "index": 2,
+            "chunk_id": "ch_5148bbf5dc3442c635ef",
+            "doc_id": "doc_fde38e20369267e303ed",
+            "doc_title": "src/core/tracing.ts",
+            "version_id": "ver_c9f667f2dd2f3c3059cd",
+            "page": null,
+            "heading_path": [
+              "src/core/tracing.ts",
+              "recordUsage"
+            ],
+            "quote": "recordUsage(result: HarnessResult, feature: string, stage: string, spanId: string | null = null): void { const [priceIn, priceOut, currency] = settings.prices[result.model] ?? [0, 0, 'CNY'] const amount = (result.tokensI…",
+            "rerank": 0.3162
+          },
+          {
+            "index": 3,
+            "chunk_id": "ch_30e4250e3292b4313561",
+            "doc_id": "doc_fde38e20369267e303ed",
+            "doc_title": "src/core/tracing.ts",
+            "version_id": "ver_c9f667f2dd2f3c3059cd",
+            "page": null,
+            "heading_path": [
+              "src/core/tracing.ts",
+              "tokenPrice"
+            ],
+            "quote": "export function tokenPrice(provider: string, model: string): [number, number, string] { return settings.prices[model] ?? [0, 0, 'CNY'] }",
+            "rerank": 0.3156
+          }
+        ],
+        "excluded_count": 0,
+        "query_limit_count": 0,
+        "excluded": [],
+        "model_reason": "",
+        "verification": {
+          "sentences": 1,
+          "supported": 0,
+          "issues": [
+            {
+              "claim": "export class TraceRecorder { readonly traceId = newId('tr') private started = Date.now() private spans: Span[] = [] private usage: Usage[] = [] meta: Record<string, unknown> = {} }",
+              "evidence_indices": [
+                1
+              ],
+              "reasons": [
+                "代码摘录与所引原文不一致"
+              ]
+            }
+          ],
+          "format_missing": false,
+          "semantic_rejected": false
+        }
+      },
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 3059,
+      "trace_id": "tr_6cda401d7eaaf29649c5",
+      "top_score": 0.4576,
+      "pass": false
+    },
+    {
+      "case_id": "repo-26",
+      "error": null,
+      "question": "请从《src/core/tracing.ts》的已提供片段中，摘录包含 `tokenPrice` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_keywords": [
+        "tokenPrice"
+      ],
+      "answer": "```ts\nexport function tokenPrice(provider: string, model: string): [number, number, string] {\n  return settings.prices[model] ?? [0, 0, 'CNY']\n}\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3573,
+      "trace_id": "tr_a6c48578208b35df3ddc",
+      "top_score": 0.4764,
+      "pass": true
+    },
+    {
+      "case_id": "repo-27",
+      "error": null,
+      "question": "请从《src/core/tracing.ts》的已提供片段中，摘录包含 `recordUsage` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_keywords": [
+        "recordUsage"
+      ],
+      "answer": "```ts\nrecordUsage(result: HarnessResult, feature: string, stage: string, spanId: string | null = null): void {\n    const [priceIn, priceOut, currency] = settings.prices[result.model] ?? [0, 0, 'CNY']\n    const amount = (result.tokensIn * priceIn + result.tokensOut * priceOut) / 1_000_000\n    this.usage.push({\n      id: newId('use'),\n      spanId,\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 5158,
+      "trace_id": "tr_212b6ea5f19f0b5efdb7",
+      "top_score": 0.4312,
+      "pass": true
+    },
+    {
+      "case_id": "repo-28",
+      "error": null,
+      "question": "请从《src/core/ids.ts》的已提供片段中，摘录包含 `newId` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_keywords": [
+        "newId"
+      ],
+      "answer": "```ts\nexport function newId(prefix: string): string {\n  return `${prefix}_${randomBytes(10).toString('hex')}`\n}\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 4574,
+      "trace_id": "tr_150a782db5893b5c997b",
+      "top_score": 0.434,
+      "pass": true
+    },
+    {
+      "case_id": "repo-29",
+      "error": null,
+      "question": "请从《src/core/ids.ts》的已提供片段中，摘录包含 `todayLocal` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_keywords": [
+        "todayLocal"
+      ],
+      "answer": "以下为包含 `todayLocal` 的原文摘录：\n\n```ts\nexport function todayLocal(timeZone: string): string {\n  return new Intl.DateTimeFormat('en-CA', {\n    timeZone,\n    year: 'numeric',\n    month: '2-digit',\n    day: '2-digit',\n```\n[1]\n\n```ts\nexport function todayLocal(timeZone: string): string {\n```\n[2]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 6278,
+      "trace_id": "tr_f6baa29a2fab858ef127",
+      "top_score": 0.4588,
+      "pass": true
+    },
+    {
+      "case_id": "repo-30",
+      "error": null,
+      "question": "请从《src/core/ids.ts》的已提供片段中，摘录包含 `iso` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_keywords": [
+        "iso"
+      ],
+      "answer": "```ts\nexport function iso(value: Date | string | null | undefined): string | null {\n  if (!value) return null\n  return value instanceof Date ? value.toISOString() : value\n}\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 5033,
+      "trace_id": "tr_df5fd94b9e8383c1bc73",
+      "top_score": 0.404,
+      "pass": true
+    },
+    {
+      "case_id": "repo-31",
+      "error": null,
+      "question": "请从《src/core/grounding.ts》的已提供片段中，摘录包含 `validateGrounding` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/grounding.ts"
+      ],
+      "matched_docs": [
+        "src/core/grounding.ts"
+      ],
+      "matched_keywords": [
+        "validateGrounding"
+      ],
+      "answer": "```ts\nexport function validateGrounding(\n  answer: string,\n  evidence: EvidenceText[],\n  { checkWording = true, asOf = null }: { checkWording?: boolean; asOf?: string | null } = {},\n): GroundingCheck {\n  const sentences = claimSentences(answer)\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 9833,
+      "trace_id": "tr_835b9e0fe0bf12974e9e",
+      "top_score": 0.4293,
+      "pass": true
+    },
+    {
+      "case_id": "repo-32",
+      "error": null,
+      "question": "请从《src/core/grounding.ts》的已提供片段中，摘录包含 `claimSentences` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/grounding.ts"
+      ],
+      "matched_docs": [
+        "src/core/grounding.ts"
+      ],
+      "matched_keywords": [
+        "claimSentences"
+      ],
+      "answer": "```ts\n/** Citation scope is a prose sentence, table row, or fenced excerpt. */\nexport function claimSentences(answer: string): string[] {\n  const units: string[] = []\n  const lines = answer.split('\\n')\n  for (let index = 0; index < lines.length; index += 1) {\n    const text = lines[index]!.trim()\n    const intro = text.replace(CITATION, '').trim()\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 6054,
+      "trace_id": "tr_52ba71b4dd68a6180ddf",
+      "top_score": 0.4497,
+      "pass": true
+    },
+    {
+      "case_id": "repo-33",
+      "error": null,
+      "question": "请从《src/core/consolidation.ts》的已提供片段中，摘录包含 `consolidateKnowledge` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/consolidation.ts"
+      ],
+      "matched_docs": [
+        "src/core/consolidation.ts"
+      ],
+      "matched_keywords": [
+        "consolidateKnowledge"
+      ],
+      "answer": "```ts\n/** Extractive summaries keep provenance and never mix ACL partitions or unverified facts. */\nexport async function consolidateKnowledge(tenant: string): Promise<Record<string, number>> {\n  const facts = await query<SupportedFact>(`SELECT f.id,f.subject_id,f.object_id,s.canonical_name AS subject,f.predicate,\n    coalesce(o.canonical_name,f.object_literal,'') AS object,f.acl_principals,\n    jsonb_agg(DISTINCT e.chunk_id) AS chunk_ids,jsonb_agg(DISTINCT e.quote) AS quotes\n    FROM facts f JOIN entities s ON s.id=f.subject_id LEFT JOIN entities o ON o.id=f.object_id\n    JOIN fact_evidence e ON e.fact_id=f.id JOIN chunks c ON c.id=e.chunk_id\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 16013,
+      "trace_id": "tr_f198c2d57f4d944bf6f7",
+      "top_score": 0.4363,
+      "pass": true
+    },
+    {
+      "case_id": "repo-34",
+      "error": null,
+      "question": "请从《src/core/consolidation.ts》的已提供片段中，摘录包含 `SupportedFact` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/consolidation.ts"
+      ],
+      "matched_docs": [
+        "src/core/consolidation.ts"
+      ],
+      "matched_keywords": [
+        "SupportedFact"
+      ],
+      "answer": "```ts\ninterface SupportedFact { id: string; subject_id: string; object_id: string | null; subject: string; predicate: string; object: string; acl_principals: string[]; chunk_ids: string[]; quotes: string[] }\n```\n[1]\n\n```ts\n  const facts = await query<SupportedFact>(`SELECT f.id,f.subject_id,f.object_id,s.canonical_name AS subject,f.predicate,\n```\n[2]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 7035,
+      "trace_id": "tr_95164a55f1f9a73a955b",
+      "top_score": 0.4478,
+      "pass": true
+    },
+    {
+      "case_id": "repo-35",
+      "error": null,
+      "question": "请从《src/core/entity-resolution.ts》的已提供片段中，摘录包含 `resolveSemanticEntity` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/entity-resolution.ts"
+      ],
+      "matched_docs": [
+        "src/core/entity-resolution.ts"
+      ],
+      "matched_keywords": [
+        "resolveSemanticEntity"
+      ],
+      "answer": "```ts\n/** Semantic candidates are proposals only; an explicit model decision is required to merge. */\nexport async function resolveSemanticEntity(\n  tenant: string, name: string, type: string, acl: string[], vectorsByName = new Map<string, number[]>(),\n): Promise<EntityRow | null> {\n  if (!settings.semanticEntities) return null\n  const candidates = await query<EntityRow>(`SELECT * FROM entities WHERE tenant_id=$1 AND type=$2 AND status='active'\n    AND acl_principals @> $3::jsonb AND acl_principals <@ $3::jsonb ORDER BY updated_at DESC LIMIT 100`, [tenant, type, JSON.stringify(acl)])\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 9703,
+      "trace_id": "tr_59b27be065bbb6ea074b",
+      "top_score": 0.4595,
+      "pass": true
+    },
+    {
+      "case_id": "repo-36",
+      "error": null,
+      "question": "请从《src/core/entity-resolution.ts》的已提供片段中，摘录包含 `candidates` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/entity-resolution.ts"
+      ],
+      "matched_docs": [
+        "src/core/entity-resolution.ts"
+      ],
+      "matched_keywords": [
+        "candidates"
+      ],
+      "answer": "```ts\n/** Semantic candidates are proposals only; an explicit model decision is required to merge. */\nexport async function resolveSemanticEntity(\n  tenant: string, name: string, type: string, acl: string[], vectorsByName = new Map<string, number[]>(),\n): Promise<EntityRow | null> {\n  if (!settings.semanticEntities) return null\n  const candidates = await query<EntityRow>(`SELECT * FROM entities WHERE tenant_id=$1 AND type=$2 AND status='active'\n    AND acl_principals @> $3::jsonb AND acl_principals <@ $3::jsonb ORDER BY updated_at DESC LIMIT 100`, [tenant, type, JSON.stringify(acl)])\n```\n[2]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 9939,
+      "trace_id": "tr_696a3c644bf84e341bfa",
+      "top_score": 0.4409,
+      "pass": true
+    },
+    {
+      "case_id": "repo-37",
+      "error": null,
+      "question": "请从《src/core/evaluation.ts》的已提供片段中，摘录包含 `runEvaluation` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/evaluation.ts"
+      ],
+      "matched_docs": [
+        "src/core/evaluation.ts"
+      ],
+      "matched_keywords": [
+        "runEvaluation"
+      ],
+      "answer": "```ts\nexport async function runEvaluation(principal: Principal, cases: EvaluationCase[], mode: 'answer' | 'retrieval' = 'answer', onProgress?: (completed: number, total: number) => void) {\n  const results = []\n  const latencies: number[] = []\n  let recall = 0, precision = 0, refusal = 0, citationsCorrect = 0, citationsTotal = 0, coverage = 0\n  for (const item of cases) {\n    const started = Date.now()\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 10664,
+      "trace_id": "tr_0db8449b3dee02955fc5",
+      "top_score": 0.4342,
+      "pass": true
+    },
+    {
+      "case_id": "repo-38",
+      "error": null,
+      "question": "请从《src/core/evaluation.ts》的已提供片段中，摘录包含 `EvaluationCase` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/evaluation.ts"
+      ],
+      "matched_docs": [
+        "src/core/evaluation.ts"
+      ],
+      "matched_keywords": [
+        "EvaluationCase"
+      ],
+      "answer": "```ts\nexport interface EvaluationCase { id: string; question: string; expected_docs: string[]; expected_keywords: string[]; should_refuse: boolean }\n```\n[1]\n\n```ts\nexport async function runEvaluation(principal: Principal, cases: EvaluationCase[], mode: 'answer' | 'retrieval' = 'answer', onProgress?: (completed: number, total: number) => void) {\n```\n[1][2]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 13763,
+      "trace_id": "tr_02aa0f25bab4aeed68b9",
+      "top_score": 0.4527,
+      "pass": true
+    },
+    {
+      "case_id": "repo-39",
+      "error": null,
+      "question": "请从《src/app/routes/documents.ts》的已提供片段中，摘录包含 `documentRoutes` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/routes/documents.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/documents.ts"
+      ],
+      "matched_keywords": [
+        "documentRoutes"
+      ],
+      "answer": "```\nexport async function documentRoutes(app: FastifyInstance): Promise<void> {\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 5677,
+      "trace_id": "tr_98076e6b66415fd1b58e",
+      "top_score": 0.4087,
+      "pass": true
+    },
+    {
+      "case_id": "repo-40",
+      "error": null,
+      "question": "请从《src/app/routes/documents.ts》的已提供片段中，摘录包含 `visibleDocument` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/routes/documents.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/documents.ts"
+      ],
+      "matched_keywords": [
+        "visibleDocument"
+      ],
+      "answer": "```ts\nasync function visibleDocument(principal: ReturnType<typeof currentPrincipal>, docId: string): Promise<DocumentRow> {\n  const document = await queryOne<DocumentRow>('SELECT * FROM documents WHERE id = $1', [docId])\n  if (\n    !document ||\n    document.tenant_id !== principal.tenantId ||\n    !canRead(principal, document.acl_principals) ||\n```\n\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 4860,
+      "trace_id": "tr_afee0c96bd371728501c",
+      "top_score": 0.4487,
+      "pass": true
+    },
+    {
+      "case_id": "repo-41",
+      "error": null,
+      "question": "请从《src/app/routes/ask.ts》的已提供片段中，摘录包含 `askRoutes` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/routes/ask.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/ask.ts"
+      ],
+      "matched_keywords": [
+        "askRoutes"
+      ],
+      "answer": "```ts\nexport async function askRoutes(app: FastifyInstance): Promise<void> {\n  app.post('/search', { preHandler: authenticate }, async (request) => {\n    const principal = currentPrincipal(request)\n    const payload = request.body as {\n      query: string\n      top_k?: number\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3920,
+      "trace_id": "tr_3bb84f567c1221344155",
+      "top_score": 0.4341,
+      "pass": true
+    },
+    {
+      "case_id": "repo-42",
+      "error": null,
+      "question": "请从《src/app/routes/ask.ts》的已提供片段中，摘录包含 `transaction` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/routes/ask.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/ask.ts"
+      ],
+      "matched_keywords": [
+        "transaction"
+      ],
+      "answer": "```ts\nimport { query, queryOne, transaction } from '../../db/index.js'\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3463,
+      "trace_id": "tr_1979f2d9735015fca6cd",
+      "top_score": 0.4591,
+      "pass": true
+    },
+    {
+      "case_id": "repo-43",
+      "error": null,
+      "question": "请从《src/app/routes/mcp.ts》的已提供片段中，摘录包含 `mcpRoutes` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/routes/mcp.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/mcp.ts"
+      ],
+      "matched_keywords": [
+        "mcpRoutes"
+      ],
+      "answer": "```\nexport async function mcpRoutes(app: FastifyInstance): Promise<void> {\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 4148,
+      "trace_id": "tr_7aaa0e2ea7225f9fda92",
+      "top_score": 0.4383,
+      "pass": true
+    },
+    {
+      "case_id": "repo-44",
+      "error": null,
+      "question": "请从《src/app/routes/mcp.ts》的已提供片段中，摘录包含 `TOOLS` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/routes/mcp.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/mcp.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "failure": {
+        "stage": "grounding",
+        "queries": [
+          "请从《src/app/routes/mcp.ts》的已提供片段中，摘录包含 `TOOLS` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。"
+        ],
+        "ranked_count": 2,
+        "acl_excluded_count": 0,
+        "fusion_excluded_count": 0,
+        "top_score": 0.4169,
+        "threshold": 0.36,
+        "selected": [
+          {
+            "index": 1,
+            "chunk_id": "ch_d526e8695c226dc4b54a",
+            "doc_id": "doc_3c13e8f98d235b754f0a",
+            "doc_title": "src/app/routes/mcp.ts",
+            "version_id": "ver_b066407865fb9030e7cf",
+            "page": null,
+            "heading_path": [
+              "src/app/routes/mcp.ts",
+              "TOOLS"
+            ],
+            "quote": "const NATIVE_READ_TOOLS = new Set(['kb_search', 'kb_graph', 'kb_query_facts', 'kb_get_document', 'kb_entity_timeline']) const sourceFilters = { doc_ids: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: …",
+            "rerank": 0.4169
+          },
+          {
+            "index": 2,
+            "chunk_id": "ch_6b255d14d4feb5653135",
+            "doc_id": "doc_3c13e8f98d235b754f0a",
+            "doc_title": "src/app/routes/mcp.ts",
+            "version_id": "ver_b066407865fb9030e7cf",
+            "page": null,
+            "heading_path": [
+              "src/app/routes/mcp.ts",
+              "mcpRoutes"
+            ],
+            "quote": "export async function mcpRoutes(app: FastifyInstance): Promise<void> { app.post('/mcp', { preHandler: authenticate }, async (request, reply) => { const principal = currentPrincipal(request) const payload = request.body a…",
+            "rerank": 0.376
+          }
+        ],
+        "excluded_count": 0,
+        "query_limit_count": 0,
+        "excluded": [],
+        "model_reason": "",
+        "verification": {
+          "sentences": 2,
+          "supported": 1,
+          "issues": [
+            {
+              "claim": "章节：src/app/routes/mcp.ts / TOOLS",
+              "evidence_indices": [],
+              "reasons": [
+                "这条表述没有引用原文"
+              ]
+            }
+          ],
+          "format_missing": false,
+          "semantic_rejected": false
+        }
+      },
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.5,
+      "latency_ms": 11104,
+      "trace_id": "tr_9827f7a2655af90b8845",
+      "top_score": 0.4169,
+      "pass": false
+    },
+    {
+      "case_id": "repo-45",
+      "error": null,
+      "question": "请从《src/app/server.ts》的已提供片段中，摘录包含 `createServer` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/server.ts"
+      ],
+      "matched_docs": [
+        "src/app/server.ts"
+      ],
+      "matched_keywords": [
+        "createServer"
+      ],
+      "answer": "```ts\nexport async function createServer(): Promise<FastifyInstance> {\n  const app = Fastify({\n    logger: {\n      level: 'info',\n      transport: process.env.NODE_ENV === 'production' ? undefined : undefined,\n    },\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 6028,
+      "trace_id": "tr_84e6808989577e2a2ebc",
+      "top_score": 0.4202,
+      "pass": true
+    },
+    {
+      "case_id": "repo-46",
+      "error": null,
+      "question": "请从《src/app/server.ts》的已提供片段中，摘录包含 `authenticate` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/server.ts"
+      ],
+      "matched_docs": [
+        "src/app/server.ts"
+      ],
+      "matched_keywords": [
+        "authenticate"
+      ],
+      "answer": "```ts\nexport async function authenticate(request: FastifyRequest, _reply: FastifyReply): Promise<void> {\n  const header = request.headers.authorization\n  if (!header || !header.toLowerCase().startsWith('bearer ')) {\n    throw Object.assign(new Error('缺少 Bearer 令牌'), { statusCode: 401 })\n  }\n  const token = header.slice('bearer '.length).trim()\n\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3711,
+      "trace_id": "tr_e163a1cda8c63308b4a0",
+      "top_score": 0.446,
+      "pass": true
+    },
+    {
+      "case_id": "repo-47",
+      "error": null,
+      "question": "请从《src/adapters/embeddings/index.ts》的已提供片段中，摘录包含 `tokenize` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/embeddings/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/embeddings/index.ts"
+      ],
+      "matched_keywords": [
+        "tokenize"
+      ],
+      "answer": "```\nexport function tokenize(text: string): string[] {\n  const source = (text ?? '').normalize('NFKC').toLowerCase()\n  const tokens: string[] = []\n  for (const run of source.match(CJK) ?? []) {\n    if (run.length === 1) {\n      if (!STOPWORDS.has(run)) tokens.push(run)\n```\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3703,
+      "trace_id": "tr_c01e84530d274266cc53",
+      "top_score": 0.4332,
+      "pass": true
+    },
+    {
+      "case_id": "repo-48",
+      "error": null,
+      "question": "请从《src/adapters/embeddings/index.ts》的已提供片段中，摘录包含 `sparseVector` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/embeddings/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/embeddings/index.ts"
+      ],
+      "matched_keywords": [
+        "sparseVector"
+      ],
+      "answer": "```ts\nexport function sparseVector(tokens: string[], limit = Number.POSITIVE_INFINITY): Record<string, number> {\n  const counts = new Map<string, number>()\n  for (const token of tokens) counts.set(token, (counts.get(token) ?? 0) + 1)\n  return Object.fromEntries(\n    [...counts.entries()]\n      .map(([token, count]) => [token, Number((1 + Math.log(count)).toFixed(4))] as const)\n```\n\n[1]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 5677,
+      "trace_id": "tr_e9247c795a5344c57473",
+      "top_score": 0.4695,
+      "pass": true
+    },
+    {
+      "case_id": "repo-49",
+      "error": null,
+      "question": "请从《src/adapters/reranking/index.ts》的已提供片段中，摘录包含 `semanticRerank` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/reranking/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/reranking/index.ts"
+      ],
+      "matched_keywords": [
+        "semanticRerank"
+      ],
+      "answer": "```ts\n/** Compatible with the query/documents/results protocol used by rerank services. */\nexport async function semanticRerank(query: string, documents: string[]): Promise<number[] | null> {\n  if (!settings.rerankUrl || !documents.length) return null\n  const response = await fetch(settings.rerankUrl, {\n    method: 'POST',\n    headers: { 'content-type': 'application/json', ...(settings.rerankApiKey ? { authorization: `Bearer ${settings.rerankApiKey}` } : {}) },\n    body: JSON.stringify({ query, documents, model: settings.rerankModel, top_n: documents.length, return_documents: false }),\n```\n\n[2]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 6013,
+      "trace_id": "tr_7cbd7f6ffd5d8c2ab070",
+      "top_score": 0.4659,
+      "pass": true
+    },
+    {
+      "case_id": "repo-50",
+      "error": null,
+      "question": "请从《src/adapters/reranking/index.ts》的已提供片段中，摘录包含 `relevance_score` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/reranking/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/reranking/index.ts"
+      ],
+      "matched_keywords": [
+        "relevance_score"
+      ],
+      "answer": "```ts\n  const body = await response.json() as { results?: Array<{ index: number; relevance_score: number }> }\n```\n[1]\n\n```ts\n|| !Number.isFinite(row.relevance_score) || row.relevance_score < 0 || row.relevance_score > 1) {\n```\n[3]",
+      "failure": null,
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 6232,
+      "trace_id": "tr_370eb86229a5b9ff6c65",
+      "top_score": 0.4717,
+      "pass": true
+    }
+  ]
+}

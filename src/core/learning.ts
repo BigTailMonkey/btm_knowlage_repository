@@ -11,7 +11,7 @@ import { resolveSemanticEntity } from './entity-resolution.js'
 import { isValueLike } from './value-shapes.js'
 import { consolidateKnowledge } from './consolidation.js'
 import { MIN_FACT_CONFIDENCE } from './fact-visibility.js'
-import { relationSlot, sameAssertion } from './relation-types.js'
+import { relationSlot, relationSlotsOverlap, sameAssertion } from './relation-types.js'
 import {
   closeExtractionMeter, completeExtractionBatch, planExtractionBatches, setExtractionStage,
   startExtractionMeter, trackExtraction, type ExtractionMeter,
@@ -61,7 +61,7 @@ interface Candidate {
 }
 
 export function normalizeName(name: string): string {
-  return (name ?? '').trim().toLowerCase().replace(/[\s\u3000·•\-_/]+/g, '')
+  return (name ?? '').normalize('NFKC').trim().toLowerCase().replace(/[\s\u3000·•\-_/]+/g, '')
 }
 
 /** 把主谓宾拼成一句能直接读的话，去掉中文与数字之间因分词留下的空格。 */
@@ -112,6 +112,16 @@ function parseJsonArray(text: string): Array<Record<string, unknown>> | null {
   }
 }
 
+async function mergeEntityAcl(entity: EntityRow, acl?: string[] | null): Promise<EntityRow> {
+  if (!acl?.length) return entity
+  const combined = [...new Set([...entity.acl_principals, ...acl])]
+  if (combined.length === entity.acl_principals.length) return entity
+  const updated = await queryOne<EntityRow>(`UPDATE entities SET acl_principals=(
+    SELECT jsonb_agg(DISTINCT value) FROM jsonb_array_elements(acl_principals || $2::jsonb)
+  ) WHERE id=$1 RETURNING *`, [entity.id, JSON.stringify(acl)])
+  return updated!
+}
+
 export async function getOrCreateEntity(
   tenantId: string,
   name: string,
@@ -124,7 +134,7 @@ export async function getOrCreateEntity(
     `SELECT * FROM entities WHERE tenant_id = $1 AND normalized_name = $2 AND status = 'active' LIMIT 1`,
     [tenantId, normalized],
   )
-  if (existing) return existing
+  if (existing) return mergeEntityAcl(existing, acl)
   const alias = await queryOne<{ entity_id: string }>(
     `SELECT a.entity_id FROM entity_aliases a JOIN entities e ON a.entity_id = e.id
      WHERE e.tenant_id = $1 AND a.normalized_alias = $2 AND e.status = 'active' LIMIT 1`,
@@ -132,9 +142,9 @@ export async function getOrCreateEntity(
   )
   if (alias) {
     const aliased = await queryOne<EntityRow>('SELECT * FROM entities WHERE id = $1', [alias.entity_id])
-    if (aliased) return aliased
+    if (aliased) return mergeEntityAcl(aliased, acl)
   }
-  const semantic = await resolveSemanticEntity(tenantId, name, entityType, acl?.length ? acl : ['tenant:public'], semanticVectors)
+  const semantic = await resolveSemanticEntity(tenantId, name, entityType, acl ?? ['tenant:public'], semanticVectors)
   if (semantic) {
     await query(`INSERT INTO entity_aliases (id,entity_id,alias,normalized_alias,source) VALUES ($1,$2,$3,$4,'semantic-confirmed')`, [newId('ali'), semantic.id, name.trim(), normalized])
     return semantic
@@ -143,7 +153,7 @@ export async function getOrCreateEntity(
   await query(
     `INSERT INTO entities (id, tenant_id, type, canonical_name, normalized_name, description, status, acl_principals)
      VALUES ($1, $2, $3, $4, $5, '', 'active', $6::jsonb)`,
-    [id, tenantId, entityType || 'concept', name.trim(), normalized, JSON.stringify(acl?.length ? acl : ['tenant:public'])],
+    [id, tenantId, entityType || 'concept', name.trim(), normalized, JSON.stringify(acl ?? ['tenant:public'])],
   )
   await query(
     `INSERT INTO entity_aliases (id, entity_id, alias, normalized_alias, source)
@@ -325,15 +335,15 @@ function quoteContains(quote: string, term: string): boolean {
 }
 
 const organizationSeparator = /、|以及|和|与|及/u
-const organizationName = /^\p{Script=Han}+(?:卫生院|医院|卫生室|中心|服务站|委员会|政府|学校|大学|研究院|研究所|公司|机构)$/u
 
 /** 只有引文明示各机构分别适用时，才把合写的主语拆开交给事实校验。 */
 function individualSubjects(subject: string, type: string, quote: string): string[] {
   if (type !== 'org') return [subject]
-  const names = subject.replace(/\s+/g, '').split(organizationSeparator)
-  if (names.length < 2 || names.some((name) => !organizationName.test(name) || name.includes('或'))) return [subject]
+  const names = [...entityWords.segment(subject.replace(/\s+/g, ''))]
+    .map(({ segment }) => ['和', '与', '及', '以及'].includes(segment) ? '、' : segment).join('').split('、')
+  if (names.length < 2 || names.some((name) => !isEntityName(name) || name.length < 2 || name.includes('或'))) return [subject]
   const separator = `(?:${organizationSeparator.source})`
-  const list = names.join(separator)
+  const list = names.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(separator)
   const distribution = new RegExp(`每一?个${list}(?!${separator}|的|共同|联合|协同)|${list}(?:均|都)`, 'u')
   return distribution.test(quote.replace(/\s+/g, '')) ? names : [subject]
 }
@@ -537,16 +547,18 @@ const comparableFactColumns = `f.*, e.canonical_name AS object_name, d.title AS 
 const comparableFactJoins = `LEFT JOIN entities e ON e.id = f.object_id
   LEFT JOIN documents d ON d.id = f.source_doc_id`
 
-function planningScope(title: string | null): string | null {
-  const normalized = (title ?? '').trim().replace(/^《/, '')
-  if (!normalized.includes('规划')) return null
-  if (/^(?:国民健康|全国)/.test(normalized)) return '全国'
-  return /^(北京市|天津市|上海市|重庆市|[^省市自治区]{2,3}省|内蒙古自治区|广西壮族自治区|西藏自治区|宁夏回族自治区|新疆维吾尔自治区)/.exec(normalized)?.[0] ?? null
+/** Explicit title scope is generic: a namespace or a stated jurisdiction, without domain vocabulary. */
+function documentScope(title: string | null): string | null {
+  const normalized = (title ?? '').normalize('NFKC').trim().replace(/^《/, '')
+  const namespace = /^(?:\[([^\]]+)\]|【([^】]+)】|([^:：|｜]+)[:：|｜])/.exec(normalized)
+  if (namespace) return (namespace[1] ?? namespace[2] ?? namespace[3])!.trim().toLowerCase()
+  if (/^(?:全国|国家|国民)/.test(normalized)) return '全国'
+  return /^(.{1,20}?(?:特别行政区|自治区|自治州|省|市|县|旗))/.exec(normalized)?.[1] ?? null
 }
 
 function sameScope(left: string | null, right: string | null): boolean {
-  const a = planningScope(left)
-  const b = planningScope(right)
+  const a = documentScope(left)
+  const b = documentScope(right)
   return !a || !b || a === b
 }
 
@@ -559,7 +571,7 @@ function sameFactObject(left: ComparableFact, right: Pick<ComparableFact, 'objec
 
 function factsConflict(left: ComparableFact, right: ComparableFact): boolean {
   return left.id !== right.id
-    && relationSlot(left.predicate) === relationSlot(right.predicate)
+    && relationSlotsOverlap(left.predicate, right.predicate)
     && sameScope(left.source_title, right.source_title)
     && periodsOverlap(left, right)
     && !sameFactObject(left, right)
@@ -578,7 +590,7 @@ async function mergeEquivalentFacts(
 ): Promise<boolean> {
   const facts = [keep, ...duplicates]
   if (facts.some((fact) => fact.subject_id !== keep.subject_id
-    || planningScope(fact.source_title) !== planningScope(keep.source_title)
+    || documentScope(fact.source_title) !== documentScope(keep.source_title)
     || dateOnly(fact.valid_from) !== dateOnly(keep.valid_from)
     || dateOnly(fact.valid_to) !== dateOnly(keep.valid_to)
     || JSON.stringify([...fact.acl_principals].sort()) !== JSON.stringify([...keep.acl_principals].sort()))) return false
@@ -764,7 +776,7 @@ async function mergeOrArbitrate(
     [candidate.chunkId, document.id, document.current_version],
   )
   if (!chunk || !chunk.text.includes(candidate.quote)) return 'rejected'
-  const acl = document.acl_principals?.length ? document.acl_principals : ['tenant:public']
+  const acl = document.acl_principals
   const subject = await getOrCreateEntity(principal.tenantId, candidate.subject, candidate.subjectType, acl, semanticVectors)
   const objectEntity = candidate.objectName
     ? await getOrCreateEntity(principal.tenantId, candidate.objectName, candidate.objectType, acl, semanticVectors)
@@ -784,7 +796,8 @@ async function mergeOrArbitrate(
   const candidatePeriod = { valid_from: candidate.validFrom, valid_to: candidate.validTo }
   const sameObject = subjectFacts.find((fact) =>
     sameAssertion(fact.predicate, candidate.predicate)
-    && planningScope(fact.source_title) === planningScope(document.title)
+    && JSON.stringify([...fact.acl_principals].sort()) === JSON.stringify([...acl].sort())
+    && documentScope(fact.source_title) === documentScope(document.title)
     && sameFactObject(fact, candidateObject)
     && periodsOverlap(fact, candidatePeriod),
   )
@@ -802,9 +815,9 @@ async function mergeOrArbitrate(
     const ends = [sameObject.valid_to, candidate.validTo].map(dateOnly)
     await query('UPDATE facts SET confidence = $1, acl_principals = $2::jsonb, valid_from = $3, valid_to = $4 WHERE id = $5', [
       confidence,
-      JSON.stringify([...new Set(sameObject.acl_principals ?? [])].filter((item) => acl.includes(item))),
-      starts.includes(null) ? null : starts.slice().sort()[0],
-      ends.includes(null) ? null : ends.slice().sort().at(-1),
+      JSON.stringify(sameObject.acl_principals),
+      starts.filter((value): value is string => value !== null).sort()[0] ?? null,
+      ends.filter((value): value is string => value !== null).sort().at(-1) ?? null,
       sameObject.id,
     ])
     fact = (await queryOne<FactRow>('SELECT * FROM facts WHERE id = $1', [sameObject.id]))!
@@ -998,7 +1011,7 @@ export async function resolveReview(
       for (const old of oldFacts) {
         await client.query('UPDATE facts SET status = $1, valid_to = $2, superseded_by = $3 WHERE id = $4', [
           'superseded',
-          newFact?.valid_from ?? todayLocal(settings.timezone),
+          dateOnly(newFact?.valid_from) && (!dateOnly(old.valid_to) || dateOnly(newFact?.valid_from)! < dateOnly(old.valid_to)!) ? dateOnly(newFact?.valid_from) : dateOnly(old.valid_to),
           newFact?.id ?? null,
           old.id,
         ])
@@ -1015,15 +1028,16 @@ export async function resolveReview(
             'active',
             old.id,
           ])
-          const evidence = await client.query<{ chunk_id: string | null; doc_id: string; quote: string; weight: number }>(
-            'SELECT chunk_id, doc_id, quote, weight FROM fact_evidence WHERE fact_id = $1',
+          const evidence = await client.query<{ chunk_id: string | null; doc_id: string; quote: string; span: unknown; weight: number }>(
+            'SELECT chunk_id, doc_id, quote, span, weight FROM fact_evidence WHERE fact_id = $1',
             [newFact.id],
           )
           for (const row of evidence) {
             await client.query(
-              `INSERT INTO fact_evidence (id, fact_id, chunk_id, doc_id, quote, weight)
-               VALUES ($1, $2, $3, $4, $5, $6)`,
-              [newId('ev'), old.id, row.chunk_id, row.doc_id, row.quote, row.weight],
+              `INSERT INTO fact_evidence (id, fact_id, chunk_id, doc_id, quote, span, weight)
+               SELECT $1, $2, $3, $4, $5, $6::jsonb, $7
+               WHERE NOT EXISTS (SELECT 1 FROM fact_evidence WHERE fact_id=$2 AND chunk_id IS NOT DISTINCT FROM $3 AND doc_id=$4 AND quote=$5)`,
+              [newId('ev'), old.id, row.chunk_id, row.doc_id, row.quote, JSON.stringify(row.span), row.weight],
             )
           }
         }
@@ -1084,7 +1098,8 @@ export async function runReflection(tenantId: string): Promise<Record<string, un
   )
   const byKey = new Map<string, ComparableFact[]>()
   for (const fact of activeFacts) {
-    const key = `${fact.subject_id}|${relationSlot(fact.predicate)}`
+    const slot = relationSlot(fact.predicate)
+    const key = `${fact.subject_id}|${slot.startsWith('relation:') ? slot.slice(0, slot.lastIndexOf(':')) : slot}`
     const group = byKey.get(key) ?? []
     group.push(fact)
     byKey.set(key, group)

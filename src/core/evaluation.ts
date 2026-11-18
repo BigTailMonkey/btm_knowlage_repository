@@ -53,7 +53,7 @@ export async function runEvaluation(principal: Principal, cases: EvaluationCase[
     latencies.push(elapsed); recall += docRecall; precision += contextPrecision ?? 0; refusal += Number(refused === item.should_refuse)
     citationsCorrect += correct; citationsTotal += citationRows.length; coverage += refused ? 0 : grounded
     results.push({ case_id: item.id, error: null, question: item.question, expected_docs: item.expected_docs, matched_docs: matched,
-      matched_keywords: matchedKeywords, answer: output?.answer, refused, strategy, model_called: !!generation, model_succeeded: generation?.output.ok === true, doc_recall: docRecall, context_precision: contextPrecision,
+      matched_keywords: matchedKeywords, answer: output?.answer, failure: output?.failure, refused, strategy, model_called: !!generation, model_succeeded: generation?.output.ok === true, doc_recall: docRecall, context_precision: contextPrecision,
       citation_accuracy: citationRows.length ? correct / citationRows.length : null, rule_groundedness: mode === 'answer' ? grounded : null,
       latency_ms: elapsed, trace_id: output?.trace_id, top_score: Number((output?.stats as Record<string,unknown> | undefined)?.top_score ?? retrieved?.stats.top_score ?? 0),
       pass: (item.should_refuse || matched.length === item.expected_docs.length) && matchedKeywords.length === item.expected_keywords.length

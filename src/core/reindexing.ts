@@ -1,11 +1,14 @@
+import { documentEmbeddingInput } from './embedding-input.js'
 import { embedder } from '../adapters/embeddings/index.js'
-import { query, transaction } from '../db/index.js'
-import type { ChunkRow } from './rows.js'
+import { query, queryOne, transaction } from '../db/index.js'
+import type { ChunkRow, DocumentRow } from './rows.js'
 
 /** Rebuild derived vectors for every stored version, retaining citation and fact identities. */
 export async function reindexDocument(tenantId: string, docId: string) {
+  const document = await queryOne<DocumentRow>('SELECT * FROM documents WHERE id=$1 AND tenant_id=$2', [docId,tenantId])
+  if (!document) throw Object.assign(new Error('文档不存在'), { statusCode: 404 })
   const chunks = await query<ChunkRow>('SELECT * FROM chunks WHERE tenant_id=$1 AND doc_id=$2 AND is_parent=false ORDER BY id', [tenantId,docId])
-  const vectors = await embedder.embedMany(chunks.map(chunk => chunk.text))
+  const vectors = await embedder.embedMany(chunks.map(chunk => documentEmbeddingInput(document.title, chunk.heading_path, chunk.text)))
   if (vectors.length !== chunks.length || vectors.some(v => !v.dense.length || v.dense.length !== v.dim || v.dense.some(x => !Number.isFinite(x)))) throw new Error('重建向量数量或维度不合法')
   await transaction(async client => {
     const documents = await client.query("SELECT id FROM documents WHERE id=$1 AND tenant_id=$2 AND status='active' FOR UPDATE", [docId,tenantId])

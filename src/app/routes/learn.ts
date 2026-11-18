@@ -1,3 +1,5 @@
+import { normalizeAsOf } from '../../core/retrieval.js'
+import { integerParam } from '../../util/input.js'
 import { FastifyInstance } from 'fastify'
 
 import { authenticate, currentPrincipal } from '../server.js'
@@ -119,7 +121,7 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
   app.get('/entities', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
     const params = request.query as Record<string, string | undefined>
-    const limit = Math.min(200, Math.max(1, Number(params.limit ?? 60)))
+    const limit = integerParam(params.limit, 'limit', 60, 1, 200)
     const where = [`e.tenant_id = $1`, `e.status = 'active'`, ENTITY_HAS_DISPLAYABLE_FACT]
     const values: unknown[] = [principal.tenantId]
     if (params.q) {
@@ -150,7 +152,7 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
   app.get('/entities/:entity_id', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
     const { entity_id: entityId } = request.params as { entity_id: string }
-    const asOf = (request.query as { as_of?: string }).as_of
+    const asOf = normalizeAsOf((request.query as { as_of?: string }).as_of)
     const entity = await queryOne<EntityRow>(
       `SELECT e.* FROM entities e WHERE e.id = $1 AND ${ENTITY_HAS_DISPLAYABLE_FACT}`,
       [entityId],
@@ -195,7 +197,7 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
   app.get('/facts', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
     const params = request.query as Record<string, string | undefined>
-    const limit = Math.min(200, Math.max(1, Number(params.limit ?? 60)))
+    const limit = integerParam(params.limit, 'limit', 60, 1, 200)
     const where = ['tenant_id = $1']
     const values: unknown[] = [principal.tenantId]
     if (params.status) {
@@ -229,8 +231,8 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
     return buildEntityGraph(principal, {
       overview: params.scope === 'overview',
       focus: params.focus ? String(params.focus) : null,
-      hops: params.hops === undefined ? undefined : Number(params.hops),
-      limit: params.limit === undefined ? 80 : Number(params.limit),
+      hops: params.hops === undefined ? undefined : integerParam(params.hops, 'hops', 2, 1, 10),
+      limit: integerParam(params.limit, 'limit', 80, 10, 300),
     })
   })
 

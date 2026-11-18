@@ -47,6 +47,7 @@ api_key = ""
 model = "doubao-embedding-vision"
 dim = 1024
 path = "/embeddings/multimodal"
+# 仅用于查询向量；文档向量不发送 Query 指令。修改该行为后需重建已有索引。
 instructions = """Target_modality: text.
 Instruction: Compress the text into one dense vector for semantic retrieval.
 Query:"""

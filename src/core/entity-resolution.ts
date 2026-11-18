@@ -1,3 +1,4 @@
+import { parseStructuredJson } from '../util/structured-json.js'
 import { settings } from '../config.js'
 import { query } from '../db/index.js'
 import { cosine, embedder } from '../adapters/embeddings/index.js'
@@ -27,7 +28,7 @@ export async function resolveSemanticEntity(
   const text = requireModelText(result, '实体语义判定')
   let decision: { same_entity?: unknown; confidence?: unknown; entity_id?: unknown } | null
   try {
-    decision = JSON.parse(/\{[\s\S]*\}/.exec(text)?.[0] ?? 'null')
+    decision = parseStructuredJson(text) as typeof decision
   } catch {
     throw modelUnavailable('实体语义判定', '模型返回了无效 JSON')
   }

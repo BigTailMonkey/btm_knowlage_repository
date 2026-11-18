@@ -1,3 +1,4 @@
+import { parseStructuredJson } from '../util/structured-json.js'
 import { settings } from '../config.js'
 import { query, queryOne } from '../db/index.js'
 import { tokenize } from '../adapters/embeddings/index.js'
@@ -11,7 +12,7 @@ import { checkSemanticGrounding, validateGrounding, type GroundingCheck } from '
 
 const CITATION = /\[(\d+)\]/g
 const REFUSAL_PREFIX = /^(?:REFUSE\b|(?:抱歉[，,。]?\s*)?(?:(?:现有|当前|所提供的?|已有)?(?:资料|信息|证据|片段|内容)(?:不足|不够|未包含|没有)|我(?:无法|不能)|无法(?:可靠|准确)?回答|没有足够(?:资料|证据|信息)|不足以回答))/i
-const FOLLOW_UP = /(它|他|她|这|那|该|此|其|上面|刚才|之前|上述|前面|还有|继续|再|那么)/
+const FOLLOW_UP = /^(?:它|他|她|这个|那个|这些|那些|该(?:项|政策|规定|标准)|此(?:项|事)|其(?:中|他|它)|上面|刚才|上述|前面|继续|那么|那[？?呢，,]|还有呢|再(?:说|解释|展开))/
 
 export const ANSWER_SYSTEM = `你是 KnoWeave（知织）知识库的问答引擎。规则：
 1. 只能使用给定的「证据」回答，不得使用训练知识补全，不得编造。
@@ -20,7 +21,8 @@ export const ANSWER_SYSTEM = `你是 KnoWeave（知织）知识库的问答引�
 4. 回答使用中文，先给结论，再给 2-4 句关键依据。可用自己的话概括或综合多条证据，保留原文的适用对象、条件、数字和单位。
 5. 区分「资料明确支持」与「推测」；推测必须标注「（推测）」。
 6. 涉及时间时按事实有效期判断，不要混用已经失效的旧结论。
-7. 多轮对话中的历史消息仅用于理解指代，不得作为证据；引用编号只对应本轮证据。`
+7. 用户要求摘录原文、代码或定义片段时，只提供用户指定的原文摘录及引用；代码块的引用放在闭合围栏后的独立一行。摘录须是所引证据中连续、逐字一致的文本；优先选择含指定符号的一行及必要相邻行。不补写任何字符：片段未闭合时保持未闭合，不加右括号、引号、分号或省略号。不添加章节位置、代码作用或完整性说明。
+8. 多轮对话中的历史消息仅用于理解指代，不得作为证据；引用编号只对应本轮证据。`
 
 interface MessageRow {
   id: string
@@ -49,7 +51,7 @@ function formatEvidence(hits: Hit[], facts: Array<Record<string, unknown>>, memo
     const heading = hit.chunk.heading_path?.join(' / ') || '正文'
     const page = hit.chunk.page ? `第 ${hit.chunk.page} 页 | ` : ''
     blocks.push(
-      `[${index + 1}] 《${hit.document.title}》 | ${page}章节：${heading}\n${hit.chunk.text}\n${hit.parentText && hit.parentText !== hit.chunk.text ? `补充上下文：${hit.parentText.slice(0, 1600)}` : ''}`,
+      `[${index + 1}] 《${hit.document.title}》 | ${page}章节：${heading}\n${hit.chunk.text}`,
     )
   })
   if (facts.length) {
@@ -110,7 +112,7 @@ function historyContext(messages: MessageRow[]): string {
 
 function retrievalQuestion(question: string, messages: MessageRow[]): string {
   const previous = [...messages].reverse().find((message) => message.role === 'user')?.content ?? ''
-  if (previous && (question.length <= 12 || FOLLOW_UP.test(question))) return `${previous} ${question}`
+  if (previous && FOLLOW_UP.test(question)) return `${previous} ${question}`
   return question
 }
 
@@ -147,10 +149,14 @@ async function upsertGap(principal: Principal, question: string): Promise<void> 
   }
 }
 
+const queryWords = new Intl.Segmenter('zh', { granularity: 'word' })
+
 function subqueries(question: string, mode: string): string[] {
   if (!['deep', 'compare'].includes(mode)) return [question]
-  const parts = question
-    .split(mode === 'compare' ? /[；;？?、]|以及|并且|\bvs\b|对比|比较|与|和/ : /[；;？?]|以及|并且/)
+  const comparison = mode === 'compare'
+    ? [...queryWords.segment(question)].map(({ segment }) => ['和', '与'].includes(segment) ? '；' : segment).join('') : question
+  const parts = comparison
+    .split(mode === 'compare' ? /[；;？?、]|以及|并且|\bvs\b|对比|比较|(?<=\s)[与和](?=\s)/ : /[；;？?]|以及|并且/)
     .map((part) => part.trim())
     .map((part) => part.replace(/(?:有什么)?(?:区别|不同|优缺点)[？?]?$/, '').trim())
     .filter((part) => part.length >= 2)
@@ -163,7 +169,7 @@ async function reflectQueries(question: string, hits: Hit[], tried: Set<string>,
   const text = requireModelText(result, '补充检索规划')
   let parsed: { queries?: unknown } | null = null
   try {
-    parsed = JSON.parse(/\{[\s\S]*\}/.exec(text)?.[0] ?? 'null')
+    parsed = parseStructuredJson(text) as { queries?: unknown } | null
   } catch {
     throw modelUnavailable('补充检索规划', '模型返回了无效 JSON')
   }
@@ -262,7 +268,7 @@ export async function ask(
   const expandedQuestion = retrievalQuestion(question, history)
   recorder.addSpan({ stage: 'context.history', output: { messages: history.length, retrieval_question: expandedQuestion } })
 
-  const memoryText = input.evaluation ? undefined : /^(?:(?:请)?(?:帮我)?(?:记住|记一下|记下)(?:这个|以下内容)?[：:，,\s]*|(?:纠正一下|更正一下|我的偏好)[：:]\s*)([\s\S]+)$/.exec(question)?.[1]?.trim()
+  const memoryText = input.evaluation || /[？?]|什么|如何|怎么|为何|是否|能否|吗|么|呢|哪(?:个|些|里|种)|几(?:天|次|个)|多少/.test(question) ? undefined : /^(?:(?:请)?(?:帮我)?(?:记住|记一下|记下)(?:这个|以下内容)?[：:，,\s]*|(?:纠正一下|更正一下|我的偏好)[：:]\s*)([\s\S]+)$/.exec(question)?.[1]?.trim()
   const queries = memoryText ? [] : subqueries(expandedQuestion, mode)
   const results: RetrievalResult[] = []
   const merged = new Map<string, Hit>()
@@ -361,12 +367,13 @@ ${evidence}
       modelReason = preview((text.split('\n')[0] ?? '').replace(/^REFUSE\s*[:：]?\s*/i, ''), 360)
       answer = '生成模型判断现有片段不足以回答这个问题。'
     } else {
-      const groundingSources = hits.map((hit) => ({ text: hit.chunk.text }))
-      grounding = validateGrounding(text, groundingSources, { checkWording: !settings.groundingVerifier })
-      if (grounding.valid && settings.groundingVerifier) {
+      const groundingSources = hits.map((hit) => ({ text: hit.chunk.text, context: `文档：${hit.document.title}；章节：${hit.chunk.heading_path.join(' / ')}${hit.chunk.page ? `；页码：${hit.chunk.page}` : ''}${asOf ? `；检索时间切片：${asOf}` : ''}` }))
+      grounding = validateGrounding(text, groundingSources, { checkWording: !settings.groundingVerifier, asOf })
+      recorder.addSpan({ stage: 'answer.grounding', output: { valid: grounding.valid, sentences: grounding.sentences, supported: grounding.supported, issues: grounding.issues, semantic_required: grounding.semanticRequired } })
+      if (grounding.valid && settings.groundingVerifier && grounding.semanticRequired !== false) {
         try {
           const { supported, unsupportedSentences } = await checkSemanticGrounding(text, groundingSources)
-          recorder.addSpan({ stage: 'answer.verify', output: { supported }, inputValue: text })
+          recorder.addSpan({ stage: 'answer.verify', output: { supported, unsupported_sentences: unsupportedSentences }, inputValue: text })
           if (!supported) {
             semanticRejected = true
             grounding.valid = false
@@ -394,7 +401,7 @@ ${evidence}
         failureStage = 'grounding'
       }
       const indices = new Set(
-        [...answer.matchAll(CITATION)].map((match) => Number(match[1])).filter((index) => index >= 1 && index <= hits.length),
+        Object.keys(grounding.quotes).map(Number).filter((index) => index >= 1 && index <= hits.length),
       )
       citations = failureStage ? [] : [...indices].sort((a, b) => a - b).map((index) => toCitation(index, hits[index - 1]!, grounding.quotes[index]))
     }

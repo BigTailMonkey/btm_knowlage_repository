@@ -1,0 +1,1303 @@
+{
+  "corpus": "20 repository source excerpts; 50 explicit excerpt/citation questions",
+  "corpus_version": 2,
+  "live": true,
+  "database": "knowweave_eval_mwm40wou_3d39482e",
+  "run_id": "er_68cb3fab354a05aaf77c",
+  "metrics": {
+    "cases": 50,
+    "mode": "answer",
+    "recall_at_10": 1,
+    "doc_recall": 1,
+    "context_precision": 1,
+    "citation_accuracy": 1,
+    "rule_groundedness": 1,
+    "refusal_accuracy": 0.26,
+    "keyword_recall": 0.26,
+    "pass_rate": 0.26,
+    "p95_latency_ms": 8608,
+    "model_calls": 50,
+    "model_successes": 50,
+    "generated_answers": 13,
+    "failed_cases": 0,
+    "refusals": 37
+  },
+  "results": [
+    {
+      "case_id": "repo-01",
+      "error": null,
+      "question": "请从《src/core/ingestion.ts》的已提供片段中，摘录包含 `submitIngest` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_keywords": [
+        "submitIngest"
+      ],
+      "answer": "结论：已提供片段中，只有证据[1]直接包含 `submitIngest` 的原文；证据[2]的片段未出现该标识符。\n\n证据[1]的原文为：\n```ts\nexport async function submitIngest(\n  principal: Principal,\n  source: 'file' | 'text' | 'url',\n  options: {\n    title?: string | null\n    filename?: string | null\n```\n[1]\n\n证据[2]中同源文件的片段只包含 `void processIngestQueue().catch(() => undefined)`、`return publicJob(record)` 及 `async function runIngestJob(` 等内容，未见 `submitIngest` 字样 [2]。",
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 4626,
+      "trace_id": "tr_0acc9e07a590451c9815",
+      "top_score": 0.4783,
+      "pass": true
+    },
+    {
+      "case_id": "repo-02",
+      "error": null,
+      "question": "请从《src/core/ingestion.ts》的已提供片段中，摘录包含 `processIngestQueue` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：独立语义校验未确认全部事实句。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 1,
+      "latency_ms": 5436,
+      "trace_id": "tr_f30666ef25cb6e129a2f",
+      "top_score": 0.4641,
+      "pass": false
+    },
+    {
+      "case_id": "repo-03",
+      "error": null,
+      "question": "请从《src/core/ingestion.ts》的已提供片段中，摘录包含 `retryIngestJob` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_keywords": [
+        "retryIngestJob"
+      ],
+      "answer": "结论：`[1]` 片段中包含 `retryIngestJob` 的定义，原文摘录如下。\n\n```ts\nexport async function retryIngestJob(principal: Principal, id: string, stage: 'parse' | 'index' = 'index', correctedText?: string): Promise<Record<string, unknown>> {\n  if (correctedText?.trim()) {\n    const row = await queryOne<SavedJob>(\"SELECT * FROM jobs WHERE id=$1 AND tenant_id=$2 AND payload->>'user_id'=$3 AND status IN('failed','done')\", [id, principal.tenantId, principal.userId])\n    if (!row) throw Object.assign(new Error('任务不存在或正在运行'), { statusCode: 409 })\n    const source = row.payload.source\n    const request = row.payload.request\n```\n[1]\n\n关键依据：该函数签名中的 `stage` 参数默认取 `'index'`，可选值为 `'parse'` 或 `'index'`，并带有可选参数 `correctedText` [1]；当 `correctedText` 非空（去除首尾空白后）时，会按 `id`、`tenant_id`、`payload->>'user_id'` 以及状态处于 `'failed'`、`'done'` 的条件查询任务记录 [1]；查不到记录时抛出错误「任务不存在或正在运行」，并附带 `statusCode: 409` [1]。`[2]` 与 `[3]` 的片段未出现 `retryIngestJob` 的调用或定义，因此此处不作引用。",
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 5544,
+      "trace_id": "tr_f6c4d749513fb97838c1",
+      "top_score": 0.4689,
+      "pass": true
+    },
+    {
+      "case_id": "repo-04",
+      "error": null,
+      "question": "请从《src/core/chunking.ts》的已提供片段中，摘录包含 `chunkBlocks` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.6666666666666666,
+      "latency_ms": 2798,
+      "trace_id": "tr_23df2806c13669a93b52",
+      "top_score": 0.4661,
+      "pass": false
+    },
+    {
+      "case_id": "repo-05",
+      "error": null,
+      "question": "请从《src/core/chunking.ts》的已提供片段中，摘录包含 `estimateTokens` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.75,
+      "latency_ms": 4055,
+      "trace_id": "tr_d98d3d1ff5c04d9d7082",
+      "top_score": 0.4442,
+      "pass": false
+    },
+    {
+      "case_id": "repo-06",
+      "error": null,
+      "question": "请从《src/core/chunking.ts》的已提供片段中，摘录包含 `MAX_TOKENS` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_keywords": [
+        "MAX_TOKENS"
+      ],
+      "answer": "片段中与 `MAX_TOKENS` 相关的原文为：`export const MAX_TOKENS = 512` [1]。",
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 2334,
+      "trace_id": "tr_03c4986fb92804d9f3bf",
+      "top_score": 0.4545,
+      "pass": true
+    },
+    {
+      "case_id": "repo-07",
+      "error": null,
+      "question": "请从《src/adapters/parsing/index.ts》的已提供片段中，摘录包含 `parseBytes` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.75,
+      "latency_ms": 5385,
+      "trace_id": "tr_07ea718cdd052bdca71a",
+      "top_score": 0.4229,
+      "pass": false
+    },
+    {
+      "case_id": "repo-08",
+      "error": null,
+      "question": "请从《src/adapters/parsing/index.ts》的已提供片段中，摘录包含 `parseMarkdown` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.6666666666666666,
+      "latency_ms": 3385,
+      "trace_id": "tr_1b287c0d76d989c29a47",
+      "top_score": 0.4283,
+      "pass": false
+    },
+    {
+      "case_id": "repo-09",
+      "error": null,
+      "question": "请从《src/adapters/parsing/index.ts》的已提供片段中，摘录包含 `normalizeCjkSpaces` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.4,
+      "latency_ms": 2981,
+      "trace_id": "tr_9309406277587b49b697",
+      "top_score": 0.5021,
+      "pass": false
+    },
+    {
+      "case_id": "repo-10",
+      "error": null,
+      "question": "请从《src/core/retrieval.ts》的已提供片段中，摘录包含 `retrieve` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_keywords": [
+        "retrieve"
+      ],
+      "answer": "已提供片段中包含 `retrieve` 的原文如下 [1]：\n\n```ts\nexport async function retrieve(\n  principal: Principal,\n  text: string,\n  options: RetrievalOptions = {},\n): Promise<RetrievalResult> {\n  const started = Date.now()\n```\n[1]",
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 4959,
+      "trace_id": "tr_d50f6a967aa17d07a784",
+      "top_score": 0.4538,
+      "pass": true
+    },
+    {
+      "case_id": "repo-11",
+      "error": null,
+      "question": "请从《src/core/retrieval.ts》的已提供片段中，摘录包含 `factIsEffective` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_keywords": [
+        "factIsEffective"
+      ],
+      "answer": "证据[1]中与 `factIsEffective` 相关的原文如下：\n\n```ts\nexport function factIsEffective(\n  fact: { status: string; valid_from: string | Date | null; valid_to: string | Date | null },\n  asOf: string | null,\n): boolean {\n  if (!['active', ...(asOf ? ['superseded'] : [])].includes(fact.status)) return false\n  const date = asOf ?? todayLocal(settings.timezone)\n```\n[1]\n\n所给片段在该行之后即结束，后续实现未出现在证据中[1]。",
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 6088,
+      "trace_id": "tr_8c935265f2aee2a0ad83",
+      "top_score": 0.4882,
+      "pass": true
+    },
+    {
+      "case_id": "repo-12",
+      "error": null,
+      "question": "请从《src/core/retrieval.ts》的已提供片段中，摘录包含 `normalizeAsOf` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.6666666666666666,
+      "latency_ms": 3646,
+      "trace_id": "tr_373bc464ce476df6ca7e",
+      "top_score": 0.4593,
+      "pass": false
+    },
+    {
+      "case_id": "repo-13",
+      "error": null,
+      "question": "请从《src/core/answering.ts》的已提供片段中，摘录包含 `ask` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.5,
+      "latency_ms": 4193,
+      "trace_id": "tr_1de2102775f45b3680a5",
+      "top_score": 0.4847,
+      "pass": false
+    },
+    {
+      "case_id": "repo-14",
+      "error": null,
+      "question": "请从《src/core/answering.ts》的已提供片段中，摘录包含 `ANSWER_SYSTEM` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.8,
+      "latency_ms": 9888,
+      "trace_id": "tr_28835d8ac5025fbb1029",
+      "top_score": 0.554,
+      "pass": false
+    },
+    {
+      "case_id": "repo-15",
+      "error": null,
+      "question": "请从《src/core/answering.ts》的已提供片段中，摘录包含 `reflectQueries` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_keywords": [
+        "reflectQueries"
+      ],
+      "answer": "结论：在已提供的片段中，包含 `reflectQueries` 的原文出现在证据 [2] 中 [2]。\n\n原文摘录如下（证据 [2]）：\n\n```ts\nasync function reflectQueries(question: string, hits: Hit[], tried: Set<string>, recorder: TraceRecorder, round: number): Promise<string[]> {\n  const prompt = `将知识库问题改写成最多3条用于补充证据的检索语句。不要回答问题，不要重复已检索内容。只返回JSON：{\"queries\":[\"...\"]}。\\n问题：${question}\\n已检索：${JSON.stringify([...tried])}\\n已有线索：${hits.slice(0, 3).map((hit) => `${hit.document.title}: ${hit.chunk.text.slice(0, 200)}`).join('\\n')}`\n  const result = await completeStructured(prompt, '你是知识库检索规划器，只改写查询，不生成事实。')\n  const text = requireModelText(result, '补充检索规划')\n  let parsed: { queries?: unknown } | null = null\n  try {\n```\n[2]\n\n这份片段在 `try {` 处结束，之后的内容没有出现在已给证据中 [2]。",
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 8031,
+      "trace_id": "tr_8e2c6d1117442dae8676",
+      "top_score": 0.4752,
+      "pass": true
+    },
+    {
+      "case_id": "repo-16",
+      "error": null,
+      "question": "请从《src/core/learning.ts》的已提供片段中，摘录包含 `getOrCreateEntity` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.5,
+      "latency_ms": 2099,
+      "trace_id": "tr_8fde492822218fb003b8",
+      "top_score": 0.4774,
+      "pass": false
+    },
+    {
+      "case_id": "repo-17",
+      "error": null,
+      "question": "请从《src/core/learning.ts》的已提供片段中，摘录包含 `extractFactsForDocument` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_keywords": [
+        "extractFactsForDocument"
+      ],
+      "answer": "包含 `extractFactsForDocument` 的原文摘录如下（出自证据[1]）：\n\n```ts\nexport async function extractFactsForDocument(principal: Principal, docId: string, expectedVersion?: number): Promise<Record<string, unknown>> {\n  const document = await queryOne<DocumentRow>('SELECT * FROM documents WHERE id = $1', [docId])\n  if (!document || document.tenant_id !== principal.tenantId || document.status !== 'active') return { error: '文档不存在' }\n  if (expectedVersion !== undefined && document.current_version !== expectedVersion) return { status: 'stale' }\n  const key = `${principal.tenantId}:${docId}:${document.current_version}`\n  const existing = extractionTasks.get(key)\n``` [1]\n\n该片段可确认：函数在文档不存在、不属于当前租户或状态非 `active` 时返回 `{ error: '文档不存在' }`；当传入 `expectedVersion` 且与 `current_version` 不一致时返回 `{ status: 'stale' }` [1]。",
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 5684,
+      "trace_id": "tr_175537bdc47597bdf731",
+      "top_score": 0.4754,
+      "pass": true
+    },
+    {
+      "case_id": "repo-18",
+      "error": null,
+      "question": "请从《src/core/learning.ts》的已提供片段中，摘录包含 `runReflection` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.6666666666666666,
+      "latency_ms": 2302,
+      "trace_id": "tr_146be141ee051b0957df",
+      "top_score": 0.4463,
+      "pass": false
+    },
+    {
+      "case_id": "repo-19",
+      "error": null,
+      "question": "请从《src/db/index.ts》的已提供片段中，摘录包含 `initSchema` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.6666666666666666,
+      "latency_ms": 2603,
+      "trace_id": "tr_a3fcb84f09edca074c21",
+      "top_score": 0.4684,
+      "pass": false
+    },
+    {
+      "case_id": "repo-20",
+      "error": null,
+      "question": "请从《src/db/index.ts》的已提供片段中，摘录包含 `seedIfEmpty` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.5,
+      "latency_ms": 2337,
+      "trace_id": "tr_2415ef7466da0ca4533f",
+      "top_score": 0.4545,
+      "pass": false
+    },
+    {
+      "case_id": "repo-21",
+      "error": null,
+      "question": "请从《src/db/index.ts》的已提供片段中，摘录包含 `closePool` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：独立语义校验未确认全部事实句。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 1,
+      "latency_ms": 3241,
+      "trace_id": "tr_0af831e6500e724150d4",
+      "top_score": 0.4906,
+      "pass": false
+    },
+    {
+      "case_id": "repo-22",
+      "error": null,
+      "question": "请从《src/core/security.ts》的已提供片段中，摘录包含 `canRead` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.75,
+      "latency_ms": 3425,
+      "trace_id": "tr_e0216c255007b07768a8",
+      "top_score": 0.4908,
+      "pass": false
+    },
+    {
+      "case_id": "repo-23",
+      "error": null,
+      "question": "请从《src/core/security.ts》的已提供片段中，摘录包含 `requireEditor` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.6666666666666666,
+      "latency_ms": 2573,
+      "trace_id": "tr_b0b87d034567be9cace1",
+      "top_score": 0.4581,
+      "pass": false
+    },
+    {
+      "case_id": "repo-24",
+      "error": null,
+      "question": "请从《src/core/security.ts》的已提供片段中，摘录包含 `requireAdmin` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.6666666666666666,
+      "latency_ms": 2899,
+      "trace_id": "tr_44c8223b3f562f8bc68b",
+      "top_score": 0.48,
+      "pass": false
+    },
+    {
+      "case_id": "repo-25",
+      "error": null,
+      "question": "请从《src/core/tracing.ts》的已提供片段中，摘录包含 `TraceRecorder` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0,
+      "latency_ms": 2885,
+      "trace_id": "tr_a9b824149f6b27935ed1",
+      "top_score": 0.4868,
+      "pass": false
+    },
+    {
+      "case_id": "repo-26",
+      "error": null,
+      "question": "请从《src/core/tracing.ts》的已提供片段中，摘录包含 `tokenPrice` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.3333333333333333,
+      "latency_ms": 1273,
+      "trace_id": "tr_741d91b6c7a59d8137df",
+      "top_score": 0.4968,
+      "pass": false
+    },
+    {
+      "case_id": "repo-27",
+      "error": null,
+      "question": "请从《src/core/tracing.ts》的已提供片段中，摘录包含 `recordUsage` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.6666666666666666,
+      "latency_ms": 4867,
+      "trace_id": "tr_25064832da19c85553e1",
+      "top_score": 0.443,
+      "pass": false
+    },
+    {
+      "case_id": "repo-28",
+      "error": null,
+      "question": "请从《src/core/ids.ts》的已提供片段中，摘录包含 `newId` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.6666666666666666,
+      "latency_ms": 3110,
+      "trace_id": "tr_03150a5f57634b3e2b35",
+      "top_score": 0.4476,
+      "pass": false
+    },
+    {
+      "case_id": "repo-29",
+      "error": null,
+      "question": "请从《src/core/ids.ts》的已提供片段中，摘录包含 `todayLocal` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.45454545454545453,
+      "latency_ms": 3476,
+      "trace_id": "tr_d34627d234346568ed84",
+      "top_score": 0.503,
+      "pass": false
+    },
+    {
+      "case_id": "repo-30",
+      "error": null,
+      "question": "请从《src/core/ids.ts》的已提供片段中，摘录包含 `iso` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.5,
+      "latency_ms": 2761,
+      "trace_id": "tr_e9e7655ff16e20705d3f",
+      "top_score": 0.4385,
+      "pass": false
+    },
+    {
+      "case_id": "repo-31",
+      "error": null,
+      "question": "请从《src/core/grounding.ts》的已提供片段中，摘录包含 `validateGrounding` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/grounding.ts"
+      ],
+      "matched_docs": [
+        "src/core/grounding.ts"
+      ],
+      "matched_keywords": [
+        "validateGrounding"
+      ],
+      "answer": "证据 [1] 中，包含 `validateGrounding` 的原文如下：\n\n```\n/** Check citation integrity and numbers before the configured semantic verifier judges the wording. */\nexport function validateGrounding(\n  answer: string,\n  evidence: EvidenceText[],\n  { checkWording = true, asOf = null }: { checkWording?: boolean; asOf?: string | null } = {},\n): GroundingCheck {\n  const sentences = claimSentences(answer)\n``` [1]\n\n上述片段可以确认该函数接收 `answer`、`evidence` 两个参数，`checkWording` 默认值为 `true`，`asOf` 默认值为 `null`，返回类型为 `GroundingCheck`，并在函数体首行调用 `claimSentences(answer)` [1]。此外，[2] 提供的 `claimSentences` 片段中没有出现 `validateGrounding`。",
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 4878,
+      "trace_id": "tr_9141fd8d0de01c4a3447",
+      "top_score": 0.4356,
+      "pass": true
+    },
+    {
+      "case_id": "repo-32",
+      "error": null,
+      "question": "请从《src/core/grounding.ts》的已提供片段中，摘录包含 `claimSentences` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/grounding.ts"
+      ],
+      "matched_docs": [
+        "src/core/grounding.ts"
+      ],
+      "matched_keywords": [
+        "claimSentences"
+      ],
+      "answer": "结论：已提供片段中直接包含 `claimSentences` 的原文有两处 [1][2]。\n\n摘录：\n1. `export function claimSentences(answer: string): string[] {` [1]\n2. `const sentences = claimSentences(answer)` [2]\n\n依据：证据 [1] 显示了该函数的声明行 [1]；证据 [2] 显示了在 `validateGrounding` 中对该函数的调用行 [2]。",
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 8845,
+      "trace_id": "tr_28da0d51599d518fabbf",
+      "top_score": 0.4612,
+      "pass": true
+    },
+    {
+      "case_id": "repo-33",
+      "error": null,
+      "question": "请从《src/core/consolidation.ts》的已提供片段中，摘录包含 `consolidateKnowledge` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/consolidation.ts"
+      ],
+      "matched_docs": [
+        "src/core/consolidation.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.8333333333333334,
+      "latency_ms": 5462,
+      "trace_id": "tr_43dc639182350c63b0d4",
+      "top_score": 0.4542,
+      "pass": false
+    },
+    {
+      "case_id": "repo-34",
+      "error": null,
+      "question": "请从《src/core/consolidation.ts》的已提供片段中，摘录包含 `SupportedFact` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/consolidation.ts"
+      ],
+      "matched_docs": [
+        "src/core/consolidation.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.8,
+      "latency_ms": 4441,
+      "trace_id": "tr_b676098a534c357017fe",
+      "top_score": 0.469,
+      "pass": false
+    },
+    {
+      "case_id": "repo-35",
+      "error": null,
+      "question": "请从《src/core/entity-resolution.ts》的已提供片段中，摘录包含 `resolveSemanticEntity` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/entity-resolution.ts"
+      ],
+      "matched_docs": [
+        "src/core/entity-resolution.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.8333333333333334,
+      "latency_ms": 5176,
+      "trace_id": "tr_45c50e52e8dac632dceb",
+      "top_score": 0.4616,
+      "pass": false
+    },
+    {
+      "case_id": "repo-36",
+      "error": null,
+      "question": "请从《src/core/entity-resolution.ts》的已提供片段中，摘录包含 `candidates` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/entity-resolution.ts"
+      ],
+      "matched_docs": [
+        "src/core/entity-resolution.ts"
+      ],
+      "matched_keywords": [
+        "candidates"
+      ],
+      "answer": "片段中包含 `candidates` 的原文有两处，两处内容基本重叠，其中 [2] 的语句更完整。\n\n- 声明行：`const candidates = await query<EntityRow>(...)` [1][2]\n- [1] 中可见的开头部分为 `SELECT * FROM entities WHERE tenant_id=$1 AND type=$2 AND status='active'` [1]\n- [2] 中完整语句为 `SELECT * FROM entities WHERE tenant_id=$1 AND type=$2 AND status='active' AND acl_principals @> $3::jsonb AND acl_principals <@ $3::jsonb ORDER BY updated_at DESC LIMIT 100`，参数为 `[tenant, type, JSON.stringify(acl)]` [2]\n\n需说明的边界情况：仅凭 [1] 无法确认该 SQL 语句结尾部分为 `LIMIT 100`，这一内容只在 [2] 中可见 [1][2]。",
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 5167,
+      "trace_id": "tr_4336179959a6d902f739",
+      "top_score": 0.4463,
+      "pass": true
+    },
+    {
+      "case_id": "repo-37",
+      "error": null,
+      "question": "请从《src/core/evaluation.ts》的已提供片段中，摘录包含 `runEvaluation` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/evaluation.ts"
+      ],
+      "matched_docs": [
+        "src/core/evaluation.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.75,
+      "latency_ms": 8608,
+      "trace_id": "tr_52e6244f57495362dab6",
+      "top_score": 0.4501,
+      "pass": false
+    },
+    {
+      "case_id": "repo-38",
+      "error": null,
+      "question": "请从《src/core/evaluation.ts》的已提供片段中，摘录包含 `EvaluationCase` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/evaluation.ts"
+      ],
+      "matched_docs": [
+        "src/core/evaluation.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.5,
+      "latency_ms": 2748,
+      "trace_id": "tr_e0437070e874f89f70c9",
+      "top_score": 0.4728,
+      "pass": false
+    },
+    {
+      "case_id": "repo-39",
+      "error": null,
+      "question": "请从《src/app/routes/documents.ts》的已提供片段中，摘录包含 `documentRoutes` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/routes/documents.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/documents.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.6666666666666666,
+      "latency_ms": 3347,
+      "trace_id": "tr_00506041f4d88fef54b9",
+      "top_score": 0.4488,
+      "pass": false
+    },
+    {
+      "case_id": "repo-40",
+      "error": null,
+      "question": "请从《src/app/routes/documents.ts》的已提供片段中，摘录包含 `visibleDocument` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/routes/documents.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/documents.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.8,
+      "latency_ms": 5784,
+      "trace_id": "tr_89862c0d08fc5ab473b5",
+      "top_score": 0.4793,
+      "pass": false
+    },
+    {
+      "case_id": "repo-41",
+      "error": null,
+      "question": "请从《src/app/routes/ask.ts》的已提供片段中，摘录包含 `askRoutes` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/routes/ask.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/ask.ts"
+      ],
+      "matched_keywords": [
+        "askRoutes"
+      ],
+      "answer": "包含 `askRoutes` 的原文仅见于证据 [1]：`export async function askRoutes(app: FastifyInstance): Promise<void> {` [1]。该片段随后还显示 `app.post('/search', { preHandler: authenticate }, async (request) => {` 以及 `const principal = currentPrincipal(request)` [1]。证据 [2] 仅为导入语句，其中没有出现 `askRoutes` [2]。",
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 4095,
+      "trace_id": "tr_347d3cf4388ceb19255e",
+      "top_score": 0.4567,
+      "pass": true
+    },
+    {
+      "case_id": "repo-42",
+      "error": null,
+      "question": "请从《src/app/routes/ask.ts》的已提供片段中，摘录包含 `transaction` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/routes/ask.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/ask.ts"
+      ],
+      "matched_keywords": [
+        "transaction"
+      ],
+      "answer": "**结论：** 已提供的片段中，包含 `transaction` 的原文仅出现在 [1] 的 import 语句中：\n\n- `import { query, queryOne, transaction } from '../../db/index.js'` [1]\n\n**关键依据：** 该片段其余 import 分别为 `authenticate`、`currentPrincipal`、`ask`、`AnswerFailure`、`setConversationArchived`、`retrieve`、`newId`、`TraceRecorder`，均不含 `transaction` [1]；而 [2] 所展示的 `/search` 路由声明开头部分（包含 `app.post('/search', { preHandler: authenticate }, ...)` 与请求体类型 `query`、`top_k?`）中未出现 `transaction` [2]。",
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 4397,
+      "trace_id": "tr_0a3f1bb2d8d7bed62ada",
+      "top_score": 0.4624,
+      "pass": true
+    },
+    {
+      "case_id": "repo-43",
+      "error": null,
+      "question": "请从《src/app/routes/mcp.ts》的已提供片段中，摘录包含 `mcpRoutes` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/routes/mcp.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/mcp.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.75,
+      "latency_ms": 3685,
+      "trace_id": "tr_a6b16faa0721ebaf8a94",
+      "top_score": 0.4705,
+      "pass": false
+    },
+    {
+      "case_id": "repo-44",
+      "error": null,
+      "question": "请从《src/app/routes/mcp.ts》的已提供片段中，摘录包含 `TOOLS` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/routes/mcp.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/mcp.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.6666666666666666,
+      "latency_ms": 3381,
+      "trace_id": "tr_0ce2bee3d8fed1f24565",
+      "top_score": 0.431,
+      "pass": false
+    },
+    {
+      "case_id": "repo-45",
+      "error": null,
+      "question": "请从《src/app/server.ts》的已提供片段中，摘录包含 `createServer` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/server.ts"
+      ],
+      "matched_docs": [
+        "src/app/server.ts"
+      ],
+      "matched_keywords": [
+        "createServer"
+      ],
+      "answer": "摘录如下：\n\n```ts\nexport async function createServer(): Promise<FastifyInstance> {\n  const app = Fastify({\n    logger: {\n      level: 'info',\n      transport: process.env.NODE_ENV === 'production' ? undefined : undefined,\n    },\n```\n[1]\n\n该片段只能确认 `createServer` 的声明，以及它以 `info` 级别初始化 Fastify 日志，且 `transport` 在生产和非生产环境下都被设为 `undefined` [1]。",
+      "refused": false,
+      "strategy": "generated",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": 1,
+      "rule_groundedness": 1,
+      "latency_ms": 3211,
+      "trace_id": "tr_3a0bc2b4e6d512309f2f",
+      "top_score": 0.4663,
+      "pass": true
+    },
+    {
+      "case_id": "repo-46",
+      "error": null,
+      "question": "请从《src/app/server.ts》的已提供片段中，摘录包含 `authenticate` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/server.ts"
+      ],
+      "matched_docs": [
+        "src/app/server.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.6666666666666666,
+      "latency_ms": 2949,
+      "trace_id": "tr_da9c66f5e16357fd2e11",
+      "top_score": 0.4574,
+      "pass": false
+    },
+    {
+      "case_id": "repo-47",
+      "error": null,
+      "question": "请从《src/adapters/embeddings/index.ts》的已提供片段中，摘录包含 `tokenize` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/embeddings/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/embeddings/index.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.6666666666666666,
+      "latency_ms": 4287,
+      "trace_id": "tr_56a7a226d31fecb07f64",
+      "top_score": 0.4441,
+      "pass": false
+    },
+    {
+      "case_id": "repo-48",
+      "error": null,
+      "question": "请从《src/adapters/embeddings/index.ts》的已提供片段中，摘录包含 `sparseVector` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/embeddings/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/embeddings/index.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.8,
+      "latency_ms": 4114,
+      "trace_id": "tr_85edd67fb82d529105d5",
+      "top_score": 0.4761,
+      "pass": false
+    },
+    {
+      "case_id": "repo-49",
+      "error": null,
+      "question": "请从《src/adapters/reranking/index.ts》的已提供片段中，摘录包含 `semanticRerank` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/reranking/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/reranking/index.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.75,
+      "latency_ms": 8172,
+      "trace_id": "tr_183c03f1400e971e112d",
+      "top_score": 0.4887,
+      "pass": false
+    },
+    {
+      "case_id": "repo-50",
+      "error": null,
+      "question": "请从《src/adapters/reranking/index.ts》的已提供片段中，摘录包含 `relevance_score` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/reranking/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/reranking/index.ts"
+      ],
+      "matched_keywords": [],
+      "answer": "生成回答未通过核验。原因：回答存在缺失或无效引用的句子。",
+      "refused": true,
+      "strategy": "refused",
+      "model_called": true,
+      "model_succeeded": true,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": 0.5,
+      "latency_ms": 3652,
+      "trace_id": "tr_74275bac937634123ce7",
+      "top_score": 0.5014,
+      "pass": false
+    }
+  ]
+}

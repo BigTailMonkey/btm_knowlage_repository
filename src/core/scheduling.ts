@@ -11,7 +11,8 @@ export async function runDailyReflection(now = new Date()): Promise<number> {
   const date = `${parts.year}-${parts.month}-${parts.day}`
   if (`${parts.hour}:${parts.minute}` < at) return 0
   let count = 0
-  for (const tenant of await query<{ id: string }>('SELECT id FROM tenants')) {
+  const errors: unknown[] = []
+  for (const tenant of await query<{ id: string }>('SELECT id FROM tenants ORDER BY id')) {
     const id = `reflection:${tenant.id}:${date}`
     const claimed = await query(`INSERT INTO jobs(id,tenant_id,type,status,payload) VALUES($1,$2,'reflection_schedule','running',$3::jsonb)
       ON CONFLICT(id) DO UPDATE SET status='running',updated_at=now()
@@ -25,17 +26,22 @@ export async function runDailyReflection(now = new Date()): Promise<number> {
       count += 1
     } catch (error) {
       await query("UPDATE jobs SET status='failed',error=$1,updated_at=now() WHERE id=$2", [error instanceof Error ? error.message : String(error),id])
-      throw error
+      errors.push(error)
     }
   }
+  if (errors.length) throw new AggregateError(errors, '部分租户维护失败；其余租户已完成执行')
   return count
 }
 
 /** 间隔模式（未配置 reflection.run_at）下的维护：先清理过期回收站、归档闲置会话，再运行反思。 */
 export async function runIntervalMaintenance(): Promise<void> {
-  for (const tenant of await query<{ id: string }>('SELECT id FROM tenants')) {
-    await purgeExpiredTrash(tenant.id)
-    await archiveStaleConversations(tenant.id)
-    await runReflection(tenant.id)
+  const errors: unknown[] = []
+  for (const tenant of await query<{ id: string }>('SELECT id FROM tenants ORDER BY id')) {
+    try {
+      await purgeExpiredTrash(tenant.id)
+      await archiveStaleConversations(tenant.id)
+      await runReflection(tenant.id)
+    } catch (error) { errors.push(error) }
   }
+  if (errors.length) throw new AggregateError(errors, '部分租户维护失败；其余租户已完成执行')
 }

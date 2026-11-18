@@ -208,7 +208,7 @@ function noteText(value: unknown): string | null {
   return text || null
 }
 
-function lockContinuationChain(client: DbClient, tenantId: string) {
+export function lockContinuationChain(client: DbClient, tenantId: string) {
   return client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`document-continuations:${tenantId}`])
 }
 

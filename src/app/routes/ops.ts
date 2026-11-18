@@ -1,3 +1,4 @@
+import { integerParam } from '../../util/input.js'
 import { FastifyInstance } from 'fastify'
 
 import { runEvaluation, type EvaluationCase } from '../../core/evaluation.js'
@@ -92,7 +93,7 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
   app.get('/traces', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
     const params = request.query as Record<string, string | undefined>
-    const limit = Math.min(200, Math.max(1, Number(params.limit ?? 40)))
+    const limit = integerParam(params.limit, 'limit', 40, 1, 200)
     const where = ['tenant_id = $1']
     const values: unknown[] = [principal.tenantId]
     if (params.feature) {

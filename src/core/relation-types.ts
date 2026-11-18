@@ -87,6 +87,18 @@ export function relationSlot(predicate: string | null | undefined): string {
   return `predicate:${stem}:${years}`
 }
 
+/** Missing years are unspecified, so they overlap an explicitly dated slot. */
+export function relationSlotsOverlap(left: string, right: string): boolean {
+  const a = relationSlot(left)
+  const b = relationSlot(right)
+  if (a === b) return true
+  const relation = relationOf(left)
+  if (!relation.singleValued || relation.key !== relationOf(right).key) return false
+  const ay = yearsIn(left)
+  const by = yearsIn(right)
+  return !ay.length || !by.length || ay.some((year) => by.includes(year))
+}
+
 /**
  * 两条事实是不是同一条断言（用于去重，只有在主语宾语相同时才调用）。
  *

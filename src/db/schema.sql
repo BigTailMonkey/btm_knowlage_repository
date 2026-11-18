@@ -229,7 +229,7 @@ COMMENT ON COLUMN chunks.is_parent IS '是否章节父块：true 时仅用于补
 COMMENT ON COLUMN chunks.acl_principals IS 'JSONB 字符串数组：写入时冗余的文档 ACL 允许列表，检索时与文档 ACL 双重校验';
 COMMENT ON COLUMN chunks.acl_version IS '写入时对应的文档 ACL 版本号';
 COMMENT ON COLUMN chunks.dense IS '双精度浮点数组：按维度顺序存放稠密向量，供 PostgreSQL 计算余弦相似度；默认空数组，父块不生成向量';
-COMMENT ON COLUMN chunks.sparse IS 'JSONB 对象 {词元: 权重}：稀疏向量；hybrid 服务返回的 learned sparse，或本地分词的 1+log(词频)（最多 96 项）';
+COMMENT ON COLUMN chunks.sparse IS 'JSONB 对象 {词元: 权重}：稀疏向量；hybrid 服务返回的 learned sparse，或本地分词的 1+log(词频)；本地默认保留全部词元，避免按词频截断丢失区分词';
 COMMENT ON COLUMN chunks.embedding_model IS '生成向量的嵌入模型名（父块或未向量化时为空串）';
 COMMENT ON COLUMN chunks.embedding_dim IS '稠密向量维度（未向量化时为 0）';
 COMMENT ON COLUMN chunks.weight IS '检索权重（默认 1）：用户反馈按 ±0.12 调整，范围 0.5–1.6，用于微调重排得分';
@@ -273,10 +273,10 @@ COMMENT ON COLUMN entities.id IS '实体 ID（ent_ 前缀）';
 COMMENT ON COLUMN entities.tenant_id IS '所属租户 ID';
 COMMENT ON COLUMN entities.type IS '实体类型：product 产品 / org 组织 / person 人物 / concept 概念（默认）/ event 事件';
 COMMENT ON COLUMN entities.canonical_name IS '规范名称（保留原文写法）';
-COMMENT ON COLUMN entities.normalized_name IS '归一化名称：小写并去除空白与 ·•-_/ 等符号，用于去重匹配';
+COMMENT ON COLUMN entities.normalized_name IS '归一化名称：先做 NFKC 兼容归一，再转小写并去除空白与 ·•-_/ 等符号，用于去重匹配';
 COMMENT ON COLUMN entities.description IS '实体描述（当前创建时为空串）';
 COMMENT ON COLUMN entities.status IS '状态：active 有效 / merged 已并入其他实体 / retracted 已撤回';
-COMMENT ON COLUMN entities.acl_principals IS 'JSONB 字符串数组：允许读取的主体列表（继承来源文档 ACL）';
+COMMENT ON COLUMN entities.acl_principals IS 'JSONB 字符串数组：允许读取的主体列表（同名实体在多份来源中出现时合并其可见主体；事实和引文仍各自校验来源 ACL）';
 COMMENT ON COLUMN entities.created_at IS '创建时间';
 COMMENT ON COLUMN entities.updated_at IS '最近更新时间';
 
@@ -328,7 +328,7 @@ COMMENT ON COLUMN facts.valid_to IS '失效日期（不含当日，开区间；N
 COMMENT ON COLUMN facts.recorded_at IS '事实入库时间';
 COMMENT ON COLUMN facts.confidence IS '置信度（0–1，数据库默认 0.6）：常规多来源印证时按证据权重加权融合；审阅合并或模型确认等义归并时取参与事实中的最高值；存疑事实达到 0.7 才进入展示范围，按来源票自动取代旧事实也要求达到 0.7';
 COMMENT ON COLUMN facts.status IS '状态：active 生效 / disputed 存疑待审 / superseded 已被新事实取代 / retracted 已撤回（例如失去有效证据、被人工驳回或作为重复事实归并）';
-COMMENT ON COLUMN facts.acl_principals IS 'JSONB 字符串数组：允许读取的主体列表';
+COMMENT ON COLUMN facts.acl_principals IS 'JSONB 字符串数组：允许读取的主体列表；自动印证仅合并相同 ACL 分区的事实，避免交集为空或跨分区混合引文';
 COMMENT ON COLUMN facts.superseded_by IS '取代本事实的新事实 ID';
 COMMENT ON COLUMN facts.source_doc_id IS '首次产生该事实的文档 ID';
 COMMENT ON COLUMN facts.created_at IS '创建时间';
@@ -490,7 +490,7 @@ COMMENT ON COLUMN jobs.status IS '状态：pending 排队 / running 运行中 / 
 COMMENT ON COLUMN jobs.attempts IS '已尝试次数（入库任务自动重试最多 3 次）';
 COMMENT ON COLUMN jobs.error IS '最近一次失败原因（截断至 300 字符；成功时清空）';
 COMMENT ON COLUMN jobs.input_hash IS '入库内容的 SHA-256 哈希（目录同步据此跳过未变化文件）';
-COMMENT ON COLUMN jobs.payload IS 'JSONB 任务数据：ingest 存 source/user_id/request（含 base64 原始上传文件及 confirmDuplicates 重复确认开关）/checkpoint（解析断点，URL PDF 的 sourcePdfHash 指向抓取字节）/source_pdfs（URL PDF 原始字节 SHA-256 → {filename, data: base64}）/indexed_result（与索引一起提交的结果，供崩溃恢复）/duplicate_decision（continue 继续或 skip 跳过）/result（最终结果）/view（任务界面状态）；enrich 存 document_id/version/user_id/checkpoint（抽取断点）/promotion（记忆晋升）';
+COMMENT ON COLUMN jobs.payload IS 'JSONB 任务数据：ingest 存 source/user_id/request（含 base64 原始上传文件及 confirmDuplicates 重复确认开关）/checkpoint（解析断点，URL PDF 的 sourcePdfHash 指向抓取字节）/source_pdfs（URL PDF 原始字节 SHA-256 → {filename, data: base64}）/indexed_result（与索引一起提交的结果，供崩溃恢复）/duplicate_decision（continue 继续或 skip 跳过）/result（最终结果）/view（任务界面状态）；enrich 存 document_id/version/user_id（发起人，仅审计；执行使用绑定文档版本的系统抽取身份）/checkpoint（抽取断点）/promotion（记忆晋升）';
 COMMENT ON COLUMN jobs.created_at IS '创建时间';
 COMMENT ON COLUMN jobs.updated_at IS '最近更新时间：运行中每 30 秒心跳刷新；超过 2 分钟无心跳视为崩溃，任务可被重新抢占';
 
@@ -804,3 +804,13 @@ COMMENT ON COLUMN memory_items.tags IS 'JSONB 字符串数组：记忆标签（�
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
 COMMENT ON COLUMN conversations.archived_at IS '归档时间（NULL 表示在最近列表）；可手动归档或恢复。定期维护按最后消息时间判断是否超过配置天数，无消息时按创建时间计算，配置 0 天关闭自动归档。继续提问自动恢复（置 NULL）';
 CREATE INDEX IF NOT EXISTS ix_conversations_archive ON conversations (tenant_id, user_id, archived_at);
+
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS created_by TEXT;
+COMMENT ON COLUMN documents.created_by IS '最初摄入文档的用户 ID；用于隔离不同用户上传的同名文件。旧记录无法从原始入库任务确认创建者时为 NULL，不按上传文件名自动覆盖';
+UPDATE documents d SET created_by = source.user_id
+FROM (
+  SELECT DISTINCT ON (v.doc_id) v.doc_id, j.payload->>'user_id' AS user_id
+  FROM document_versions v JOIN jobs j ON j.id = v.meta->>'source_job_id' AND j.tenant_id=v.tenant_id
+  WHERE v.version=1 AND j.payload->>'user_id' IS NOT NULL ORDER BY v.doc_id,j.id
+) source WHERE d.id=source.doc_id AND d.created_by IS NULL;
+CREATE INDEX IF NOT EXISTS idx_documents_upload_owner ON documents (tenant_id, created_by, uri) WHERE status='active';

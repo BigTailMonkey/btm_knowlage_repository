@@ -98,7 +98,7 @@ export interface RetrievalResult {
 }
 
 async function loadCandidates(
-  tenantId: string,
+  principal: Principal,
   asOf: string | null,
   includeDocIds: string[] = [],
 ): Promise<Array<[RetrievalChunk, RetrievalDocument]>> {
@@ -107,7 +107,7 @@ async function loadCandidates(
   // generation; its content revisions are not historical policy generations.
   // Always use the current version and let the chain decide which document was
   // in force on the requested date.
-  const params: unknown[] = [tenantId, effectiveDate, includeDocIds]
+  const params: unknown[] = [principal.tenantId, effectiveDate, includeDocIds, [...principalSet(principal)]]
   let versionFilter = 'v.version = d.current_version'
   if (asOf) {
     params.push(asOf, settings.timezone)
@@ -117,7 +117,7 @@ async function loadCandidates(
            THEN v.version = d.current_version
            ELSE v.id = (SELECT historical.id FROM document_versions historical
                         WHERE historical.doc_id = d.id
-                          AND historical.created_at < (($4::date + interval '1 day') AT TIME ZONE $5)
+                          AND historical.created_at < (($5::date + interval '1 day') AT TIME ZONE $6)
                         ORDER BY historical.created_at DESC, historical.version DESC LIMIT 1) END`
   }
   const rows = await query<{ chunk: RetrievalChunk; document: RetrievalDocument }>(
@@ -140,8 +140,20 @@ async function loadCandidates(
            WHERE chain.tenant_id = d.tenant_id AND (
              (chain.successor_doc_id = d.id AND chain.effective_date > $2::date)
              OR (chain.predecessor_doc_id = d.id AND chain.effective_date <= $2::date
-                 AND EXISTS (SELECT 1 FROM documents successor
-                             WHERE successor.id = chain.successor_doc_id AND successor.status = 'active'))
+                 AND EXISTS (
+                   WITH RECURSIVE successors(id) AS (
+                     SELECT chain.successor_doc_id
+                     UNION
+                     SELECT edge.successor_doc_id FROM document_continuations edge JOIN successors prior ON edge.predecessor_doc_id=prior.id
+                     WHERE edge.tenant_id=$1 AND edge.effective_date<=$2::date
+                   )
+                   SELECT 1 FROM successors next JOIN documents successor ON successor.id=next.id AND successor.tenant_id=$1
+                   WHERE successor.status='active' AND jsonb_typeof(successor.acl_principals)='array'
+                     AND successor.acl_principals ?| $4::text[]
+                     AND EXISTS (SELECT 1 FROM chunks sc JOIN document_versions sv ON sv.id=sc.version_id
+                       WHERE sc.doc_id=successor.id AND sc.tenant_id=$1 AND sv.version=successor.current_version
+                         AND sc.is_parent=false AND jsonb_typeof(sc.acl_principals)='array' AND sc.acl_principals ?| $4::text[])
+                 ))
            )
          )
        )`,
@@ -178,38 +190,40 @@ function rrf(rankedLists: string[][]): Map<string, number> {
   return scores
 }
 
+/** Candidate filtering stays in PostgreSQL; ties have a stable identity order. */
 export async function linkEntities(principal: Principal, text: string): Promise<EntityRow[]> {
-  const entities = await query<EntityRow>(
-    "SELECT * FROM entities WHERE tenant_id = $1 AND status = 'active'",
-    [principal.tenantId],
-  )
-  const visible = entities.filter((entity) => canRead(principal, entity.acl_principals))
-  const aliases = await query<{ entity_id: string; normalized_alias: string }>(
-    'SELECT entity_id, normalized_alias FROM entity_aliases',
-  )
-  const aliasMap = new Map(aliases.map((alias) => [alias.normalized_alias, alias.entity_id]))
-  const normalizedQuery = text.toLowerCase().replace(/\s+/g, '')
-  const matched: EntityRow[] = []
-  for (const entity of visible) {
-    const names = new Set([entity.normalized_name.toLowerCase(), entity.canonical_name.toLowerCase()])
-    for (const [key, entityId] of aliasMap) if (entityId === entity.id) names.add(key.toLowerCase())
-    if (normalizedQuery && [...names].some((name) => {
-      const normalizedName = name.replace(/\s+/g, '')
-      return normalizedName && (normalizedQuery.includes(normalizedName) || normalizedName.includes(normalizedQuery))
-    })) {
-      matched.push(entity)
-    }
-  }
+  const normalize = (value: string) => value.normalize('NFKC').toLowerCase().replace(/[\s·•\-_/]+/g, '')
+  const normalizedQuery = normalize(text)
+  if (!normalizedQuery) return []
   const queryTokens = new Set(tokenize(text))
-  for (const entity of visible) {
-    if (matched.includes(entity)) continue
-    const nameTokens = new Set(tokenize(entity.canonical_name))
-    if (!nameTokens.size) continue
-    let hit = 0
-    for (const token of nameTokens) if (queryTokens.has(token)) hit += 1
-    if (hit / nameTokens.size >= 0.6) matched.push(entity)
-  }
-  return matched.slice(0, 5)
+  const patterns = [...queryTokens].filter((token) => token.length >= 2)
+    .map((token) => `%${token.replace(/[\\%_]/g, '\\$&')}%`)
+  const entities = await query<EntityRow>(
+    `SELECT e.* FROM entities e WHERE e.tenant_id=$1 AND e.status='active'
+       AND jsonb_typeof(e.acl_principals)='array' AND e.acl_principals ?| $2::text[]
+       AND (strpos($3,e.normalized_name)>0 OR e.canonical_name ILIKE ANY($4::text[])
+         OR EXISTS (SELECT 1 FROM entity_aliases a WHERE a.entity_id=e.id
+           AND (strpos($3,a.normalized_alias)>0 OR a.alias ILIKE ANY($4::text[]))))
+     ORDER BY (strpos($3,e.normalized_name)>0) DESC, char_length(e.normalized_name) DESC, e.id`,
+    [principal.tenantId, [...principalSet(principal)], normalizedQuery, patterns],
+  )
+  if (!entities.length) return []
+  const aliases = await query<{ entity_id: string; normalized_alias: string }>(
+    `SELECT a.entity_id,a.normalized_alias FROM entity_aliases a JOIN entities e ON e.id=a.entity_id
+     WHERE e.tenant_id=$1 AND e.id=ANY($2::text[]) ORDER BY a.entity_id,a.id`,
+    [principal.tenantId, entities.map((entity) => entity.id)],
+  )
+  const aliasMap = new Map<string, string[]>()
+  for (const alias of aliases) aliasMap.set(alias.entity_id, [...aliasMap.get(alias.entity_id) ?? [], alias.normalized_alias])
+  return entities.map((entity) => {
+    const names = [entity.canonical_name, entity.normalized_name, ...aliasMap.get(entity.id) ?? []].map(normalize).filter(Boolean)
+    const exact = names.filter((name) => normalizedQuery.includes(name)).sort((a,b) => b.length-a.length)[0]
+    const tokens = new Set(tokenize(entity.canonical_name))
+    const coverage = [...tokens].filter((token) => queryTokens.has(token)).length / Math.max(1,tokens.size)
+    return { entity, score: exact ? 2 + exact.length / Math.max(1, normalizedQuery.length) : coverage }
+  }).filter(({ score }) => score >= 0.6)
+    .sort((a,b) => b.score-a.score || a.entity.id.localeCompare(b.entity.id))
+    .slice(0,5).map(({ entity }) => entity)
 }
 
 export async function factsForEntities(
@@ -219,58 +233,45 @@ export async function factsForEntities(
   allowedChunkIds?: Set<string>,
 ): Promise<Array<Record<string, unknown>>> {
   if (!entities.length) return []
-  const entityIds = entities.map((entity) => entity.id)
   const facts = await query<{
-    id: string
-    subject_id: string
-    object_id: string | null
-    predicate: string
-    object_literal: string | null
-    valid_from: string | null
-    valid_to: string | null
-    confidence: number
-    status: string
-    acl_principals: string[]
+    id: string; subject_id: string; object_id: string | null; predicate: string; object_literal: string | null
+    valid_from: string | null; valid_to: string | null; confidence: number; status: string; acl_principals: string[]
+    subject: EntityRow; object: EntityRow | null
   }>(
-    `SELECT id, subject_id, object_id, predicate, object_literal, valid_from, valid_to,
-            confidence, status, acl_principals
-     FROM facts WHERE tenant_id = $1 AND (subject_id = ANY($2) OR object_id = ANY($2))`,
-    [principal.tenantId, entityIds],
+    `SELECT f.*,to_jsonb(s) AS subject,to_jsonb(o) AS object FROM facts f
+     JOIN entities s ON s.id=f.subject_id AND s.tenant_id=$1
+     LEFT JOIN entities o ON o.id=f.object_id AND o.tenant_id=$1
+     WHERE f.tenant_id=$1 AND (f.subject_id=ANY($2::text[]) OR f.object_id=ANY($2::text[]))
+     ORDER BY f.id`,
+    [principal.tenantId, entities.map((entity) => entity.id)],
   )
-  const output: Array<Record<string, unknown>> = []
-  for (const fact of facts) {
-    if (!canRead(principal, fact.acl_principals)) continue
-    if (!factIsEffective(fact, asOf)) continue
-    const subject = await queryOne<EntityRow>('SELECT * FROM entities WHERE id = $1', [fact.subject_id])
-    const object = fact.object_id
-      ? await queryOne<EntityRow>('SELECT * FROM entities WHERE id = $1', [fact.object_id])
-      : null
-    if (!subject || subject.tenant_id !== principal.tenantId || !canRead(principal, subject.acl_principals)) continue
-    if (fact.object_id && (!object || object.tenant_id !== principal.tenantId || !canRead(principal, object.acl_principals))) continue
-    const evidence = await query<{ chunk_id: string | null }>(
-      `SELECT e.chunk_id FROM fact_evidence e
-       JOIN documents d ON d.id = e.doc_id
-       WHERE e.fact_id = $1 AND d.tenant_id = $2 AND d.status = 'active'`,
-      [fact.id, principal.tenantId],
-    )
-    const chunkIds = evidence.map((row) => row.chunk_id)
-      .filter((id): id is string => Boolean(id) && (!allowedChunkIds || allowedChunkIds.has(id!)))
-    if (!chunkIds.length) continue
-    output.push({
-      fact_id: fact.id,
-      subject_id: fact.subject_id,
-      object_id: fact.object_id,
-      subject: subject?.canonical_name ?? fact.subject_id,
-      predicate: fact.predicate,
-      object: object?.canonical_name ?? fact.object_literal,
-      valid_from: dateValue(fact.valid_from),
-      valid_to: dateValue(fact.valid_to),
-      confidence: fact.confidence,
-      status: fact.status,
-      evidence_chunk_ids: chunkIds,
-    })
+  const visible = facts.filter((fact) => canRead(principal,fact.acl_principals) && factIsEffective(fact,asOf)
+    && canRead(principal,fact.subject.acl_principals)
+    && (!fact.object_id || fact.object && canRead(principal,fact.object.acl_principals)))
+  if (!visible.length) return []
+  const evidence = await query<{ fact_id: string; chunk_id: string }>(
+    `SELECT DISTINCT e.fact_id,c.id AS chunk_id FROM fact_evidence e
+     JOIN chunks c ON c.id=e.chunk_id AND c.doc_id=e.doc_id AND c.tenant_id=$2
+     JOIN documents d ON d.id=e.doc_id AND d.tenant_id=$2 AND d.status='active'
+     JOIN document_versions v ON v.id=c.version_id
+     WHERE e.fact_id=ANY($1::text[]) AND c.is_parent=false
+       AND jsonb_typeof(d.acl_principals)='array' AND d.acl_principals ?| $3::text[]
+       AND jsonb_typeof(c.acl_principals)='array' AND c.acl_principals ?| $3::text[]
+       AND ($4::text IS NOT NULL OR v.version=d.current_version)
+     ORDER BY e.fact_id,c.id`,
+    [visible.map((fact) => fact.id),principal.tenantId,[...principalSet(principal)],asOf],
+  )
+  const chunks = new Map<string,string[]>()
+  for (const row of evidence) {
+    if (allowedChunkIds && !allowedChunkIds.has(row.chunk_id)) continue
+    chunks.set(row.fact_id,[...chunks.get(row.fact_id) ?? [],row.chunk_id])
   }
-  return output
+  return visible.filter((fact) => chunks.has(fact.id)).map((fact) => ({
+    fact_id: fact.id,subject_id: fact.subject_id,object_id: fact.object_id,
+    subject: fact.subject.canonical_name,predicate: fact.predicate,object: fact.object?.canonical_name ?? fact.object_literal,
+    valid_from: dateValue(fact.valid_from),valid_to: dateValue(fact.valid_to),confidence: fact.confidence,status: fact.status,
+    evidence_chunk_ids: chunks.get(fact.id)!,
+  }))
 }
 
 export interface RetrievalOptions {
@@ -311,7 +312,7 @@ export async function retrieve(
       }
     }
   }
-  let candidates = await loadCandidates(principal.tenantId, asOf, [...includeDocIds])
+  let candidates = await loadCandidates(principal, asOf, [...includeDocIds])
   if (options.docIds?.length) {
     const allowed = new Set(options.docIds)
     candidates = candidates.filter((pair) => allowed.has(pair[1].id))

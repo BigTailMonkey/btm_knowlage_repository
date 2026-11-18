@@ -3,7 +3,7 @@ import { extractFactsForDocument } from './learning.js'
 import { extractionProgress } from './extraction-progress.js'
 import { enrichJobId } from './ids.js'
 import { notifyReviewQueueChanged } from './review-events.js'
-import { canRead, principalByUserId, principalSet, type Principal } from './security.js'
+import { canRead, principalSet, type Principal } from './security.js'
 
 interface Promotion {
   review_id: string
@@ -102,6 +102,17 @@ export function processEnrichmentQueue(): Promise<void> {
   worker = (async () => {
     do {
       workRequested = false
+      // Requeue only the historical identity-binding failure; model failures retain their retry policy.
+      await transaction(async (client) => {
+        await client.query(`UPDATE documents d SET enrichment_status='pending',enrichment_error=NULL
+          FROM jobs j WHERE j.type='enrich' AND j.tenant_id=d.tenant_id AND j.payload->>'document_id'=d.id
+            AND j.payload->>'version'=d.current_version::text AND d.status='active' AND j.status='failed'
+            AND j.error='任务主体无法访问当前文档'`)
+        await client.query(`UPDATE jobs j SET status='pending',error=NULL,updated_at=now()
+          FROM documents d WHERE j.type='enrich' AND j.tenant_id=d.tenant_id AND j.payload->>'document_id'=d.id
+            AND j.payload->>'version'=d.current_version::text AND d.status='active' AND j.status='failed'
+            AND j.error='任务主体无法访问当前文档'`)
+      })
       await query(`UPDATE jobs SET status='pending' WHERE type='enrich' AND status='running'
         AND updated_at < now() - interval '2 minutes'`)
       while (!stopping) {
@@ -119,7 +130,7 @@ export function processEnrichmentQueue(): Promise<void> {
 }
 
 async function processEnrichmentJob(job: EnrichmentJob): Promise<void> {
-  const { document_id: docId, version, user_id: userId } = job.payload
+  const { document_id: docId, version } = job.payload
   const heartbeat = setInterval(() => {
     void query("UPDATE jobs SET updated_at=now() WHERE id=$1 AND attempts=$2 AND status='running'", [job.id, job.attempts]).catch(console.error)
   }, 30_000)
@@ -133,8 +144,9 @@ async function processEnrichmentJob(job: EnrichmentJob): Promise<void> {
     )
     if (!doc) status = 'stale'
     else if (!['done', 'empty', 'failed'].includes(doc.enrichment_status)) {
-      const principal = await principalByUserId(job.tenant_id, userId)
-      if (!principal || !canRead(principal, doc.acl_principals)) throw new Error('任务主体无法访问当前文档')
+      // This persisted task processes one tenant/document/version, not a user's live session.
+      // ACLs on every derived record still come from that document.
+      const principal: Principal = { tenantId: job.tenant_id, userId: 'system:enrichment', name: '文档抽取任务', role: 'service', groups: [], token: '' }
       const result = await extractFactsForDocument(principal, docId, version)
       if (result.status === 'stale') status = 'stale'
       else if (result.error) throw new Error(String(result.error))

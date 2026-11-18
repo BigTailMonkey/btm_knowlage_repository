@@ -1,3 +1,5 @@
+import { fetchPublicUrl } from '../util/public-url.js'
+import { documentEmbeddingInput } from './embedding-input.js'
 import { createHash } from 'node:crypto'
 
 import { settings } from '../config.js'
@@ -176,8 +178,9 @@ async function existingDocument(principal: Principal, options: IngestOptions): P
   if (!options.uri) return null
   const exact = await queryOne<DocumentRow>(
     `SELECT * FROM documents WHERE tenant_id = $1 AND uri = $2 AND status = 'active'
+       AND ($3::boolean = false OR created_by = $4)
      ORDER BY updated_at DESC LIMIT 1`,
-    [principal.tenantId, options.uri],
+    [principal.tenantId, options.uri, options.uri.startsWith('upload:'), principal.userId],
   )
   if (exact) {
     if (!canRead(principal, exact.acl_principals)) throw Object.assign(new Error('目标文档不存在或无权访问'), { statusCode: 404 })
@@ -188,9 +191,9 @@ async function existingDocument(principal: Principal, options: IngestOptions): P
   // matching document without deleting or merging any older document records.
   const candidates = await query<DocumentRow>(
     `SELECT * FROM documents WHERE tenant_id = $1 AND status = 'active'
-       AND left(uri, char_length($2::text) + 1) = $2::text || ':'
+       AND created_by = $3 AND left(uri, char_length($2::text) + 1) = $2::text || ':'
      ORDER BY updated_at DESC`,
-    [principal.tenantId, options.uri],
+    [principal.tenantId, options.uri, principal.userId],
   )
   return candidates.find((document) =>
     /^[a-f0-9]{16}$/i.test(document.uri!.slice(options.uri!.length + 1)) && canRead(principal, document.acl_principals),
@@ -209,8 +212,8 @@ async function ingestParsedVersion(
   const existing = await existingDocument(principal, options)
   // Source identity takes precedence over content deduplication: reverting an
   // existing document to old content is still a new version of that document.
-  const findReadableDuplicate = async (client: DbClient) => (await client.query<{ id: string }>(
-    `SELECT id FROM documents WHERE tenant_id = $1 AND content_hash = $2 AND status = 'active'
+  const findReadableDuplicate = async (client: DbClient) => (await client.query<DocumentRow>(
+    `SELECT * FROM documents WHERE tenant_id = $1 AND content_hash = $2 AND status = 'active'
        AND jsonb_typeof(acl_principals) = 'array' AND acl_principals ?| $3::text[] LIMIT 1`,
     [principal.tenantId, contentHash, [...principalSet(principal)]],
   ))[0]
@@ -218,10 +221,7 @@ async function ingestParsedVersion(
   if (options.duplicatePolicy === 'ask' && await findReadableDuplicate({ query })) return duplicatePrompt
   const duplicate = options.duplicatePolicy ? null : existing
     ? existing.content_hash === contentHash ? existing : null
-    : options.uri ? null : await queryOne<DocumentRow>(
-        `SELECT * FROM documents WHERE tenant_id = $1 AND content_hash = $2 AND status = 'active'`,
-        [principal.tenantId, contentHash],
-      )
+    : options.uri ? null : await findReadableDuplicate({ query })
   if (duplicate) {
     return {
       document_id: duplicate.id, duplicate: true, version: duplicate.current_version,
@@ -232,7 +232,7 @@ async function ingestParsedVersion(
   const chunks = chunkBlocks(parsed.blocks)
   options.progress?.('切分', 45)
   const embeddingInputs = chunks.filter((chunk) => !chunk.isParent).map((chunk) => ({
-    id: chunk.id, text: `标题：${parsed.title}｜章节：${chunk.headingPath.join(' / ')}\n${chunk.text}`,
+    id: chunk.id, text: documentEmbeddingInput(parsed.title, chunk.headingPath, chunk.text),
   }))
   // Prepare all derived data before moving current_version. A failed vector
   // request must leave the last complete document version readable.
@@ -281,10 +281,10 @@ async function ingestParsedVersion(
       await client.query(
         `INSERT INTO documents
            (id, tenant_id, title, source_type, uri, content_hash, acl_principals, acl_version,
-            status, current_version, quality_score, enrichment_status, summary)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, 1, 'active', 1, $8, 'pending', $9)`,
+            status, current_version, quality_score, enrichment_status, summary, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, 1, 'active', 1, $8, 'pending', $9, $10)`,
         [documentId, principal.tenantId, parsed.title, options.sourceType, options.uri ?? null,
-          contentHash, JSON.stringify(acl), parsed.quality, fullText.slice(0, 240)],
+          contentHash, JSON.stringify(acl), parsed.quality, fullText.slice(0, 240), principal.userId],
       )
     }
     await client.query(
@@ -311,7 +311,7 @@ async function ingestParsedVersion(
       await client.query(
         `INSERT INTO jobs (id, tenant_id, type, status, input_hash, payload)
          VALUES ($1, $2, 'ingest', 'done', $3, $4::jsonb)`,
-        [jobId, principal.tenantId, contentHash, JSON.stringify({ doc_id: documentId, version: versionNumber, parser: parsed.parser })],
+        [jobId, principal.tenantId, contentHash, JSON.stringify({ doc_id: documentId, version: versionNumber, parser: parsed.parser, user_id: principal.userId })],
       )
     }
     return result
@@ -516,21 +516,16 @@ async function runIngestJob(
 async function fetchUrl(url: string, title: string | null): Promise<{
   parsed: ParsedDocument; sourceType: string; pdf?: { filename: string; bytes: Buffer }
 }> {
-  if (!/^https?:\/\//i.test(url)) throw new Error('仅支持 http/https URL')
-  const response = await fetch(url, {
-    headers: { 'user-agent': 'KnoWeave/0.1' },
-    signal: AbortSignal.timeout(20_000),
-    redirect: 'follow',
-  })
-  if (!response.ok) throw new Error(`抓取失败：HTTP ${response.status}`)
-  const contentType = response.headers.get('content-type') ?? ''
+  const response = await fetchPublicUrl(url)
+  if (response.status < 200 || response.status >= 300) throw new Error(`抓取失败：HTTP ${response.status}`)
+  const contentType = response.headers['content-type'] ?? ''
   const pathName = new URL(response.url || url).pathname.split('/').at(-1) || ''
   if (contentType.includes('pdf') || pathName.toLowerCase().endsWith('.pdf')) {
-    const bytes = Buffer.from(await response.arrayBuffer())
+    const bytes = response.body
     const filename = pathName.toLowerCase().endsWith('.pdf') ? pathName : `${pathName || 'document'}.pdf`
     return { parsed: await parseBytes(filename, bytes, title), sourceType: 'pdf', pdf: { filename, bytes } }
   }
-  return { parsed: parseHtml(cleanParsedText(await response.text()), title || url), sourceType: 'web' }
+  return { parsed: parseHtml(cleanParsedText(response.body.toString('utf8')), title || url), sourceType: 'web' }
 }
 
 export const ingestionConfig = { dataDir: settings.dataDir }

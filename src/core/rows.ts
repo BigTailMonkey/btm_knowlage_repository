@@ -1,4 +1,5 @@
 export interface DocumentRow {
+  created_by?: string | null
   id: string
   tenant_id: string
   title: string

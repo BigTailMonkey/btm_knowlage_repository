@@ -24,7 +24,7 @@ export class ParseQualityError extends Error {
 }
 
 export function cleanParsedText(text: string): string {
-  return text.replaceAll('\u0000', '').replace(/[\uD800-\uDFFF]/gu, '\uFFFD')
+  return text.replace(/[\u2e80-\u2fdf]/gu, (character) => character.normalize('NFKC')).replaceAll('\u0000', '').replace(/[\uD800-\uDFFF]/gu, '\uFFFD')
 }
 
 function cleanParserOutput(value: unknown): unknown {

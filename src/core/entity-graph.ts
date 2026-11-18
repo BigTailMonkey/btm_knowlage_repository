@@ -88,6 +88,7 @@ function attributeOf(fact: FactRow): GraphAttribute {
  * 不再造 `lit_` 假节点。每条事实按谓语归一出 `relation`，供边标签与图例使用。
  */
 export async function buildEntityGraph(principal: Principal, options: GraphOptions = {}): Promise<EntityGraph> {
+  if (options.limit !== undefined && !Number.isSafeInteger(options.limit)) throw Object.assign(new Error('limit 必须为整数'), { statusCode: 400 })
   const limit = Math.min(300, Math.max(10, options.limit ?? 80))
   const overview = options.overview === true
   const focusId = overview ? null : options.focus ?? null

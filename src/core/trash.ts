@@ -1,8 +1,9 @@
+import { documentEmbeddingInput } from './embedding-input.js'
 import { embedder, type Embedding } from '../adapters/embeddings/index.js'
 import { settings } from '../config.js'
 import { query, queryOne, transaction, type DbClient } from '../db/index.js'
 import { chunkBlocks, type ParsedBlock } from './chunking.js'
-import { removeContinuationLinks } from './continuation.js'
+import { lockContinuationChain, removeContinuationLinks } from './continuation.js'
 import { enqueueEnrichment } from './enrichment-queue.js'
 import { newId } from './ids.js'
 import { insertChunkRows } from './ingestion.js'
@@ -67,8 +68,8 @@ export async function trashDocument(principal: Principal, docId: string): Promis
          AND payload->>'document_id' = $2`,
       [principal.tenantId, docId],
     )
-    const facts = await client.query<{ id: string }>(
-      `SELECT id FROM facts WHERE tenant_id = $1 AND
+    const facts = await client.query<{ id: string; subject_id: string; object_id: string | null }>(
+      `SELECT id, subject_id, object_id FROM facts WHERE tenant_id = $1 AND
          (source_doc_id = $2 OR id IN (SELECT fact_id FROM fact_evidence WHERE doc_id = $2))`,
       [principal.tenantId, docId],
     )
@@ -164,7 +165,7 @@ export async function restoreDocument(principal: Principal, docId: string): Prom
   const chunks = chunkBlocks(parsedBlocks)
   const embeddingInputs = chunks.filter((chunk) => !chunk.isParent).map((chunk) => ({
     id: chunk.id,
-    text: `标题：${document.title}｜章节：${chunk.headingPath.join(' / ')}\n${chunk.text}`,
+    text: documentEmbeddingInput(document.title, chunk.headingPath, chunk.text),
   }))
   const vectors = await embedder.embedMany(embeddingInputs.map((item) => item.text))
   if (vectors.length !== embeddingInputs.length || vectors.some((vector) => !vector?.dense.length)) {
@@ -240,13 +241,14 @@ async function purgeTrashedDocument(tenantId: string, docId: string, by: string)
   let removedJobs = 0
   let removedEntities = 0
   await transaction(async (client) => {
+    await lockContinuationChain(client, tenantId)
     const document = await client.query<DocumentRow>(
       "SELECT * FROM documents WHERE id = $1 AND tenant_id = $2 AND status = 'tombstoned' FOR UPDATE",
       [docId, tenantId],
     )
     if (!document.length) throw Object.assign(new Error('文档不在回收站'), { statusCode: 409 })
-    const facts = await client.query<{ id: string }>(
-      `SELECT id FROM facts WHERE tenant_id = $1 AND
+    const facts = await client.query<{ id: string; subject_id: string; object_id: string | null }>(
+      `SELECT id, subject_id, object_id FROM facts WHERE tenant_id = $1 AND
          (source_doc_id = $2 OR id IN (SELECT fact_id FROM fact_evidence WHERE doc_id = $2))`,
       [tenantId, docId],
     )
@@ -271,7 +273,14 @@ async function purgeTrashedDocument(tenantId: string, docId: string, by: string)
     )
     removedVersions = versions.length
     await client.query('DELETE FROM citations WHERE doc_id = $1', [docId])
-    await removeContinuationLinks(client, tenantId, docId)
+    const edges = await client.query<{ id: string; predecessor_doc_id: string; successor_doc_id: string }>(
+      'SELECT id,predecessor_doc_id,successor_doc_id FROM document_continuations WHERE tenant_id=$1 AND (predecessor_doc_id=$2 OR successor_doc_id=$2) FOR UPDATE', [tenantId, docId])
+    const incoming = edges.find((edge) => edge.successor_doc_id === docId)
+    const outgoing = edges.find((edge) => edge.predecessor_doc_id === docId)
+    if (incoming && outgoing) {
+      await client.query('DELETE FROM document_continuations WHERE id=$1', [incoming.id])
+      await client.query('UPDATE document_continuations SET predecessor_doc_id=$1 WHERE id=$2', [incoming.predecessor_doc_id, outgoing.id])
+    } else await removeContinuationLinks(client, tenantId, docId)
     await client.query('DELETE FROM documents WHERE id = $1', [docId])
     // 原始文件字节、抽取任务与审计记录都在 jobs 里，一并清除。
     const jobs = await client.query<{ id: string }>(
@@ -295,9 +304,9 @@ async function purgeTrashedDocument(tenantId: string, docId: string, by: string)
     // 只被这篇文档引入、如今没有任何事实引用的实体属于残留。
     const orphans = await client.query<{ id: string }>(
       `SELECT e.id FROM entities e WHERE e.tenant_id = $1 AND e.status = 'active'
-         AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.tenant_id = e.tenant_id
+         AND e.id=ANY($2::text[]) AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.tenant_id = e.tenant_id
            AND (f.subject_id = e.id OR f.object_id = e.id))`,
-      [tenantId],
+      [tenantId, [...new Set(facts.flatMap((fact) => [fact.subject_id, fact.object_id].filter(Boolean)))]],
     )
     if (orphans.length) {
       const ids = orphans.map((row) => row.id)

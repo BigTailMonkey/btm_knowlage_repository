@@ -23,7 +23,7 @@ export interface Embedding {
 export class EmbeddingError extends Error {}
 
 export function tokenize(text: string): string[] {
-  const source = (text ?? '').toLowerCase()
+  const source = (text ?? '').normalize('NFKC').toLowerCase()
   const tokens: string[] = []
   for (const run of source.match(CJK) ?? []) {
     if (run.length === 1) {
@@ -42,7 +42,7 @@ export function tokenize(text: string): string[] {
   return tokens
 }
 
-export function sparseVector(tokens: string[], limit = 96): Record<string, number> {
+export function sparseVector(tokens: string[], limit = Number.POSITIVE_INFINITY): Record<string, number> {
   const counts = new Map<string, number>()
   for (const token of tokens) counts.set(token, (counts.get(token) ?? 0) + 1)
   return Object.fromEntries(
@@ -163,7 +163,7 @@ export function createEmbedder(kind: 'ark' | 'openai' | 'hybrid'): Embedder {
   let dim = settings.embeddingDim
   const url = `${settings.embeddingBaseUrl.replace(/\/$/, '')}${settings.embeddingPath}`
 
-  async function request(text: string): Promise<number[]> {
+  async function request(text: string, queryInput: boolean): Promise<number[]> {
     if (!settings.embeddingBaseUrl) throw new EmbeddingError('未配置 embedding.base_url，无法调用向量服务')
     if (!settings.embeddingModel) throw new EmbeddingError('未配置 embedding.model')
     const payload: Record<string, unknown> = {
@@ -173,7 +173,7 @@ export function createEmbedder(kind: 'ark' | 'openai' | 'hybrid'): Embedder {
     }
     if (kind === 'ark') {
       if (dim) payload.dimensions = dim
-      if (settings.embeddingInstructions) payload.instructions = settings.embeddingInstructions
+      if (queryInput && settings.embeddingInstructions) payload.instructions = settings.embeddingInstructions
     }
     const body = await postJson(url, payload)
     const data = kind === 'ark'
@@ -188,12 +188,12 @@ export function createEmbedder(kind: 'ark' | 'openai' | 'hybrid'): Embedder {
     return vector.map(Number)
   }
 
-  async function embedMany(texts: string[]): Promise<Embedding[]> {
+  async function embedMany(texts: string[], queryInput = false): Promise<Embedding[]> {
     if (!texts.length) return []
     const vectors: number[][] = []
     const learnedSparse: Record<string,number>[] = []
     if (kind === 'ark') {
-      for (const text of texts) vectors.push(await request(text))
+      for (const text of texts) vectors.push(await request(text, queryInput))
     } else {
       const size = Math.max(1, settings.embeddingBatchSize)
       for (let start = 0; start < texts.length; start += size) {
@@ -240,7 +240,7 @@ export function createEmbedder(kind: 'ark' | 'openai' | 'hybrid'): Embedder {
     },
     embed: async (text) => (await embedMany([text]))[0]!,
     embedMany,
-    embedQuery: async (text) => (await embedMany([text]))[0]!,
+    embedQuery: async (text) => (await embedMany([text], true))[0]!,
   }
 }
 

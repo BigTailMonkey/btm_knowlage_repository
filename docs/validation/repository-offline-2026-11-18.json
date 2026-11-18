@@ -1,0 +1,1277 @@
+{
+  "corpus": "20 repository source excerpts; 50 explicit excerpt/citation questions",
+  "corpus_version": 2,
+  "live": false,
+  "database": "knowweave_eval_mwm4tjd3_7d0110e2",
+  "run_id": "er_ba7b4200b8a433962ba8",
+  "metrics": {
+    "cases": 50,
+    "mode": "retrieval",
+    "recall_at_10": 1,
+    "doc_recall": 1,
+    "context_precision": 1,
+    "citation_accuracy": null,
+    "rule_groundedness": null,
+    "refusal_accuracy": 1,
+    "keyword_recall": 1,
+    "pass_rate": 1,
+    "p95_latency_ms": 18,
+    "model_calls": 0,
+    "model_successes": 0,
+    "generated_answers": 0,
+    "failed_cases": 0,
+    "refusals": 0
+  },
+  "results": [
+    {
+      "case_id": "repo-01",
+      "error": null,
+      "question": "请从《src/core/ingestion.ts》的已提供片段中，摘录包含 `submitIngest` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_keywords": [
+        "submitIngest"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 22,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-02",
+      "error": null,
+      "question": "请从《src/core/ingestion.ts》的已提供片段中，摘录包含 `processIngestQueue` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_keywords": [
+        "processIngestQueue"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 16,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-03",
+      "error": null,
+      "question": "请从《src/core/ingestion.ts》的已提供片段中，摘录包含 `retryIngestJob` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_docs": [
+        "src/core/ingestion.ts"
+      ],
+      "matched_keywords": [
+        "retryIngestJob"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-04",
+      "error": null,
+      "question": "请从《src/core/chunking.ts》的已提供片段中，摘录包含 `chunkBlocks` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_keywords": [
+        "chunkBlocks"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 16,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-05",
+      "error": null,
+      "question": "请从《src/core/chunking.ts》的已提供片段中，摘录包含 `estimateTokens` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_keywords": [
+        "estimateTokens"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 16,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-06",
+      "error": null,
+      "question": "请从《src/core/chunking.ts》的已提供片段中，摘录包含 `MAX_TOKENS` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_docs": [
+        "src/core/chunking.ts"
+      ],
+      "matched_keywords": [
+        "MAX_TOKENS"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 16,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-07",
+      "error": null,
+      "question": "请从《src/adapters/parsing/index.ts》的已提供片段中，摘录包含 `parseBytes` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_keywords": [
+        "parseBytes"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 16,
+      "top_score": 0.2142,
+      "pass": true
+    },
+    {
+      "case_id": "repo-08",
+      "error": null,
+      "question": "请从《src/adapters/parsing/index.ts》的已提供片段中，摘录包含 `parseMarkdown` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_keywords": [
+        "parseMarkdown"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.2142,
+      "pass": true
+    },
+    {
+      "case_id": "repo-09",
+      "error": null,
+      "question": "请从《src/adapters/parsing/index.ts》的已提供片段中，摘录包含 `normalizeCjkSpaces` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/parsing/index.ts"
+      ],
+      "matched_keywords": [
+        "normalizeCjkSpaces"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.2183,
+      "pass": true
+    },
+    {
+      "case_id": "repo-10",
+      "error": null,
+      "question": "请从《src/core/retrieval.ts》的已提供片段中，摘录包含 `retrieve` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_keywords": [
+        "retrieve"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 16,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-11",
+      "error": null,
+      "question": "请从《src/core/retrieval.ts》的已提供片段中，摘录包含 `factIsEffective` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_keywords": [
+        "factIsEffective"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-12",
+      "error": null,
+      "question": "请从《src/core/retrieval.ts》的已提供片段中，摘录包含 `normalizeAsOf` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_docs": [
+        "src/core/retrieval.ts"
+      ],
+      "matched_keywords": [
+        "normalizeAsOf"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 16,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-13",
+      "error": null,
+      "question": "请从《src/core/answering.ts》的已提供片段中，摘录包含 `ask` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_keywords": [
+        "ask"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 18,
+      "top_score": 0.2777,
+      "pass": true
+    },
+    {
+      "case_id": "repo-14",
+      "error": null,
+      "question": "请从《src/core/answering.ts》的已提供片段中，摘录包含 `ANSWER_SYSTEM` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_keywords": [
+        "ANSWER_SYSTEM"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 17,
+      "top_score": 0.282,
+      "pass": true
+    },
+    {
+      "case_id": "repo-15",
+      "error": null,
+      "question": "请从《src/core/answering.ts》的已提供片段中，摘录包含 `reflectQueries` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_docs": [
+        "src/core/answering.ts"
+      ],
+      "matched_keywords": [
+        "reflectQueries"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 14,
+      "top_score": 0.2777,
+      "pass": true
+    },
+    {
+      "case_id": "repo-16",
+      "error": null,
+      "question": "请从《src/core/learning.ts》的已提供片段中，摘录包含 `getOrCreateEntity` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_keywords": [
+        "getOrCreateEntity"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 16,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-17",
+      "error": null,
+      "question": "请从《src/core/learning.ts》的已提供片段中，摘录包含 `extractFactsForDocument` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_keywords": [
+        "extractFactsForDocument"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.211,
+      "pass": true
+    },
+    {
+      "case_id": "repo-18",
+      "error": null,
+      "question": "请从《src/core/learning.ts》的已提供片段中，摘录包含 `runReflection` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_docs": [
+        "src/core/learning.ts"
+      ],
+      "matched_keywords": [
+        "runReflection"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 16,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-19",
+      "error": null,
+      "question": "请从《src/db/index.ts》的已提供片段中，摘录包含 `initSchema` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_keywords": [
+        "initSchema"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.2144,
+      "pass": true
+    },
+    {
+      "case_id": "repo-20",
+      "error": null,
+      "question": "请从《src/db/index.ts》的已提供片段中，摘录包含 `seedIfEmpty` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_keywords": [
+        "seedIfEmpty"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-21",
+      "error": null,
+      "question": "请从《src/db/index.ts》的已提供片段中，摘录包含 `closePool` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_docs": [
+        "src/db/index.ts"
+      ],
+      "matched_keywords": [
+        "closePool"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.211,
+      "pass": true
+    },
+    {
+      "case_id": "repo-22",
+      "error": null,
+      "question": "请从《src/core/security.ts》的已提供片段中，摘录包含 `canRead` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_keywords": [
+        "canRead"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.211,
+      "pass": true
+    },
+    {
+      "case_id": "repo-23",
+      "error": null,
+      "question": "请从《src/core/security.ts》的已提供片段中，摘录包含 `requireEditor` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_keywords": [
+        "requireEditor"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 16,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-24",
+      "error": null,
+      "question": "请从《src/core/security.ts》的已提供片段中，摘录包含 `requireAdmin` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_docs": [
+        "src/core/security.ts"
+      ],
+      "matched_keywords": [
+        "requireAdmin"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 16,
+      "top_score": 0.211,
+      "pass": true
+    },
+    {
+      "case_id": "repo-25",
+      "error": null,
+      "question": "请从《src/core/tracing.ts》的已提供片段中，摘录包含 `TraceRecorder` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_keywords": [
+        "TraceRecorder"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-26",
+      "error": null,
+      "question": "请从《src/core/tracing.ts》的已提供片段中，摘录包含 `tokenPrice` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_keywords": [
+        "tokenPrice"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-27",
+      "error": null,
+      "question": "请从《src/core/tracing.ts》的已提供片段中，摘录包含 `recordUsage` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_docs": [
+        "src/core/tracing.ts"
+      ],
+      "matched_keywords": [
+        "recordUsage"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 16,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-28",
+      "error": null,
+      "question": "请从《src/core/ids.ts》的已提供片段中，摘录包含 `newId` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_keywords": [
+        "newId"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.211,
+      "pass": true
+    },
+    {
+      "case_id": "repo-29",
+      "error": null,
+      "question": "请从《src/core/ids.ts》的已提供片段中，摘录包含 `todayLocal` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_keywords": [
+        "todayLocal"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 18,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-30",
+      "error": null,
+      "question": "请从《src/core/ids.ts》的已提供片段中，摘录包含 `iso` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_docs": [
+        "src/core/ids.ts"
+      ],
+      "matched_keywords": [
+        "iso"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 16,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-31",
+      "error": null,
+      "question": "请从《src/core/grounding.ts》的已提供片段中，摘录包含 `validateGrounding` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/grounding.ts"
+      ],
+      "matched_docs": [
+        "src/core/grounding.ts"
+      ],
+      "matched_keywords": [
+        "validateGrounding"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-32",
+      "error": null,
+      "question": "请从《src/core/grounding.ts》的已提供片段中，摘录包含 `claimSentences` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/grounding.ts"
+      ],
+      "matched_docs": [
+        "src/core/grounding.ts"
+      ],
+      "matched_keywords": [
+        "claimSentences"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-33",
+      "error": null,
+      "question": "请从《src/core/consolidation.ts》的已提供片段中，摘录包含 `consolidateKnowledge` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/consolidation.ts"
+      ],
+      "matched_docs": [
+        "src/core/consolidation.ts"
+      ],
+      "matched_keywords": [
+        "consolidateKnowledge"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-34",
+      "error": null,
+      "question": "请从《src/core/consolidation.ts》的已提供片段中，摘录包含 `SupportedFact` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/consolidation.ts"
+      ],
+      "matched_docs": [
+        "src/core/consolidation.ts"
+      ],
+      "matched_keywords": [
+        "SupportedFact"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 13,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-35",
+      "error": null,
+      "question": "请从《src/core/entity-resolution.ts》的已提供片段中，摘录包含 `resolveSemanticEntity` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/entity-resolution.ts"
+      ],
+      "matched_docs": [
+        "src/core/entity-resolution.ts"
+      ],
+      "matched_keywords": [
+        "resolveSemanticEntity"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-36",
+      "error": null,
+      "question": "请从《src/core/entity-resolution.ts》的已提供片段中，摘录包含 `candidates` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/entity-resolution.ts"
+      ],
+      "matched_docs": [
+        "src/core/entity-resolution.ts"
+      ],
+      "matched_keywords": [
+        "candidates"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-37",
+      "error": null,
+      "question": "请从《src/core/evaluation.ts》的已提供片段中，摘录包含 `runEvaluation` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/evaluation.ts"
+      ],
+      "matched_docs": [
+        "src/core/evaluation.ts"
+      ],
+      "matched_keywords": [
+        "runEvaluation"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 14,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-38",
+      "error": null,
+      "question": "请从《src/core/evaluation.ts》的已提供片段中，摘录包含 `EvaluationCase` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/core/evaluation.ts"
+      ],
+      "matched_docs": [
+        "src/core/evaluation.ts"
+      ],
+      "matched_keywords": [
+        "EvaluationCase"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-39",
+      "error": null,
+      "question": "请从《src/app/routes/documents.ts》的已提供片段中，摘录包含 `documentRoutes` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/routes/documents.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/documents.ts"
+      ],
+      "matched_keywords": [
+        "documentRoutes"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.215,
+      "pass": true
+    },
+    {
+      "case_id": "repo-40",
+      "error": null,
+      "question": "请从《src/app/routes/documents.ts》的已提供片段中，摘录包含 `visibleDocument` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/routes/documents.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/documents.ts"
+      ],
+      "matched_keywords": [
+        "visibleDocument"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.2117,
+      "pass": true
+    },
+    {
+      "case_id": "repo-41",
+      "error": null,
+      "question": "请从《src/app/routes/ask.ts》的已提供片段中，摘录包含 `askRoutes` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/routes/ask.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/ask.ts"
+      ],
+      "matched_keywords": [
+        "askRoutes"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 14,
+      "top_score": 0.2117,
+      "pass": true
+    },
+    {
+      "case_id": "repo-42",
+      "error": null,
+      "question": "请从《src/app/routes/ask.ts》的已提供片段中，摘录包含 `transaction` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/routes/ask.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/ask.ts"
+      ],
+      "matched_keywords": [
+        "transaction"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 16,
+      "top_score": 0.2117,
+      "pass": true
+    },
+    {
+      "case_id": "repo-43",
+      "error": null,
+      "question": "请从《src/app/routes/mcp.ts》的已提供片段中，摘录包含 `mcpRoutes` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/routes/mcp.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/mcp.ts"
+      ],
+      "matched_keywords": [
+        "mcpRoutes"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.215,
+      "pass": true
+    },
+    {
+      "case_id": "repo-44",
+      "error": null,
+      "question": "请从《src/app/routes/mcp.ts》的已提供片段中，摘录包含 `TOOLS` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/routes/mcp.ts"
+      ],
+      "matched_docs": [
+        "src/app/routes/mcp.ts"
+      ],
+      "matched_keywords": [
+        "TOOLS"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 14,
+      "top_score": 0.2108,
+      "pass": true
+    },
+    {
+      "case_id": "repo-45",
+      "error": null,
+      "question": "请从《src/app/server.ts》的已提供片段中，摘录包含 `createServer` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/server.ts"
+      ],
+      "matched_docs": [
+        "src/app/server.ts"
+      ],
+      "matched_keywords": [
+        "createServer"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.211,
+      "pass": true
+    },
+    {
+      "case_id": "repo-46",
+      "error": null,
+      "question": "请从《src/app/server.ts》的已提供片段中，摘录包含 `authenticate` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/app/server.ts"
+      ],
+      "matched_docs": [
+        "src/app/server.ts"
+      ],
+      "matched_keywords": [
+        "authenticate"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 16,
+      "top_score": 0.2076,
+      "pass": true
+    },
+    {
+      "case_id": "repo-47",
+      "error": null,
+      "question": "请从《src/adapters/embeddings/index.ts》的已提供片段中，摘录包含 `tokenize` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/embeddings/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/embeddings/index.ts"
+      ],
+      "matched_keywords": [
+        "tokenize"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.2083,
+      "pass": true
+    },
+    {
+      "case_id": "repo-48",
+      "error": null,
+      "question": "请从《src/adapters/embeddings/index.ts》的已提供片段中，摘录包含 `sparseVector` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/embeddings/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/embeddings/index.ts"
+      ],
+      "matched_keywords": [
+        "sparseVector"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 15,
+      "top_score": 0.2083,
+      "pass": true
+    },
+    {
+      "case_id": "repo-49",
+      "error": null,
+      "question": "请从《src/adapters/reranking/index.ts》的已提供片段中，摘录包含 `semanticRerank` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/reranking/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/reranking/index.ts"
+      ],
+      "matched_keywords": [
+        "semanticRerank"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 16,
+      "top_score": 0.2108,
+      "pass": true
+    },
+    {
+      "case_id": "repo-50",
+      "error": null,
+      "question": "请从《src/adapters/reranking/index.ts》的已提供片段中，摘录包含 `relevance_score` 的原文并标注引用。只回答片段可确认的内容，无需解释完整实现。",
+      "expected_docs": [
+        "src/adapters/reranking/index.ts"
+      ],
+      "matched_docs": [
+        "src/adapters/reranking/index.ts"
+      ],
+      "matched_keywords": [
+        "relevance_score"
+      ],
+      "refused": false,
+      "strategy": null,
+      "model_called": false,
+      "model_succeeded": false,
+      "doc_recall": 1,
+      "context_precision": 1,
+      "citation_accuracy": null,
+      "rule_groundedness": null,
+      "latency_ms": 16,
+      "top_score": 0.215,
+      "pass": true
+    }
+  ]
+}

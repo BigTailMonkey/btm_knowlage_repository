@@ -1,3 +1,4 @@
+import { integerParam } from '../../util/input.js'
 import { FastifyInstance } from 'fastify'
 
 import { authenticate, currentPrincipal } from '../server.js'
@@ -65,7 +66,7 @@ export async function askRoutes(app: FastifyInstance): Promise<void> {
   app.get('/conversations', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
     const params = request.query as { limit?: string; archived?: string }
-    const limit = Math.min(100, Math.max(1, Number(params.limit ?? 30)))
+    const limit = integerParam(params.limit, 'limit', 30, 1, 100)
     const archived = params.archived === '1' || params.archived === 'true'
     const conversations = await query<{ id: string; title: string; created_at: string; last_activity_at: string; archived_at: string | null }>(
       `SELECT c.id, c.title, c.created_at, c.archived_at,

@@ -1,3 +1,4 @@
+import { integerParam } from '../../util/input.js'
 import { FastifyInstance } from 'fastify'
 
 import { authenticate, currentPrincipal } from '../server.js'
@@ -7,7 +8,7 @@ import { chunkDict, documentDict, entityDict, factDict } from '../../core/serial
 import { decideIngestDuplicate, ingestParsed, savedIngestJobs, retryIngestJob, submitIngest } from '../../core/ingestion.js'
 import { parseBytes, parseTextContent } from '../../adapters/parsing/index.js'
 import { convertWord } from '../../adapters/parsing/word.js'
-import { requireEditor, canRead } from '../../core/security.js'
+import { requireEditor, canRead, principalSet } from '../../core/security.js'
 import { isEntityName } from '../../core/learning.js'
 import { enrichmentTasks, processEnrichmentQueue, requestEnrichment } from '../../core/enrichment-queue.js'
 import { DISPLAYABLE_FACT } from '../../core/fact-visibility.js'
@@ -195,11 +196,12 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
   app.get('/', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
     const params = request.query as Record<string, string | undefined>
-    const status = params.status ?? 'active'
-    const limit = Math.min(200, Math.max(1, Number(params.limit ?? 50)))
-    const offset = Math.max(0, Number(params.offset ?? 0))
-    const where = ['tenant_id = $1']
-    const values: unknown[] = [principal.tenantId]
+    const status = params.status || 'active'
+    if (!['active', 'tombstoned'].includes(status)) throw Object.assign(new Error('status 必须为 active 或 tombstoned'), { statusCode: 400 })
+    const limit = integerParam(params.limit, 'limit', 50, 1, 200)
+    const offset = integerParam(params.offset, 'offset', 0, 0, Number.MAX_SAFE_INTEGER)
+    const where = ['tenant_id = $1', `jsonb_typeof(acl_principals) = 'array' AND acl_principals ?| $2::text[]`]
+    const values: unknown[] = [principal.tenantId, [...principalSet(principal)]]
     if (status) {
       values.push(status)
       where.push(`status = $${values.length}`)
@@ -216,9 +218,10 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
       `SELECT * FROM documents WHERE ${where.join(' AND ')} ORDER BY updated_at DESC LIMIT ${limit} OFFSET ${offset}`,
       values,
     )
+    const count = await queryOne<{ total: string }>(`SELECT count(*)::text AS total FROM documents WHERE ${where.join(' AND ')}`, values)
     const visible = documents.filter((document) => canRead(principal, document.acl_principals))
     return {
-      total: visible.length,
+      total: Number(count?.total ?? 0),
       limit,
       offset,
       items: await Promise.all(visible.map((document) => documentDict(document))),

@@ -1,3 +1,8 @@
+import dns from 'node:dns/promises'
+import https from 'node:https'
+import http from 'node:http'
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { testWorkspace } from './helpers.js'
@@ -139,8 +144,22 @@ test('PDFs imported by URL preserve each version of the fetched file', async (t)
   const first = '%PDF-1.7\nFirst published PDF document.\n%%EOF\n'
   const second = '%PDF-1.7\nSecond published PDF document.\n%%EOF\n'
   let body = first
+  t.mock.method(dns, 'lookup', async () => [{ address: '93.184.216.34', family: 4 }])
+  t.mock.method(https, 'request', ((target: URL, options: https.RequestOptions, callback: (stream: http.IncomingMessage) => void) => {
+    assert.equal(target.href, url)
+    assert.ok(options.lookup, 'URL downloads must pin the validated DNS address')
+    const request = new EventEmitter() as http.ClientRequest
+    request.end = (() => {
+      const stream = new PassThrough() as unknown as http.IncomingMessage
+      stream.statusCode = 200
+      stream.headers = { 'content-type': 'application/pdf' }
+      callback(stream)
+      ;(stream as unknown as PassThrough).end(Buffer.from(body))
+      return request
+    }) as typeof request.end
+    return request
+  }) as typeof https.request)
   t.mock.method(globalThis, 'fetch', async (target: string, options?: RequestInit) => {
-    if (target === url) return new Response(body)
     if (target.endsWith('/health')) return Response.json({ status: 'ok' })
     assert.ok(target.endsWith('/parse'))
     const input = JSON.parse(String(options?.body))

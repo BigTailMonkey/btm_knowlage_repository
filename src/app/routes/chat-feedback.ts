@@ -1,3 +1,4 @@
+import { integerParam } from '../../util/input.js'
 import { FastifyInstance } from 'fastify'
 
 import { authenticate, currentPrincipal } from '../server.js'
@@ -57,7 +58,7 @@ export async function chatFeedbackRoutes(app: FastifyInstance): Promise<void> {
   app.get('/chat-feedback', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
     const params = request.query as { limit?: string }
-    const limit = Math.min(200, Math.max(1, Number(params.limit ?? 50)))
+    const limit = integerParam(params.limit, 'limit', 50, 1, 200)
     const items = await query<{
       id: string
       user_id: string
