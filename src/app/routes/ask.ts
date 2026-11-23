@@ -1,4 +1,4 @@
-import { integerParam } from '../../util/input.js'
+import { integerParam, objectParam, textParam } from '../../util/input.js'
 import { FastifyInstance } from 'fastify'
 
 import { authenticate, currentPrincipal } from '../server.js'
@@ -14,15 +14,14 @@ import { canRead } from '../../core/security.js'
 export async function askRoutes(app: FastifyInstance): Promise<void> {
   app.post('/search', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
-    const payload = request.body as {
+    const payload = objectParam(request.body) as {
       query: string
       top_k?: number
       doc_ids?: string[]
       source_type?: string
       as_of?: string
     }
-    const text = (payload.query ?? '').trim()
-    if (!text) throw Object.assign(new Error('query 不能为空'), { statusCode: 400 })
+    const text = textParam(payload.query, 'query')
     const recorder = new TraceRecorder(principal.tenantId, principal.userId, 'search', text)
     const result = await retrieve(principal, text, {
       topK: payload.top_k ?? 8,
@@ -45,7 +44,7 @@ export async function askRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/ask', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
-    const payload = request.body as {
+    const payload = objectParam(request.body) as {
       question: string
       mode?: string
       top_k?: number
@@ -206,11 +205,16 @@ export async function askRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/feedback', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
-    const payload = request.body as {
+    const payload = objectParam(request.body) as {
       target_type: string
       target_id: string
       value: number
       comment?: string
+    }
+    if (!['chunk', 'message'].includes(payload.target_type)) throw Object.assign(new Error('target_type 必须为 chunk 或 message'), { statusCode: 400 })
+    payload.target_id = textParam(payload.target_id, 'target_id', 200)
+    if (payload.comment !== undefined && (typeof payload.comment !== 'string' || payload.comment.includes('\u0000') || payload.comment.length > 2000)) {
+      throw Object.assign(new Error('comment 必须为不含 NUL 的字符串，最长 2000 字符'), { statusCode: 400 })
     }
     if (![1, -1].includes(payload.value)) throw Object.assign(new Error('反馈值必须是 1 或 -1'), { statusCode: 400 })
     const chunkIds: string[] = []

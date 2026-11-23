@@ -93,3 +93,45 @@ test('missing and foreign conversations both return 404 on reads and asks', asyn
     assert.equal((await app.inject({ method: 'GET', url: `/api/v1/conversations/${id}`, headers: workspace.headers })).statusCode, 404)
   }
 })
+
+test('malformed search and ask inputs are rejected before writing traces or messages', async () => {
+  for (const value of [undefined, null, 123, {}, [], '\u0000', ' \n ']) {
+    assert.equal((await post('/search', { query: value })).statusCode, 400)
+    assert.equal((await post('/ask', { question: value })).statusCode, 400)
+  }
+  for (const path of ['/search', '/ask']) assert.equal((await post(path)).statusCode, 400)
+  assert.equal((await query('SELECT id FROM traces')).length, 0)
+  assert.equal((await query('SELECT id FROM messages')).length, 0)
+  assert.equal((await query('SELECT id FROM gaps')).length, 0)
+})
+
+test('MCP rejects malformed envelopes, arguments and budgets without writing gaps', async () => {
+  for (const payload of [{}, { jsonrpc: '2.0', method: 123 }, { jsonrpc: '2.0', method: 'ping', id: {} }]) {
+    assert.equal((await post('/mcp', payload)).json().error.code, -32600)
+  }
+  const tool = (name: string, args: unknown) => post('/mcp', {
+    jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args },
+  })
+  for (const top_k of [0, -1, 1.5, 101, '3']) {
+    assert.equal((await tool('kb_search', { query: '测试', top_k })).json().error.code, -32602)
+  }
+  for (const args of [[], 'bad', { query: {} }, { query: '\u0000' }]) {
+    assert.equal((await tool('kb_search', args)).json().error.code, -32602)
+  }
+  for (const question of [' ', '\u0000', 123, '长'.repeat(501)]) {
+    assert.equal((await tool('kb_report_gap', { question })).json().error.code, -32602)
+  }
+  assert.equal((await query('SELECT id FROM gaps')).length, 0)
+  assert.equal((await tool('kb_report_gap', { question: '需要补充的知识' })).json().error, undefined)
+  assert.equal((await query<{ question: string }>('SELECT question FROM gaps'))[0]!.question, '需要补充的知识')
+})
+
+test('consult history and feedback targets are validated without accepting malformed rows', async () => {
+  for (const history of ['bad', {}, [null], [{ role: 'system', content: 'bad' }], [{ role: 'user', content: 123 }]]) {
+    assert.equal((await post('/review/nonexistent/consult', { history })).statusCode, 400)
+  }
+  for (const target_type of ['anything', null, 123]) {
+    assert.equal((await post('/feedback', { target_type, target_id: 'bad', value: 1 })).statusCode, 400)
+  }
+  assert.equal((await query('SELECT id FROM feedback')).length, 0)
+})

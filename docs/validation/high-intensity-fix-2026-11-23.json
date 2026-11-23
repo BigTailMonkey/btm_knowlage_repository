@@ -1,0 +1,85 @@
+{
+  "date": "2026-11-23",
+  "audit_before": {
+    "total": 29,
+    "passed": 10,
+    "failed": 19
+  },
+  "audit_after": {
+    "total": 29,
+    "passed": 26,
+    "failed": 3,
+    "failed_ids": [
+      "HI-19",
+      "HI-07",
+      "HI-08"
+    ],
+    "deferred_by_user": true
+  },
+  "repaired_or_corrected_ids": [
+    "HI-01",
+    "HI-02",
+    "HI-03",
+    "HI-06",
+    "HI-09",
+    "HI-10",
+    "HI-11",
+    "HI-12",
+    "HI-13",
+    "HI-14",
+    "HI-15",
+    "HI-17",
+    "HI-21",
+    "HI-22",
+    "HI-25",
+    "HI-27"
+  ],
+  "deferred": {
+    "HI-07": "跨用户反馈读取",
+    "HI-08": "跨用户轨迹读取",
+    "HI-19": "未认证 /meta"
+  },
+  "test_corrections": {
+    "HI-10": "空 ACL 当前契约为返回400，且不得写入文档",
+    "HI-11": "补齐有效版本与切块夹具，并验证检索、详情及列表标记一致",
+    "HI-12": "按实际响应 rows 与 total 验证指定事实，而非不存在的 items",
+    "HI-16": "修正错误字段 fact_id 为 id，并按既有默认历史时间线/显式日期切片契约验证，消除假通过"
+  },
+  "regular": {
+    "passed": 279,
+    "total": 279,
+    "added_cases": 7
+  },
+  "offline": {
+    "passed": 50,
+    "total": 50,
+    "recall_at_10": 1
+  },
+  "business": {
+    "complete_round_passes": [
+      9,
+      10
+    ],
+    "total": 10,
+    "final_passed": 10,
+    "invalid_quotes": 0,
+    "first_round_failure": "2023年回答追加无关2017年对比并错引，严格核验拒绝；随后收紧回答范围并完整重跑"
+  },
+  "live_api": {
+    "passed": 9,
+    "total": 9,
+    "health": "ok"
+  },
+  "checks": [
+    "typecheck",
+    "build",
+    "diff --check"
+  ],
+  "raw_results_dir": "data/audit-2026-11-23",
+  "scope_note": "权限3项仍按用户要求后置；未隐藏或跳过完整29项中的剩余失败，未改 chat-feedback、traces、meta 的访问策略。",
+  "integrity": {
+    "checks": 21,
+    "errors": 0
+  },
+  "commit_status_at_validation": "uncommitted"
+}

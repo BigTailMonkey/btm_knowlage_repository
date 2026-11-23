@@ -1,5 +1,5 @@
 import { normalizeAsOf } from '../../core/retrieval.js'
-import { integerParam } from '../../util/input.js'
+import { integerParam, objectParam, textParam } from '../../util/input.js'
 import { FastifyInstance } from 'fastify'
 
 import { authenticate, currentPrincipal } from '../server.js'
@@ -26,10 +26,15 @@ const REVIEW_CONSULT_SYSTEM = `你是 KnoWeave（知织）知识库的审阅助�
 用自然段落说话，不要用 Markdown 标题、加粗和列表符号。首次核对控制在 200 字以内，追问控制在 120 字以内。`
 
 function consultInput(body: unknown): { question: string; history: Array<{ role?: string; content?: string }> } {
-  const input = (body ?? {}) as { question?: string; history?: Array<{ role?: string; content?: string }> }
+  const input = objectParam(body ?? {})
+  const history = input.history ?? []
+  if (!Array.isArray(history) || history.some(turn => !turn || typeof turn !== 'object' || Array.isArray(turn)
+    || !['user', 'assistant'].includes(turn.role) || typeof turn.content !== 'string' || turn.content.includes('\u0000'))) {
+    throw Object.assign(new Error('history 必须为包含 user/assistant role 和字符串 content 的消息数组'), { statusCode: 400 })
+  }
   return {
-    question: String(input.question ?? '').trim().slice(0, 500),
-    history: (input.history ?? []).slice(-8),
+    question: input.question === undefined || input.question === '' ? '' : textParam(input.question, 'question', 500),
+    history: history.slice(-8),
   }
 }
 
@@ -198,12 +203,12 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
     const principal = currentPrincipal(request)
     const params = request.query as Record<string, string | undefined>
     const limit = integerParam(params.limit, 'limit', 60, 1, 200)
-    const where = ['tenant_id = $1']
+    const where = ['f.tenant_id = $1', DISPLAYABLE_FACT]
     const values: unknown[] = [principal.tenantId]
     if (params.status) {
       values.push(params.status)
       where.push(`status = $${values.length}`)
-    } else where.push(DISPLAYABLE_FACT)
+    }
     if (params.subject) {
       const entity = await queryOne<EntityRow>(
         'SELECT * FROM entities WHERE tenant_id = $1 AND canonical_name = $2',

@@ -5,11 +5,12 @@ import { query, queryOne } from '../../db/index.js'
 import { ask } from '../../core/answering.js'
 import { factIsEffective, normalizeAsOf, retrieve } from '../../core/retrieval.js'
 import { factDict } from '../../core/serializers.js'
-import { continuationView } from '../../core/continuation.js'
-import { canRead } from '../../core/security.js'
+import { continuationView, continuationVisibleSql } from '../../core/continuation.js'
+import { canRead, principalSet } from '../../core/security.js'
 import { newId } from '../../core/ids.js'
 import { queryKnowledgeGraph, queryStructuredFacts } from '../../core/knowledge-query.js'
 import type { ChunkRow, DocumentRow, EntityRow, FactRow, VersionRow } from '../../core/rows.js'
+import { integerParam, objectParam, textParam } from '../../util/input.js'
 
 const NATIVE_READ_TOOLS = new Set(['kb_search', 'kb_graph', 'kb_query_facts', 'kb_get_document', 'kb_entity_timeline'])
 
@@ -99,12 +100,12 @@ const TOOLS = [
   },
   {
     name: 'kb_get_document',
-    description: '核对可见文档的原文、结构、事实与延续关系。带上证据的 version_id 可读取对应历史版本，默认读取当前版本。',
+    description: '核对可见文档的原文、结构、事实与延续关系。带上证据的 version_id 可读取对应历史版本及该版本关联的非撤回事实，这些历史事实不代表当前有效；默认读取当前版本和当前有效事实。',
     inputSchema: { type: 'object', properties: { doc_id: { type: 'string' }, version_id: { type: 'string' } }, required: ['doc_id'] },
   },
   {
     name: 'kb_entity_timeline',
-    description: '查询实体的时间线事实与出处。',
+    description: '查询实体的时间线事实与出处。无 as_of 时保留历史记录；指定 as_of 时仅返回当日有效记录。',
     inputSchema: {
       type: 'object',
       properties: { entity_id: { type: 'string' }, name: { type: 'string' }, as_of: { type: 'string', format: 'date' } },
@@ -119,7 +120,7 @@ const TOOLS = [
   {
     name: 'kb_report_gap',
     description: '上报一个知识缺口，进入运营台缺口清单。',
-    inputSchema: { type: 'object', properties: { question: { type: 'string' } }, required: ['question'] },
+    inputSchema: { type: 'object', properties: { question: { type: 'string', minLength: 1, maxLength: 500 } }, required: ['question'] },
   },
 ]
 
@@ -152,6 +153,11 @@ export async function mcpRoutes(app: FastifyInstance): Promise<void> {
       method: string
       params?: Record<string, unknown>
     }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload) || payload.jsonrpc !== '2.0'
+      || typeof payload.method !== 'string' || !payload.method.trim()
+      || payload.id !== undefined && payload.id !== null && typeof payload.id !== 'string' && typeof payload.id !== 'number') {
+      return error(null, -32600, 'Invalid Request')
+    }
     const native = request.headers['x-knowweave-native'] === 'true'
     if (payload.method.startsWith('notifications/')) return reply.status(202).send()
     const id = payload.id ?? null
@@ -172,11 +178,11 @@ export async function mcpRoutes(app: FastifyInstance): Promise<void> {
     if (payload.method === 'ping') return result(id, {})
     if (payload.method !== 'tools/call') return error(id, -32601, `method not found: ${payload.method}`)
 
-    const params = payload.params ?? {}
-    const name = params.name as string
-    if (native && !NATIVE_READ_TOOLS.has(name)) return error(id, -32601, '原生知识库对话仅提供只读检索工具')
-    const args = (params.arguments ?? {}) as Record<string, unknown>
     try {
+      const params = objectParam(payload.params ?? {}, 'params')
+      const name = textParam(params.name, 'name', 100)
+      if (native && !NATIVE_READ_TOOLS.has(name)) return error(id, -32601, '原生知识库对话仅提供只读检索工具')
+      const args = objectParam(params.arguments ?? {}, 'arguments')
       if (name === 'kb_search') {
         const filters = (args.filters ?? {}) as Record<string, unknown>
         if (!filters || typeof filters !== 'object' || Array.isArray(filters)) return error(id, -32602, 'filters 必须为对象')
@@ -191,8 +197,9 @@ export async function mcpRoutes(app: FastifyInstance): Promise<void> {
         if (graphHops !== undefined && (typeof graphHops !== 'number' || !Number.isInteger(graphHops) || graphHops < 1 || graphHops > 3)) {
           return error(id, -32602, 'graph_hops 必须为 1 至 3 的整数')
         }
-        const retrieved = await retrieve(principal, String(args.query ?? ''), {
-          topK: Number(args.top_k ?? 8),
+        if (args.top_k !== undefined && typeof args.top_k !== 'number') return error(id, -32602, 'top_k 必须为 1 至 100 的整数')
+        const retrieved = await retrieve(principal, textParam(args.query, 'query'), {
+          topK: integerParam(args.top_k, 'top_k', 8, 1, 100),
           docIds: (filters.doc_ids as string[] | undefined) ?? null,
           sourceType: typeof filters.source_type === 'string' ? filters.source_type : null,
           asOf: typeof filters.as_of === 'string' ? filters.as_of : null,
@@ -212,13 +219,13 @@ export async function mcpRoutes(app: FastifyInstance): Promise<void> {
       if (name === 'kb_query_facts') return result(id, toolResult(await queryStructuredFacts(principal, args), native))
       if (name === 'kb_ask') {
         return result(id, toolResult(await ask(principal, {
-          question: String(args.question ?? ''),
+          question: textParam(args.question, 'question'),
           mode: args.mode as string | undefined,
           asOf: (args.as_of as string) ?? null,
         })))
       }
       if (name === 'kb_get_document') {
-        const docId = String(args.doc_id ?? '')
+        const docId = textParam(args.doc_id, 'doc_id', 200)
         const versionId = args.version_id
         if (versionId !== undefined && (typeof versionId !== 'string' || !versionId.trim())) return error(id, -32602, 'version_id 必须为非空字符串')
         const document = await queryOne<DocumentRow>("SELECT * FROM documents WHERE id = $1 AND status = 'active'", [docId])
@@ -242,11 +249,13 @@ export async function mcpRoutes(app: FastifyInstance): Promise<void> {
         const partial = visibleChunks.length !== chunks.length
         const facts = await query<FactRow>(
           `SELECT DISTINCT f.* FROM facts f JOIN fact_evidence e ON e.fact_id = f.id
-           JOIN chunks c ON c.id = e.chunk_id
+           JOIN chunks c ON c.id = e.chunk_id AND c.doc_id = e.doc_id
            WHERE e.doc_id = $1 AND c.version_id = $2 AND f.tenant_id = $3 AND c.id = ANY($4::text[])`,
           [docId, version?.id ?? '', principal.tenantId, [...visibleIds]],
         )
-        const visibleFacts = facts.filter((fact) => canRead(principal, fact.acl_principals) && factIsEffective(fact, null))
+        const historical = Boolean(version && version.version !== document.current_version)
+        const visibleFacts = facts.filter((fact) => canRead(principal, fact.acl_principals)
+          && (historical ? ['active', 'superseded'].includes(fact.status) : factIsEffective(fact, null)))
         const scopedFacts = await Promise.all(visibleFacts.map(async (fact) => {
           const data = await factDict(fact)
           const evidence = (data.evidence as Array<{ doc_id: string; chunk_id: string }>).filter((item) => item.doc_id === docId && visibleIds.has(item.chunk_id))
@@ -260,6 +269,7 @@ export async function mcpRoutes(app: FastifyInstance): Promise<void> {
           version: version ? { id: version.id, version: version.version, parser: version.parser, created_at: version.created_at, meta: version.meta } : null,
           chunks: visibleChunks.map(({ acl_principals, ...chunk }) => chunk),
           facts: scopedFacts,
+          facts_scope: historical ? 'selected_version' : 'current_effective',
           continuation: await continuationView(principal, document),
         }, native))
       }
@@ -267,7 +277,7 @@ export async function mcpRoutes(app: FastifyInstance): Promise<void> {
         const entityId = typeof args.entity_id === 'string' ? args.entity_id.trim() : ''
         const entityName = typeof args.name === 'string' ? args.name.trim() : ''
         if (!entityId && !entityName) return error(id, -32602, '需要 entity_id 或 name')
-        const asOf = normalizeAsOf(typeof args.as_of === 'string' ? args.as_of : null)
+        const asOf = normalizeAsOf(args.as_of as string | undefined)
         const matches = entityId
           ? await query<EntityRow>("SELECT * FROM entities WHERE tenant_id = $1 AND id = $2 AND status = 'active'", [principal.tenantId, entityId])
           : await query<EntityRow>(
@@ -284,17 +294,9 @@ export async function mcpRoutes(app: FastifyInstance): Promise<void> {
              AND f.status IN ('active', 'superseded')
              AND EXISTS (SELECT 1 FROM fact_evidence e JOIN documents d ON d.id = e.doc_id
                          WHERE e.fact_id = f.id AND d.tenant_id = $1 AND d.status = 'active'
-                           AND ($3::date IS NULL OR NOT EXISTS (
-                             SELECT 1 FROM document_continuations chain
-                             WHERE chain.tenant_id = $1 AND (
-                               (chain.successor_doc_id = d.id AND chain.effective_date > $3::date)
-                               OR (chain.predecessor_doc_id = d.id AND chain.effective_date <= $3::date
-                                   AND EXISTS (SELECT 1 FROM documents successor
-                                               WHERE successor.id = chain.successor_doc_id AND successor.status = 'active'))
-                             )
-                           )))
+                           AND ($3::date IS NULL OR ${continuationVisibleSql('$3::date', '$4::text[]')}))
            ORDER BY f.valid_from ASC NULLS FIRST, f.recorded_at ASC, f.id`,
-          [principal.tenantId, entity.id, asOf],
+          [principal.tenantId, entity.id, asOf, [...principalSet(principal)]],
         )
         const timeline = []
         for (const fact of facts) {
@@ -314,7 +316,7 @@ export async function mcpRoutes(app: FastifyInstance): Promise<void> {
       }
       if (name === 'kb_report_gap') {
         const gapId = newId('gap')
-        const question = String(args.question ?? '').toLowerCase().replace(/\s+/g, ' ')
+        const question = textParam(args.question, 'question', 500).toLowerCase().replace(/\s+/g, ' ')
         await query(
           `INSERT INTO gaps (id, tenant_id, question, count, suggested_sources)
            VALUES ($1, $2, $3, 1, '[]'::jsonb)`,

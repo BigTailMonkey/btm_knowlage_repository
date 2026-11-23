@@ -126,7 +126,7 @@ export async function trashDocuments(principal: Principal): Promise<Array<Record
   )
   const retention = settings.trashRetentionDays
   return Promise.all(documents.filter((document) => canRead(principal, document.acl_principals)).map(async (document) => ({
-    ...await documentDict(document),
+    ...await documentDict(document, principal),
     deleted_at: document.deleted_at ?? null,
     deleted_by: document.deleted_by ?? null,
     // 0 表示不自动清除

@@ -9,6 +9,7 @@ import { retrieve, RetrievalResult, Hit, normalizeAsOf } from './retrieval.js'
 import { Principal } from './security.js'
 import { TraceRecorder } from './tracing.js'
 import { checkSemanticGrounding, validateGrounding, type GroundingCheck } from './grounding.js'
+import { integerParam, textParam } from '../util/input.js'
 
 const CITATION = /\[(\d+)\]/g
 const REFUSAL_PREFIX = /^(?:REFUSE\b|(?:抱歉[，,。]?\s*)?(?:(?:现有|当前|所提供的?|已有)?(?:资料|信息|证据|片段|内容)(?:不足|不够|未包含|没有)|我(?:无法|不能)|无法(?:可靠|准确)?回答|没有足够(?:资料|证据|信息)|不足以回答))/i
@@ -16,9 +17,9 @@ const FOLLOW_UP = /^(?:它|他|她|这个|那个|这些|那些|该(?:项|政策|
 
 export const ANSWER_SYSTEM = `你是 KnoWeave（知织）知识库的问答引擎。规则：
 1. 只能使用给定的「证据」回答，不得使用训练知识补全，不得编造。
-2. 每个事实性句子末尾用 [编号] 标注引用，编号必须是证据编号；一句话可引用多条。附带说明也须有出处，缺少出处则省略该说明。
+2. 每个事实性句子末尾用 [编号] 标注引用，编号必须是证据编号；一句话可引用多条。跨来源比较对象或年份时，须同时引用所有参与来源，不能只引用一侧。附带说明也须有出处，缺少出处则省略该说明。
 3. 若证据不足以支撑结论，只输出一行：REFUSE: <缺失原因>。说明最接近的证据实际写了什么，以及问题中哪一项仍缺少支持。只陈述能从已给原文确认的信息。
-4. 回答使用中文，先给结论，再给 2-4 句关键依据。可用自己的话概括或综合多条证据，保留原文的适用对象、条件、数字和单位。
+4. 回答使用中文，先给结论，再按证据需要给出简短依据。原文只足够支持一句时就只回答一句，不为凑句数增加说明；用户未要求时，不主动增加其他年份或对象的对比。可用自己的话概括或综合多条证据，保留原文的适用对象、条件、数字和单位。
 5. 区分「资料明确支持」与「推测」；推测必须标注「（推测）」。
 6. 检索已按时间范围筛选政策代际。回答中复述的日期、有效期和状态必须由编号原文明示；不得把检索时间切片或图谱抽取元数据表述成原文规定的有效期，不要混用不同年份的结论。
 7. 用户要求摘录原文、代码或定义片段时，只提供用户指定的原文摘录及引用；代码块的引用放在闭合围栏后的独立一行。摘录须是所引证据中连续、逐字一致的文本；优先选择含指定符号的一行及必要相邻行。不补写任何字符：片段未闭合时保持未闭合，不加右括号、引号、分号或省略号。不添加章节位置、代码作用或完整性说明。
@@ -121,12 +122,12 @@ function retrievalQuestion(question: string, messages: MessageRow[]): string {
 
 function confidence(answer: string, hits: Hit[], refused: boolean): number {
   if (refused || !hits.length) return 0.18
-  const cited = [...answer.matchAll(CITATION)].map((match) => Number(match[1]))
-  const valid = new Set(cited.filter((index) => index >= 1 && index <= hits.length))
-  const coverage = cited.length ? valid.size / cited.length : 0
+  const cited = new Set([...answer.matchAll(CITATION)].map((match) => Number(match[1])))
+  const valid = new Set([...cited].filter((index) => index >= 1 && index <= hits.length))
+  const coverage = cited.size ? valid.size / cited.size : 0
   const top = hits.slice(0, 3).reduce((sum, hit) => sum + hit.rerank, 0) / Math.min(3, hits.length)
   let base = 0.28 + 0.45 * top + 0.2 * coverage + 0.07 * Math.min(1, valid.size / 3)
-  if (!cited.length) base -= 0.08
+  if (!cited.size) base -= 0.08
   return Number(Math.max(0.05, Math.min(0.96, base)).toFixed(3))
 }
 
@@ -281,11 +282,10 @@ export async function ask(
   },
 ): Promise<Record<string, unknown>> {
   const started = Date.now()
-  const question = (input.question ?? '').trim()
-  if (!question) throw Object.assign(new Error('问题不能为空'), { statusCode: 400 })
+  const question = textParam(input.question, 'question')
   const mode = input.mode ?? 'quick'
   if (!['quick', 'deep', 'graph', 'timeline', 'compare'].includes(mode)) throw Object.assign(new Error('不支持的问答模式'), { statusCode: 400 })
-  const topK = Math.min(30, Math.max(1, Math.floor(Number(input.topK) || 6)))
+  const topK = integerParam(input.topK, 'top_k', 6, 1, 30)
   const asOf = normalizeAsOf(input.asOf ?? null)
   const recorder = new TraceRecorder(principal.tenantId, principal.userId, input.evaluation ? 'eval' : 'ask', question)
   recorder.addSpan({ stage: 'intent', params: { mode, as_of: asOf }, output: { question } })
@@ -404,7 +404,10 @@ ${evidence}
     if (generated.ok) recorder.recordUsage(generated, 'ask', 'answer.generate', span.id)
     if (!generated.ok || !generated.text.trim()) await finishTrace('', 'error')
     const text = requireModelText(generated, '问答生成')
-    const isRefusal = REFUSAL_PREFIX.test(text)
+    // An explicit REFUSE is a control response. Other refusal-like openings
+    // with valid references still undergo the full claim checks.
+    const hasReference = [...text.matchAll(CITATION)].some(match => Number(match[1]) >= 1 && Number(match[1]) <= hits.length + memories.length)
+    const isRefusal = /^REFUSE\b/i.test(text) || REFUSAL_PREFIX.test(text) && !hasReference
     if (isRefusal) {
       failureStage = 'model_refusal'
       modelReason = preview((text.split('\n')[0] ?? '').replace(/^REFUSE\s*[:：]?\s*/i, ''), 360)

@@ -156,7 +156,7 @@ export function validateGrounding(
     // as_of is trusted retrieval metadata, only in explicit time-slice wording.
     // Actual event dates must still occur in the cited evidence in full.
     const numberClaim = asOf && /^\d{4}-\d{2}-\d{2}$/.test(asOf)
-      ? claim.replaceAll(`${asOf}这一时间切片`, '这一时间切片').replaceAll(`${asOf}时间切片`, '时间切片') : claim
+      ? numericText(claim).replaceAll(`${asOf}这一时间切片`, '这一时间切片').replaceAll(`${asOf}时间切片`, '时间切片') : claim
     const numericSources = ids.map((id) => [evidence[id - 1]!.text, ...(evidence[id - 1]!.context?.split(/[；\n]/).filter((label) => !/^检索时间切片[：:]/.test(label.trim())) ?? [])].join('\n')).join('\n')
     const availableNumbers = new Set(numericClaims(numericSources))
     const missingNumbers = [...new Set(numericClaims(numberClaim).filter((number) => !availableNumbers.has(number)))]

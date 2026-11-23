@@ -6,6 +6,8 @@ import type { ChunkRow, DocumentRow, EntityRow } from './rows.js'
 import { canRead, Principal, principalSet } from './security.js'
 import type { TraceRecorder } from './tracing.js'
 import { todayLocal } from './ids.js'
+import { integerParam, textParam } from '../util/input.js'
+import { continuationVisibleSql } from './continuation.js'
 
 const RRF_K = 60
 
@@ -14,7 +16,7 @@ type RetrievalChunk = Omit<ChunkRow, 'dense' | 'sparse'>
 
 /** Historical queries use calendar dates in the configured workspace timezone. */
 export function normalizeAsOf(value?: string | null): string | null {
-  if (!value) return null
+  if (value == null || value === '') return null
   if (typeof value !== 'string') throw Object.assign(new Error('as_of 必须为 YYYY-MM-DD 日期'), { statusCode: 400 })
   const normalized = value.trim()
   if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
@@ -144,27 +146,7 @@ async function loadCandidates(
        AND ${versionFilter} AND c.is_parent = false
        AND EXISTS (SELECT 1 FROM unnest($2::date[]) AS requested(effective_date) WHERE
          d.id = ANY($3::text[])
-         OR NOT EXISTS (
-           SELECT 1 FROM document_continuations chain
-           WHERE chain.tenant_id = d.tenant_id AND (
-             (chain.successor_doc_id = d.id AND chain.effective_date > requested.effective_date)
-             OR (chain.predecessor_doc_id = d.id AND chain.effective_date <= requested.effective_date
-                 AND EXISTS (
-                   WITH RECURSIVE successors(id) AS (
-                     SELECT chain.successor_doc_id
-                     UNION
-                     SELECT edge.successor_doc_id FROM document_continuations edge JOIN successors prior ON edge.predecessor_doc_id=prior.id
-                     WHERE edge.tenant_id=$1 AND edge.effective_date<=requested.effective_date
-                   )
-                   SELECT 1 FROM successors next JOIN documents successor ON successor.id=next.id AND successor.tenant_id=$1
-                   WHERE successor.status='active' AND jsonb_typeof(successor.acl_principals)='array'
-                     AND successor.acl_principals ?| $4::text[]
-                     AND EXISTS (SELECT 1 FROM chunks sc JOIN document_versions sv ON sv.id=sc.version_id
-                       WHERE sc.doc_id=successor.id AND sc.tenant_id=$1 AND sv.version=successor.current_version
-                         AND sc.is_parent=false AND jsonb_typeof(sc.acl_principals)='array' AND sc.acl_principals ?| $4::text[])
-                 ))
-           )
-         )
+         OR ${continuationVisibleSql('requested.effective_date', '$4::text[]')}
        )`,
     params,
   )
@@ -299,14 +281,13 @@ export async function retrieve(
   options: RetrievalOptions = {},
 ): Promise<RetrievalResult> {
   const started = Date.now()
-  text = text.trim()
-  if (!text) throw Object.assign(new Error('query 不能为空'), { statusCode: 400 })
-  const topK = Math.max(1, Math.min(100, Math.floor(Number(options.topK) || 8)))
+  text = textParam(text, 'query')
+  const topK = integerParam(options.topK, 'top_k', 8, 1, 100)
   const mode = options.mode ?? 'quick'
   const asOf = normalizeAsOf(options.asOf)
   const dates = policyDates(text, asOf)
   options.recorder?.addSpan({ stage: 'intent.time', output: { source: asOf ? 'as_of' : dates.length ? 'question_year' : 'current', policy_dates: dates } })
-  const graphHops = Math.max(1, Math.min(3, Math.floor(Number(options.graphHops) || (mode === 'graph' ? 2 : 1))))
+  const graphHops = integerParam(options.graphHops, 'graph_hops', mode === 'graph' ? 2 : 1, 1, 3)
   // An exact cited document title is an explicit source scope. Resolve it before
   // loading candidates so a historical policy can still be addressed by name
   // even when its successor is the default in-force document.

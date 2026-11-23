@@ -3,16 +3,16 @@ import { continuationSummary } from './continuation.js'
 import { iso } from './ids.js'
 import { relationRef } from './relation-types.js'
 import type { ChunkRow, DocumentRow, EntityRow, FactRow } from './rows.js'
-import { aclLabel } from './security.js'
+import { aclLabel, type Principal } from './security.js'
 
-export async function documentDict(document: DocumentRow): Promise<Record<string, unknown>> {
+export async function documentDict(document: DocumentRow, principal: Principal): Promise<Record<string, unknown>> {
   const count = await queryOne<{ count: string }>(
     `SELECT count(*)::text AS count FROM chunks
      WHERE doc_id = $1 AND is_parent = false
        AND version_id IN (SELECT id FROM document_versions WHERE doc_id = $1 AND version = $2)`,
     [document.id, document.current_version],
   )
-  const continuation = await continuationSummary(document)
+  const continuation = await continuationSummary(document, principal)
   return {
     id: document.id,
     title: document.title,

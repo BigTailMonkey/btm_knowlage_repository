@@ -117,7 +117,7 @@ COMMENT ON COLUMN document_continuations.id IS '延续边 ID（cont_ 前缀）';
 COMMENT ON COLUMN document_continuations.tenant_id IS '所属租户 ID';
 COMMENT ON COLUMN document_continuations.predecessor_doc_id IS '前序（旧）文档 ID，唯一：一个文档最多有一个后续';
 COMMENT ON COLUMN document_continuations.successor_doc_id IS '后续（新）文档 ID，唯一：一个文档最多接续一个前序';
-COMMENT ON COLUMN document_continuations.effective_date IS '后续文档生效日期（YYYY-MM-DD）：该日起前序退出默认检索，后续进入默认检索';
+COMMENT ON COLUMN document_continuations.effective_date IS '后续文档生效日期（YYYY-MM-DD）：该日起可读且有当前版本正文索引的有效后续使前序退出当前主体默认检索；可跨已回收的中间代检查后续';
 COMMENT ON COLUMN document_continuations.note IS '备注（可空，最长 500 字符）';
 COMMENT ON COLUMN document_continuations.created_by IS '创建者用户 ID';
 COMMENT ON COLUMN document_continuations.created_at IS '创建时间';

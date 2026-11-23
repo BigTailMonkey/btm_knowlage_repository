@@ -52,6 +52,43 @@ test('emphasis around a complete sentence retains its trailing citation without 
   assert.equal(claimSentences('**没有引用的结论。**').length, 1)
 })
 
+test('ISO and Chinese time-slice labels are trusted only for the exact requested snapshot date', () => {
+  const sources = [{ text: '2024年补贴标准为89元。' }]
+  const options = { asOf: '2024-06-01', checkWording: false }
+  for (const date of ['2024-06-01', '2024年6月1日', '２０２４年６月１日']) {
+    assert.equal(validateGrounding(`截至${date}时间切片，补贴标准为89元。[1]`, sources, options).valid, true)
+  }
+  for (const claim of ['截至2024年6月2日时间切片，补贴标准为89元。[1]', '补贴标准从2024年6月1日生效，为89元。[1]', '2024-06-01发生了补贴变更，标准为89元。[1]']) {
+    assert.equal(validateGrounding(claim, sources, options).valid, false, claim)
+  }
+})
+
+test('a refusal-like opening with a citation is verified, while REFUSE and invented values still fail', async () => {
+  await clearKnowledge()
+  const source = '现有信息没有提到例外情况，但标准明确为89元。'
+  await ingestParsed(workspace.principal, parseText(source, '标准原文'), { sourceType: 'text' })
+  harness.ask = async () => generated(`${source}[1]`)
+  assert.equal((await ask(workspace.principal, { question: '标准是什么？', evaluation: true })).refused, false)
+  harness.ask = async () => generated('现有信息没有提到例外情况，但标准明确为999元。[1]')
+  const invented = await ask(workspace.principal, { question: '标准是什么？', evaluation: true })
+  assert.equal((invented.failure as AnswerFailure).stage, 'grounding')
+  assert.deepEqual(invented.citations, [])
+  harness.ask = async () => generated('REFUSE: 现有原文没有说明例外情况。[1]')
+  const explicit = await ask(workspace.principal, { question: '例外情况是什么？', evaluation: true })
+  assert.equal((explicit.failure as AnswerFailure).stage, 'model_refusal')
+})
+
+test('repeated valid references preserve citation coverage in the confidence score', async () => {
+  const scores: number[] = []
+  for (const count of [1, 3]) {
+    harness.ask = async () => generated('知织的回答附带原文引用。[1]'.repeat(count))
+    const result = await ask(workspace.principal, { question: '知织的回答有什么？', evaluation: true })
+    assert.equal(result.refused, false)
+    scores.push(Number(result.confidence))
+  }
+  assert.equal(scores[0], scores[1])
+})
+
 test('graph navigation does not advertise inferred validity dates as quotable evidence', async () => {
   await query(`INSERT INTO entities (id, tenant_id, canonical_name, normalized_name, acl_principals)
     VALUES ('kw', $1, '知织', '知织', '["tenant:public"]')`, [workspace.principal.tenantId])

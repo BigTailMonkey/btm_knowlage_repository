@@ -201,6 +201,30 @@ test('MCP returns complete document text and more than sixty chunks, and honors 
   assert.equal(larger.hits.length, 40)
 })
 
+test('historical document facts follow the selected version without reviving withdrawn or private evidence', async () => {
+  await document('historic-facts', 'text', 2)
+  const old = await version('historic-facts', 1, 'Aurora old rule')
+  const current = await version('historic-facts', 2, 'Aurora current rule', '2025-01-01T00:00:00Z')
+  await chunk('historic-facts', old, 'historic-old', 'Aurora old rule')
+  await chunk('historic-facts', current, 'historic-current', 'Aurora current rule')
+  await entity('historic-subject', 'Aurora')
+  for (const status of ['superseded', 'retracted', 'disputed']) {
+    await fact(`historic-${status}`, 'historic-subject', null, 'historic-old', 'historic-facts', status, '2023-01-01', '2024-01-01')
+  }
+  await fact('current-fact', 'historic-subject', null, 'historic-current', 'historic-facts', 'active', '2025-01-01')
+  const historical = await mcp('kb_get_document', { doc_id: 'historic-facts', version_id: old })
+  assert.equal(historical.facts_scope, 'selected_version')
+  assert.deepEqual(historical.facts.map((row: { id: string }) => row.id), ['historic-superseded'])
+  const latest = await mcp('kb_get_document', { doc_id: 'historic-facts' })
+  assert.equal(latest.facts_scope, 'current_effective')
+  assert.deepEqual(latest.facts.map((row: { id: string }) => row.id), ['current-fact'])
+  await query("UPDATE chunks SET acl_principals='[\"user:another-user\"]' WHERE id='historic-old'")
+  const hidden = await mcp('kb_get_document', { doc_id: 'historic-facts', version_id: old })
+  assert.equal(hidden.partial, true)
+  assert.deepEqual(hidden.facts, [])
+  assert.equal(hidden.text, '')
+})
+
 test('MCP timeline accepts entity_id and applies as_of while retaining name compatibility', async () => {
   await document('timeline')
   const v = await version('timeline', 1, 'Aurora timeline')

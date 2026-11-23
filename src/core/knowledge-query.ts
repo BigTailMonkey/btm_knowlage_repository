@@ -3,6 +3,8 @@ import { query } from '../db/index.js'
 import { todayLocal } from './ids.js'
 import { normalizeAsOf } from './retrieval.js'
 import { principalSet, type Principal } from './security.js'
+import { continuationVisibleSql } from './continuation.js'
+import { textParam } from '../util/input.js'
 
 const MAX_GRAPH_EDGES = 60
 
@@ -18,8 +20,7 @@ function inputObject(value: unknown, name: string, fields: readonly string[]): R
 
 function optionalText(value: unknown, name: string): string | null {
   if (value === undefined) return null
-  if (typeof value !== 'string' || !value.trim() || value.length > 500) invalid(`${name} 必须为非空字符串，最长 500 字符`)
-  return value.trim()
+  return textParam(value, name, 500)
 }
 
 function optionalList(value: unknown, name: string): string[] | null {
@@ -120,15 +121,7 @@ function evidenceFrom(factId: 'f.id' | 'm.fact_id' | 'g.sample_fact_id'): string
         ELSE v.id = (SELECT hv.id FROM document_versions hv WHERE hv.doc_id = d.id AND hv.tenant_id = $1
                      AND hv.created_at < (($3::date + interval '1 day') AT TIME ZONE $5)
                      ORDER BY hv.created_at DESC, hv.version DESC, hv.id DESC LIMIT 1) END
-    AND ($6::text[] IS NOT NULL OR NOT EXISTS (
-      SELECT 1 FROM document_continuations chain
-      WHERE chain.tenant_id = $1 AND (
-        (chain.successor_doc_id = d.id AND chain.effective_date > $4::date)
-        OR (chain.predecessor_doc_id = d.id AND chain.effective_date <= $4::date
-            AND EXISTS (SELECT 1 FROM documents successor
-                        WHERE successor.id = chain.successor_doc_id AND successor.status = 'active'))
-      )
-    ))`
+    AND ($6::text[] IS NOT NULL OR ${continuationVisibleSql('$4::date', '$2::text[]')})`
 }
 
 const FACT_COLUMNS = `f.id AS fact_id, f.subject_id, s.canonical_name AS subject, f.predicate,

@@ -2,7 +2,7 @@ import { settings } from '../config.js'
 import { query, queryOne, transaction, type DbClient } from '../db/index.js'
 import { newId, todayLocal } from './ids.js'
 import type { ContinuationRow, DocumentRow } from './rows.js'
-import { canRead, requireEditor, type Principal } from './security.js'
+import { canRead, principalSet, requireEditor, type Principal } from './security.js'
 
 /**
  * 文档延续（沿革）：同一主题在时间上先后发布的文档是不同文档身份，
@@ -33,6 +33,30 @@ export interface ContinuationView {
   chain: ContinuationNode[]
 }
 
+/** Internal SQL fragments only. Alias d must name the candidate document. */
+export function continuationVisibleSql(dateSql: string, principalsSql: string): string {
+  return `NOT EXISTS (
+    SELECT 1 FROM document_continuations chain
+    WHERE chain.tenant_id=d.tenant_id AND (
+      (chain.successor_doc_id=d.id AND chain.effective_date>${dateSql})
+      OR (chain.predecessor_doc_id=d.id AND chain.effective_date<=${dateSql} AND EXISTS (
+        WITH RECURSIVE successors(id) AS (
+          SELECT chain.successor_doc_id
+          UNION
+          SELECT edge.successor_doc_id FROM document_continuations edge JOIN successors prior ON edge.predecessor_doc_id=prior.id
+          WHERE edge.tenant_id=d.tenant_id AND edge.effective_date<=${dateSql}
+        )
+        SELECT 1 FROM successors next JOIN documents successor ON successor.id=next.id AND successor.tenant_id=d.tenant_id
+        WHERE successor.status='active' AND jsonb_typeof(successor.acl_principals)='array'
+          AND successor.acl_principals ?| ${principalsSql}
+          AND EXISTS (SELECT 1 FROM chunks sc JOIN document_versions sv ON sv.id=sc.version_id AND sv.doc_id=successor.id
+            WHERE sc.doc_id=successor.id AND sc.tenant_id=d.tenant_id AND sv.version=successor.current_version
+              AND sc.is_parent=false AND jsonb_typeof(sc.acl_principals)='array' AND sc.acl_principals ?| ${principalsSql})
+      ))
+    )
+  )`
+}
+
 export function normalizeEffectiveDate(value: unknown): string {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
     throw Object.assign(new Error('effective_date 必须为 YYYY-MM-DD 日期'), { statusCode: 400 })
@@ -48,22 +72,6 @@ export function normalizeEffectiveDate(value: unknown): string {
 function dateOnly(value: string | Date | null | undefined): string | null {
   if (!value) return null
   return value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10)
-}
-
-/** 一个文档在指定日期是否处于有效状态。successorActive 表示它的后续文档是否仍可用。 */
-export function inForceAt(
-  document: Pick<DocumentRow, 'id' | 'status'>,
-  incoming: Pick<ContinuationRow, 'successor_doc_id' | 'effective_date'> | null,
-  outgoing: Pick<ContinuationRow, 'predecessor_doc_id' | 'effective_date'> | null,
-  atDate: string,
-  successorActive = true,
-): boolean {
-  if (document.status !== 'active') return false
-  const start = dateOnly(incoming?.effective_date)
-  if (start && start > atDate) return false
-  const end = dateOnly(outgoing?.effective_date)
-  if (end && end <= atDate && successorActive) return false
-  return true
 }
 
 async function tenantRelations(tenantId: string): Promise<ContinuationRow[]> {
@@ -98,13 +106,13 @@ function chainIds(docId: string, relations: ContinuationRow[]): string[] {
 }
 
 /** 列表徽标只需要最小信息，不返回链上其他文档标题，避免越权泄露。 */
-export async function continuationSummary(document: DocumentRow): Promise<Record<string, unknown> | null> {
+export async function continuationSummary(document: DocumentRow, principal: Principal): Promise<Record<string, unknown> | null> {
   const link = await queryOne<{
     predecessor_doc_id: string | null
     successor_doc_id: string | null
     incoming_effective: string | null
     outgoing_effective: string | null
-    successor_status: string | null
+    in_force: boolean
   }>(
     `SELECT
        (SELECT c.predecessor_doc_id FROM document_continuations c
@@ -115,29 +123,23 @@ export async function continuationSummary(document: DocumentRow): Promise<Record
          WHERE c.tenant_id = $1 AND c.successor_doc_id = $2 LIMIT 1) AS incoming_effective,
        (SELECT c.effective_date FROM document_continuations c
          WHERE c.tenant_id = $1 AND c.predecessor_doc_id = $2 LIMIT 1) AS outgoing_effective,
-       (SELECT s.status FROM document_continuations c JOIN documents s ON s.id = c.successor_doc_id
-         WHERE c.tenant_id = $1 AND c.predecessor_doc_id = $2 LIMIT 1) AS successor_status`,
-    [document.tenant_id, document.id],
+       (d.status='active' AND ${continuationVisibleSql('$3::date', '$4::text[]')}) AS in_force
+       FROM documents d WHERE d.tenant_id=$1 AND d.id=$2`,
+    [document.tenant_id, document.id, todayLocal(settings.timezone), [...principalSet(principal)]],
   )
   if (!link || (!link.incoming_effective && !link.outgoing_effective)) return null
-  const incoming = link.incoming_effective
-    ? { successor_doc_id: document.id, effective_date: link.incoming_effective }
-    : null
-  const outgoing = link.outgoing_effective
-    ? { predecessor_doc_id: document.id, effective_date: link.outgoing_effective }
-    : null
   return {
     role: link.outgoing_effective ? 'predecessor' : 'successor',
     predecessor_doc_id: link.predecessor_doc_id,
     successor_doc_id: link.successor_doc_id,
     effective_date: link.incoming_effective ?? link.outgoing_effective,
-    in_force: inForceAt(document, incoming, outgoing, todayLocal(settings.timezone), link.successor_status === 'active'),
+    in_force: link.in_force,
   }
 }
 
 /**
  * 文档详情的沿革视图。链上不可读的文档不返回标题和内容。
- * 前序/后续若不可读则返回 null，但当前文档自身的 in_force 仍按真实关系计算。
+ * 前序/后续若不可读则返回 null，生效判断与当前主体的检索范围一致。
  */
 export async function continuationView(
   principal: Principal,
@@ -149,7 +151,10 @@ export async function continuationView(
   const outgoing = new Map(relations.map((relation) => [relation.predecessor_doc_id, relation]))
   const ids = chainIds(document.id, relations)
   const rows = ids.length
-    ? await query<DocumentRow>('SELECT * FROM documents WHERE tenant_id = $1 AND id = ANY($2::text[])', [principal.tenantId, ids])
+    ? await query<DocumentRow & { generation_visible: boolean }>(
+      `SELECT d.*, (d.status='active' AND ${continuationVisibleSql('$3::date', '$4::text[]')}) AS generation_visible
+       FROM documents d WHERE d.tenant_id = $1 AND d.id = ANY($2::text[])`,
+      [principal.tenantId, ids, atDate, [...principalSet(principal)]])
     : []
   const byId = new Map(rows.map((row) => [row.id, row]))
   const nodes: ContinuationNode[] = []
@@ -158,9 +163,7 @@ export async function continuationView(
     const row = byId.get(id)
     if (!row || !canRead(principal, row.acl_principals)) continue
     const incomingRelation = incoming.get(id) ?? null
-    const outgoingRelation = outgoing.get(id) ?? null
-    const nextActive = outgoingRelation ? byId.get(outgoingRelation.successor_doc_id)?.status === 'active' : true
-    const inForce = inForceAt(row, incomingRelation, outgoingRelation, atDate, nextActive)
+    const inForce = row.generation_visible
     const node: ContinuationNode = {
       id: row.id,
       title: row.title,
@@ -180,9 +183,7 @@ export async function continuationView(
   }
   const currentIncoming = incoming.get(document.id) ?? null
   const currentOutgoing = outgoing.get(document.id) ?? null
-  const currentInForce = inForceById.get(document.id)
-    ?? inForceAt(document, currentIncoming, currentOutgoing, atDate,
-      currentOutgoing ? byId.get(currentOutgoing.successor_doc_id)?.status === 'active' : true)
+  const currentInForce = inForceById.get(document.id) ?? false
   return {
     at_date: atDate,
     in_force: currentInForce,

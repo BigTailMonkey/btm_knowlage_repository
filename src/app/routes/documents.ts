@@ -226,7 +226,7 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
       total: Number(count?.total ?? 0),
       limit,
       offset,
-      items: await Promise.all(visible.map((document) => documentDict(document))),
+      items: await Promise.all(visible.map((document) => documentDict(document, principal))),
     }
   })
 
@@ -276,7 +276,7 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
       if (entity && canRead(principal, entity.acl_principals)) entities.push(entityDict(entity))
     }
     return {
-      document: await documentDict(document),
+      document: await documentDict(document, principal),
       versions: versions.map((version) => ({
         id: version.id,
         version: version.version,

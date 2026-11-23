@@ -70,6 +70,8 @@ POST  /evals/run                  mode=answer（默认）|retrieval
 POST  /mcp                       JSON-RPC tools/list、tools/call
 ```
 
+检索与提问的 query/question 必须为不含 NUL 的非空字符串，最长 20000 个 UTF-16 代码单元；MCP 信封和工具参数在进入核心服务前校验，top_k 越界返回参数错误；kb_report_gap 最长 500 字符。历史 kb_get_document 返回选定版本关联的非撤回事实并标注 facts_scope=selected_version，默认仍返回当前有效事实。kb_entity_timeline 默认保留历史，指定 as_of 时只返回当日有效记录。检索、结构化查询、沿革视图与列表标记复用可读后继判断。
+
 摄入接口的 `title` 最长 500 个 UTF-16 代码单元；文本与记忆内容须为非空白字符串。显式 `acl` 必须为非空字符串数组，仅接受本租户已存在的用户、组及 `tenant:public`，且须保留上传者可读权限；省略 ACL 的新文档仍默认全员可见，更新文档省略 ACL 时保留原授权。URL 在入队前校验首跳 DNS/IP，后台仍逐跳校验并固定连接地址；非 multipart 上传返回 415。分页、图谱跳数等整数参数越界统一返回 400，不再静默钳制。价格接口要求非空 provider/model、非负有限价格、有效日期及大写三字母币种；字段名为 `input_per_1m` / `output_per_1m`。引用核验支持句子外闭合的 Markdown 强调标记；图谱元数据仅用于筛选与导航，不能替代日期和有效期的原文出处。
 
 登记延续关系时，`continues` 将所选文档设为当前文档的前序，`continued_by` 将它设为后续。若这一侧已有邻接文档，所选文档须尚未登记沿革，`effective_date` 为所选文档的生效日期，必须早于排序在其后的文档，并晚于排序在其前且已登记了生效日期的文档。原有文档的生效日期和备注保留。直接接续时，`effective_date` 仍表示接续后生效的那篇文档的日期。
