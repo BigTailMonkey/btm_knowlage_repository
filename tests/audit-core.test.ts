@@ -489,14 +489,11 @@ test('J3 URL 摄入不应允许抓取本机/内网服务（SSRF）', async () =>
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const port = (server.address() as { port: number }).port
   try {
-    const { submitIngest, processIngestQueue, stopIngestWorker } = await import('../src/core/ingestion.js')
-    const job = await submitIngest(workspace.principal, 'url', { url: `http://127.0.0.1:${port}/internal-secret` })
-    await processIngestQueue()
-    await stopIngestWorker()
-    const saved = await queryOne<{ status: string }>('SELECT status FROM jobs WHERE id=$1', [String(job.job_id)])
-    const docs = await query<{ title: string }>('SELECT title FROM documents')
-    assert.ok(saved!.status === 'failed' || docs.length === 0,
-      `内网 URL 被成功抓取入库：job=${saved!.status} docs=${JSON.stringify(docs)}（服务端可被用来探测内网）`)
+    const { submitIngest } = await import('../src/core/ingestion.js')
+    await assert.rejects(submitIngest(workspace.principal, 'url', { url: `http://127.0.0.1:${port}/internal-secret` }),
+      (error: unknown) => (error as { statusCode: number }).statusCode === 400 && /不允许/.test(String(error)))
+    assert.equal((await query('SELECT id FROM jobs')).length, 0)
+    assert.equal((await query('SELECT id FROM documents')).length, 0)
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()))
   }

@@ -1116,6 +1116,11 @@ function sourceHtml(text, ranges = [], targetId = "source-highlight-target") {
 
 function openCitation(citation) {
   if (citation?.doc_id) return openDoc(citation.doc_id, citation);
+  if (citation?.source === "memory") {
+    $("#memory-citation-text").textContent = citation.quote || citation.text || "";
+    const dialog = $("#memory-citation-dialog");
+    if (!dialog.open) dialog.showModal();
+  }
 }
 
 let docOpenRequest = 0;
@@ -3177,7 +3182,7 @@ function renderAsk(result, question = $("#question").value.trim() || "检索结�
       </header>
       <div class="answer-body">${failure ? answerFailureHtml(result.answer, failure) : answerHtml(result.answer, refused)}</div>
       <footer class="answer-foot">
-        <span class="answer-source">${refused ? "未发布回答或正式引用" : result.evidence?.length ? `基于 ${num(result.evidence.length)} 条证据` : "无引用片段"}</span>
+        <span class="answer-source">${refused ? "未发布回答或正式引用" : result.evidence?.length ? `基于 ${num(result.evidence.length)} 条证据` : result.citations?.some(item => item.source === "memory") ? "根据你的个人记忆" : "无引用片段"}</span>
         <div class="answer-actions">
           <button class="icon-btn" type="button" data-feedback="1" aria-label="有帮助" data-hover-tip="有帮助" data-hover-tip-delay="200">
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.6 7.1 7.6 3.5a1.4 1.4 0 0 1 2.5 1.2L9.6 7h2.6a1.4 1.4 0 0 1 1.35 1.83l-1.1 3.6A1.4 1.4 0 0 1 11.1 13H5.6"/><rect x="2.4" y="7.1" width="2.4" height="5.9" rx="1.2"/></svg>
@@ -3245,7 +3250,7 @@ function renderEvidence(result) {
     const number = item.index ?? index + 1;
     const score = Number(item.scores?.rerank ?? item.rerank);
     const path = (item.heading_path || []).slice(-2).join(" / ");
-    const meta = [item.page ? `第 ${esc(item.page)} 页` : "正文", path ? esc(path) : ""].filter(Boolean).join(" · ");
+    const meta = [item.source === "memory" ? "你的个人陈述" : item.page ? `第 ${esc(item.page)} 页` : "正文", path ? esc(path) : ""].filter(Boolean).join(" · ");
     return `<button class="evr-item" type="button" data-evidence-index="${num(number)}">
       <span class="evr-head">
         <span class="evr-num">${num(number)}</span>
@@ -3253,7 +3258,7 @@ function renderEvidence(result) {
         ${Number.isFinite(score) ? `<span class="evr-score">${score.toFixed(3)}</span>` : ""}
       </span>
       <span class="evr-quote">${esc(plain(item.quote || item.text || ""))}</span>
-      <span class="evr-meta">${meta} · 查看原文</span>
+      <span class="evr-meta">${meta} · ${item.source === "memory" ? "查看记忆" : "查看原文"}</span>
     </button>`;
   }).join("") + factsHtml(facts);
   $$("#evidence-body [data-evidence-index]").forEach((item, position) => {

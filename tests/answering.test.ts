@@ -7,8 +7,9 @@ import { ingestParsed } from '../src/core/ingestion.js'
 import { parseText } from '../src/adapters/parsing/index.js'
 import { harness } from '../src/adapters/harness/index.js'
 import { embedder } from '../src/adapters/embeddings/index.js'
-import { ask, type AnswerFailure } from '../src/core/answering.js'
-import { validateGrounding } from '../src/core/grounding.js'
+import { ask, comparisonHits, type AnswerFailure } from '../src/core/answering.js'
+import { Hit, retrieve } from '../src/core/retrieval.js'
+import { claimSentences, validateGrounding } from '../src/core/grounding.js'
 import { createServer } from '../src/app/server.js'
 import { settings } from '../src/config.js'
 
@@ -39,6 +40,119 @@ test('grounding rejects missing/invalid references, invented numbers, units and 
   assert.equal(validateGrounding('知织不支持本地文档检索。[1]', evidence).valid, false)
   assert.equal(validateGrounding('2025年知织支持本地文档检索。[1]', evidence).valid, false)
   assert.equal(validateGrounding('const timeout = 30_000; [1]', [{ text: 'const timeout = 30_000;' }]).valid, true)
+})
+
+test('emphasis around a complete sentence retains its trailing citation without exempting uncited claims', () => {
+  const evidence = [{ text: '2024年人均财政补助标准为94元。' }]
+  for (const answer of ['**结论：2024年人均财政补助标准为94元。** [1]', '__2024年人均财政补助标准为94元。__ [1]', '**2024年人均财政补助标准为94元。[1]**']) {
+    assert.equal(validateGrounding(answer, evidence).valid, true, answer)
+  }
+  assert.equal(validateGrounding('**2024年人均财政补助标准为99元。** [1]', evidence).valid, false)
+  assert.equal(validateGrounding('**2024年人均财政补助标准为94元。** 无出处的结论。 [1]', evidence).valid, false)
+  assert.equal(claimSentences('**没有引用的结论。**').length, 1)
+})
+
+test('graph navigation does not advertise inferred validity dates as quotable evidence', async () => {
+  await query(`INSERT INTO entities (id, tenant_id, canonical_name, normalized_name, acl_principals)
+    VALUES ('kw', $1, '知织', '知织', '["tenant:public"]')`, [workspace.principal.tenantId])
+  await query(`INSERT INTO facts (id, tenant_id, subject_id, predicate, object_literal, valid_from, valid_to, acl_principals)
+    VALUES ('f', $1, 'kw', '支持', '本地文档检索', '2024-01-01', '2025-01-01', '["tenant:public"]')`, [workspace.principal.tenantId])
+  await query(`INSERT INTO fact_evidence (id, fact_id, chunk_id, doc_id, quote)
+    SELECT 'fe', 'f', id, doc_id, text FROM chunks WHERE is_parent=false LIMIT 1`)
+  harness.ask = async (_id, prompt, system) => {
+    assert.match(prompt, /图谱导航/)
+    assert.doesNotMatch(prompt, /2024-01-01|2025-01-01|有效期 2024/)
+    assert.match(system ?? '', /不得把检索时间切片或图谱抽取元数据/)
+    return generated('知织的回答附带原文引用。[1]')
+  }
+  const result = await ask(workspace.principal, { question: '2024年知织的回答有什么？', evaluation: true })
+  assert.equal(result.refused, false)
+  assert.equal((result.facts as unknown[]).length, 1)
+  assert.equal(validateGrounding('有效期为2024-01-01至2025-01-01。[1]', [{ text }]).valid, false)
+})
+
+test('comparison budgets preserve a lower-scoring branch, including a one-hit requested budget', async () => {
+  const result = await retrieve(workspace.principal, '知织')
+  const sample = result.hits[0]!
+  const hit = (id: string, score: number) => new Hit({ ...sample.chunk, id }, sample.document, 1, 1, 1, score, 1, 'chunk')
+  const national = Array.from({ length: 8 }, (_, i) => hit(`national-${i}`, 0.9 - i / 100))
+  const local = [hit('local-target', 0.59), hit('local-context', 0.55)]
+  const combined = { ...result, hits: [...national, ...local] }
+  const branches = [combined, { ...result, hits: national }, { ...result, hits: local }]
+  const selected = comparisonHits(branches, 6)
+  assert.equal(selected.length, 6)
+  assert.ok(selected.some(hit => hit.chunk.id === 'local-target'))
+  assert.ok(selected.some(hit => hit.chunk.id === 'local-context'))
+  assert.deepEqual(comparisonHits(branches, 1).map(hit => hit.chunk.id), ['national-0', 'local-target'])
+})
+
+test('annual comparison queries retain their full shared topic and generation requires cited table rows', async () => {
+  harness.ask = async (_id, prompt, system) => {
+    assert.match(system ?? '', /结论和关键依据均放在表格行内/)
+    assert.match(system ?? '', /必须同时引用每一侧的原文/)
+    assert.match(system ?? '', /不得计算或补写原文未明示的差额/)
+    assert.match(prompt, /只输出Markdown对比表格/)
+    return generated('| 项目 | 依据 |\n|---|---|\n| 回答方式 | 知织的回答附带原文引用。[1] |')
+  }
+  const result = await ask(workspace.principal, { question: '对比2024年和2026年基本公共卫生服务人均财政补助标准的高低', mode: 'compare', evaluation: true })
+  assert.equal(result.refused, false)
+  const queries = (result.stats as { subqueries: string[] }).subqueries
+  assert.ok(queries.includes('2024年基本公共卫生服务人均财政补助标准的高低'))
+  assert.ok(queries.includes('2026年基本公共卫生服务人均财政补助标准的高低'))
+})
+
+test('personal memory answers cite a private snapshot, survive reopening and do not enter public facts', async () => {
+  await clearKnowledge()
+  await ask(workspace.principal, { question: '记住：我的办公室在3楼302室' })
+  harness.ask = async (_id, prompt) => {
+    assert.match(prompt, /\[1\] 个人记忆/)
+    return generated('根据你的个人记忆，我的办公室在3楼302室。[1]')
+  }
+  const result = await ask(workspace.principal, { question: '我的办公室在哪里？' })
+  assert.equal(result.refused, false)
+  assert.equal((result.grounding as { strategy: string }).strategy, 'personal_memory')
+  const citations = result.citations as Array<{ source: string; doc_id: null; quote: string }>
+  assert.equal(citations[0]!.source, 'memory')
+  assert.equal(citations[0]!.doc_id, null)
+  assert.match(citations[0]!.quote, /302室/)
+  assert.equal((await query('SELECT id FROM facts')).length, 0)
+  const reopened = await app.inject({ method: 'GET', url: `/api/v1/conversations/${result.conversation_id}`, headers: workspace.headers })
+  assert.equal(reopened.json().messages.at(-1).citations[0].source, 'memory')
+  const other = { ...workspace.principal, userId: 'someone-else' }
+  const hidden = await ask(other, { question: '我的办公室在哪里？' })
+  assert.equal(hidden.refused, true)
+  assert.deepEqual(hidden.citations, [])
+  const publicQuestion = await ask(workspace.principal, { question: '2025年山东省补助标准是多少？' })
+  assert.equal(publicQuestion.refused, true)
+  assert.deepEqual(publicQuestion.evidence, [])
+})
+
+test('a follow-up replaces the historical year instead of mixing both generations', async () => {
+  await clearKnowledge()
+  const old = await ingestParsed(workspace.principal, parseText('2024年补助标准为94元。', '2024年通知'), { sourceType: 'text' })
+  const current = await ingestParsed(workspace.principal, parseText('2026年补助标准为99元。', '2026年通知'), { sourceType: 'text' })
+  await query(`INSERT INTO document_continuations (id, tenant_id, predecessor_doc_id, successor_doc_id, effective_date, created_by)
+    VALUES ('annual', $1, $2, $3, '2026-01-01', $4)`, [workspace.principal.tenantId, old.document_id, current.document_id, workspace.principal.userId])
+  let calls = 0
+  harness.ask = async (_id, prompt) => {
+    calls++
+    const evidence = prompt.slice(prompt.indexOf('证据：'))
+    if (calls === 1) {
+      assert.doesNotMatch(evidence, /2026年补助/)
+      return generated('2024年补助标准为94元。[1]')
+    }
+    assert.doesNotMatch(evidence, /2024年补助/)
+    return generated('2026年补助标准为99元。[1]')
+  }
+  const first = await ask(workspace.principal, { question: '2024年补助标准是多少？' })
+  assert.equal(first.refused, false)
+  const followUp = await ask(workspace.principal, { question: '那2026年呢？', conversationId: String(first.conversation_id) })
+  assert.equal(followUp.refused, false)
+  assert.match(String(followUp.answer), /99元/)
+  const [history] = await query<{ output: { retrieval_question: string } }>(
+    "SELECT output FROM trace_spans WHERE trace_id=$1 AND stage='context.history'", [followUp.trace_id])
+  assert.match(history!.output.retrieval_question, /补助标准/)
+  assert.doesNotMatch(history!.output.retrieval_question, /2024年/)
 })
 
 test('valid generated claims keep actual references and expose sentence coverage', async () => {

@@ -102,6 +102,17 @@ function frontend(respond: (url: string, options: Record<string, unknown>) => un
   return { context, nodes, calls, element, dispatch, run: (code: string) => vm.runInContext(code, context) }
 }
 
+test('memory citations display a private source snapshot without navigating to a document', () => {
+  const page = frontend()
+  page.context.memorySource = { source: 'memory', quote: '我的办公室在302室。<script>不执行</script>', doc_title: '个人记忆', index: 1 }
+  page.run('openCitation(memorySource); renderEvidence({evidence: [memorySource], stats: {}})')
+  assert.equal(page.element('#memory-citation-dialog').open, true)
+  assert.equal(page.element('#memory-citation-text').textContent, page.context.memorySource.quote)
+  assert.match(page.element('#evidence-body').innerHTML, /个人记忆[\s\S]*你的个人陈述 · 查看记忆/)
+  assert.doesNotMatch(page.element('#evidence-body').innerHTML, /<script>/)
+  assert.equal(page.calls.length, 0)
+})
+
 test('the research result explains rejected evidence and links failed claims to their sources', async () => {
   const page = frontend()
   const source = { index: 1, doc_id: 'doc', doc_title: '文件上传规范', version_id: 'v2', page: 7, quote: '上限为30MB。', rerank: 0.589 }

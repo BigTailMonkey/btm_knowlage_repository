@@ -19,7 +19,8 @@ import { evidenceWeight } from '../../core/source-policy.js'
 import type { ChunkRow, DocumentRow, EntityRow, FactRow, VersionRow } from '../../core/rows.js'
 
 function parseAcl(raw: unknown): string[] | null {
-  if (typeof raw !== 'string' || !raw.trim()) return null
+  if (raw === undefined) return null
+  if (typeof raw !== 'string') throw Object.assign(new Error('acl 必须为逗号分隔的授权主体'), { statusCode: 400 })
   return raw.split(',').map((item) => item.trim()).filter(Boolean)
 }
 
@@ -74,6 +75,7 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
   app.post('/upload', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
     requireEditor(principal)
+    if (!request.isMultipart()) throw Object.assign(new Error('请使用 multipart/form-data 上传文件'), { statusCode: 415 })
     const part = await request.file()
     if (!part) throw Object.assign(new Error('文件为空'), { statusCode: 400 })
     const chunks: Buffer[] = []
@@ -98,7 +100,7 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
     const principal = currentPrincipal(request)
     requireEditor(principal)
     const payload = request.body as { text?: string; title?: string; acl?: string[]; doc_id?: string }
-    if (!payload?.text) throw Object.assign(new Error('text 不能为空'), { statusCode: 400 })
+    if (typeof payload?.text !== 'string' || !payload.text.trim()) throw Object.assign(new Error('text 必须为非空字符串'), { statusCode: 400 })
     return submitIngest(principal, 'text', {
       text: payload.text,
       title: payload.title ?? null,
@@ -112,7 +114,7 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
     const principal = currentPrincipal(request)
     requireEditor(principal)
     const payload = request.body as { url?: string; title?: string; acl?: string[]; doc_id?: string }
-    if (!payload?.url || !/^https?:\/\//i.test(payload.url)) {
+    if (typeof payload?.url !== 'string' || !/^https?:\/\//i.test(payload.url)) {
       throw Object.assign(new Error('仅支持 http/https URL'), { statusCode: 400 })
     }
     return submitIngest(principal, 'url', { url: payload.url, title: payload.title ?? null, acl: payload.acl ?? null, documentId: payload.doc_id ?? null, confirmDuplicates: true })

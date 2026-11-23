@@ -368,7 +368,7 @@ CREATE TABLE IF NOT EXISTS memory_items (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS ix_memory_user ON memory_items (tenant_id, user_id);
-COMMENT ON TABLE memory_items IS '用户记忆表：个人偏好与备注，仅用于理解用户，不作为事实证据；可经人工审阅晋升为知识事实';
+COMMENT ON TABLE memory_items IS '用户记忆表：按用户隔离的个人偏好与备注，可引用支持该用户自身情况，不作为公共知识事实证据；可经人工审阅晋升为知识事实';
 COMMENT ON COLUMN memory_items.id IS '记忆 ID（mem_ 前缀）';
 COMMENT ON COLUMN memory_items.tenant_id IS '所属租户 ID';
 COMMENT ON COLUMN memory_items.user_id IS '所属用户 ID（记忆按用户隔离）';
@@ -437,10 +437,10 @@ CREATE INDEX IF NOT EXISTS ix_citations_message ON citations (message_id);
 COMMENT ON TABLE citations IS '引用表：助手回答中引用的证据条目，对应回答文本中的 [编号]';
 COMMENT ON COLUMN citations.id IS '引用 ID（cit_ 前缀）';
 COMMENT ON COLUMN citations.message_id IS '所属助手消息 ID';
-COMMENT ON COLUMN citations.chunk_id IS '引用的检索单元 ID';
+COMMENT ON COLUMN citations.chunk_id IS '引用的检索单元 ID；个人记忆引用为 NULL，与 doc_id 同时为 NULL 时表示个人记忆快照';
 COMMENT ON COLUMN citations.fact_id IS '关联事实 ID（预留列，当前写入均为 NULL）';
-COMMENT ON COLUMN citations.doc_id IS '出处文档 ID';
-COMMENT ON COLUMN citations.quote IS '引文：核验定位到的原文句子，缺省为整块文本';
+COMMENT ON COLUMN citations.doc_id IS '出处文档 ID；个人记忆引用为 NULL，与 chunk_id 同时为 NULL 时表示个人记忆快照';
+COMMENT ON COLUMN citations.quote IS '引文：核验定位到的原文句子，缺省为整块文本；个人记忆引用保存该用户记忆的已核验文本快照';
 COMMENT ON COLUMN citations.page IS '出处页码（可空）';
 COMMENT ON COLUMN citations.rank IS '引用编号（回答中 [n] 的 n，从 1 起）';
 

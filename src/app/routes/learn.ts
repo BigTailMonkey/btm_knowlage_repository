@@ -395,13 +395,13 @@ export async function learnRoutes(app: FastifyInstance): Promise<void> {
   app.post('/memory', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
     const payload = request.body as { text: string; kind?: string; scope?: string; expires_at?: string; tags?: string[] }
-    if (!payload?.text) throw Object.assign(new Error('text 不能为空'), { statusCode: 400 })
+    if (typeof payload?.text !== 'string' || !payload.text.trim()) throw Object.assign(new Error('text 必须为非空字符串'), { statusCode: 400 })
     if (payload.tags !== undefined && (!Array.isArray(payload.tags) || !payload.tags.every(tag=>typeof tag==='string'))) throw Object.assign(new Error('tags必须为字符串数组'),{statusCode:400})
     const id = newId('mem')
     await query(
       `INSERT INTO memory_items (id, tenant_id, user_id, scope, kind, text, confidence, expires_at,tags)
        VALUES ($1, $2, $3, $4, $5, $6, 0.55, $7,$8::jsonb)`,
-      [id, principal.tenantId, principal.userId, payload.scope ?? 'personal', payload.kind ?? 'note', payload.text, payload.expires_at ?? null,JSON.stringify(payload.tags ?? [])],
+      [id, principal.tenantId, principal.userId, payload.scope ?? 'personal', payload.kind ?? 'note', payload.text.trim(), payload.expires_at ?? null,JSON.stringify(payload.tags ?? [])],
     )
     return { id, status: 'created' }
   })

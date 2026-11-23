@@ -1,0 +1,65 @@
+{
+  "date": "2026-11-23",
+  "scope": "10 targeted real-library questions plus one personal-memory check; not a rerun of the original 24-question audit",
+  "reindex": {
+    "documents": 8,
+    "chunks": 204,
+    "old_96_key_vectors_before": 201,
+    "old_96_key_vectors_after": 0,
+    "embedding_requests": 204,
+    "identities_unchanged_to_final": true,
+    "backup": "data/audit-2026-11-23/pre-reindex-vectors.json",
+    "backup_mode": "0o600"
+  },
+  "business": {
+    "passed": 10,
+    "cases": 10,
+    "complete_round_passes": [
+      8,
+      9,
+      10
+    ],
+    "quote_checks": 10,
+    "quote_failures": 0,
+    "p95_latency_ms": 13059,
+    "model_requests": 17,
+    "embedding_requests": 14
+  },
+  "personal_memory": {
+    "passed": true,
+    "test_objects_cleaned": true
+  },
+  "api": {
+    "passed": 17,
+    "checks": 17
+  },
+  "integrity": {
+    "passed": 21,
+    "errors": 0
+  },
+  "golden_live": {
+    "cases": 50,
+    "pass_rate": 1,
+    "recall_at_10": 1,
+    "context_precision": 1,
+    "citation_accuracy": 1,
+    "rule_groundedness": 1,
+    "p95_latency_ms": 6962,
+    "model_successes": 50
+  },
+  "unit_tests": {
+    "passed": 272,
+    "total": 272
+  },
+  "service": {
+    "health_status": 200,
+    "port": 8730,
+    "restarted": true
+  },
+  "remaining": [
+    "Original radical characters in the 2023/2025 source versions have not been reparsed.",
+    "huge31 created_by remains unknown.",
+    "Semantic reranking is not configured; authentication work is deferred.",
+    "Latency remains above the 3000 ms target."
+  ]
+}

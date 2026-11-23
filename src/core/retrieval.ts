@@ -15,6 +15,7 @@ type RetrievalChunk = Omit<ChunkRow, 'dense' | 'sparse'>
 /** Historical queries use calendar dates in the configured workspace timezone. */
 export function normalizeAsOf(value?: string | null): string | null {
   if (!value) return null
+  if (typeof value !== 'string') throw Object.assign(new Error('as_of 必须为 YYYY-MM-DD 日期'), { statusCode: 400 })
   const normalized = value.trim()
   if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
     throw Object.assign(new Error('as_of 必须为 YYYY-MM-DD 日期'), { statusCode: 400 })
@@ -24,6 +25,13 @@ export function normalizeAsOf(value?: string | null): string | null {
     throw Object.assign(new Error('as_of 日期无效'), { statusCode: 400 })
   }
   return normalized
+}
+
+/** Query years select policy generations, without pretending the document existed at ingest time. */
+export function policyDates(text: string, asOf: string | null): string[] {
+  if (asOf) return [asOf]
+  const dates = [...text.matchAll(/(?<!\d)((?:19|20|21)\d{2})\s*年/g)].map(match => `${match[1]}-12-31`)
+  return [...new Set(dates)].slice(0, 8)
 }
 
 function dateValue(value: string | Date | null): string | null {
@@ -101,13 +109,14 @@ async function loadCandidates(
   principal: Principal,
   asOf: string | null,
   includeDocIds: string[] = [],
+  dates: string[] = [],
 ): Promise<Array<[RetrievalChunk, RetrievalDocument]>> {
-  const effectiveDate = asOf ?? todayLocal(settings.timezone)
+  const effectiveDates = dates.length ? dates : [asOf ?? todayLocal(settings.timezone)]
   // A document that participates in a continuation chain represents one policy
   // generation; its content revisions are not historical policy generations.
   // Always use the current version and let the chain decide which document was
   // in force on the requested date.
-  const params: unknown[] = [principal.tenantId, effectiveDate, includeDocIds, [...principalSet(principal)]]
+  const params: unknown[] = [principal.tenantId, effectiveDates, includeDocIds, [...principalSet(principal)]]
   let versionFilter = 'v.version = d.current_version'
   if (asOf) {
     params.push(asOf, settings.timezone)
@@ -133,19 +142,19 @@ async function loadCandidates(
      JOIN document_versions v ON c.version_id = v.id
      WHERE d.tenant_id = $1 AND c.tenant_id = $1 AND d.status = 'active'
        AND ${versionFilter} AND c.is_parent = false
-       AND (
+       AND EXISTS (SELECT 1 FROM unnest($2::date[]) AS requested(effective_date) WHERE
          d.id = ANY($3::text[])
          OR NOT EXISTS (
            SELECT 1 FROM document_continuations chain
            WHERE chain.tenant_id = d.tenant_id AND (
-             (chain.successor_doc_id = d.id AND chain.effective_date > $2::date)
-             OR (chain.predecessor_doc_id = d.id AND chain.effective_date <= $2::date
+             (chain.successor_doc_id = d.id AND chain.effective_date > requested.effective_date)
+             OR (chain.predecessor_doc_id = d.id AND chain.effective_date <= requested.effective_date
                  AND EXISTS (
                    WITH RECURSIVE successors(id) AS (
                      SELECT chain.successor_doc_id
                      UNION
                      SELECT edge.successor_doc_id FROM document_continuations edge JOIN successors prior ON edge.predecessor_doc_id=prior.id
-                     WHERE edge.tenant_id=$1 AND edge.effective_date<=$2::date
+                     WHERE edge.tenant_id=$1 AND edge.effective_date<=requested.effective_date
                    )
                    SELECT 1 FROM successors next JOIN documents successor ON successor.id=next.id AND successor.tenant_id=$1
                    WHERE successor.status='active' AND jsonb_typeof(successor.acl_principals)='array'
@@ -295,6 +304,8 @@ export async function retrieve(
   const topK = Math.max(1, Math.min(100, Math.floor(Number(options.topK) || 8)))
   const mode = options.mode ?? 'quick'
   const asOf = normalizeAsOf(options.asOf)
+  const dates = policyDates(text, asOf)
+  options.recorder?.addSpan({ stage: 'intent.time', output: { source: asOf ? 'as_of' : dates.length ? 'question_year' : 'current', policy_dates: dates } })
   const graphHops = Math.max(1, Math.min(3, Math.floor(Number(options.graphHops) || (mode === 'graph' ? 2 : 1))))
   // An exact cited document title is an explicit source scope. Resolve it before
   // loading candidates so a historical policy can still be addressed by name
@@ -312,7 +323,7 @@ export async function retrieve(
       }
     }
   }
-  let candidates = await loadCandidates(principal, asOf, [...includeDocIds])
+  let candidates = await loadCandidates(principal, asOf, [...includeDocIds], dates)
   if (options.docIds?.length) {
     const allowed = new Set(options.docIds)
     candidates = candidates.filter((pair) => allowed.has(pair[1].id))
@@ -387,7 +398,8 @@ export async function retrieve(
   let traversedHops = 0
   for (let hop = 0; hop < graphHops && frontier.length; hop += 1) {
     traversedHops += 1
-    const connected = await factsForEntities(principal, frontier, asOf, visibleChunkIds)
+    const connected = (await Promise.all((dates.length ? dates : [asOf]).map(date =>
+      factsForEntities(principal, frontier, date, visibleChunkIds)))).flat()
     const nextIds = new Set<string>()
     for (const fact of connected) {
       const factId = String(fact.fact_id)

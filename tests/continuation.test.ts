@@ -135,6 +135,26 @@ test('a continuation chain selects exactly one in-force generation per date', as
   assert.equal(view.in_force, false, 'the 2026 generation is the one in force today')
 })
 
+test('explicit question years reach historical generations without filtering by ingestion date', async () => {
+  for (const year of [2023, 2024, 2025, 2026]) {
+    await document(`annual-${year}`, `${year}年补助通知`)
+    await versionAndChunk(`annual-${year}`, `${year}年人均财政补助标准为${89 + (year - 2023) * 5}元。`)
+    if (year > 2023) assert.equal((await link(`annual-${year}`, {
+      other_doc_id: `annual-${year - 1}`, relation: 'continues', effective_date: `${year}-01-01`,
+    })).statusCode, 200)
+  }
+  for (const year of [2023, 2024, 2025, 2026]) {
+    const result = await retrieve(workspace.principal, `${year}年人均财政补助标准是多少？`)
+    assert.deepEqual(result.hits.map(hit => hit.document.id), [`annual-${year}`])
+  }
+  assert.deepEqual((await retrieve(workspace.principal, '人均财政补助标准')).hits.map(hit => hit.document.id), ['annual-2026'])
+  assert.deepEqual(new Set((await retrieve(workspace.principal, '对比2024年与2026年人均财政补助标准')).hits.map(hit => hit.document.id)), new Set(['annual-2024', 'annual-2026']))
+  assert.deepEqual((await retrieve(workspace.principal, '2024年人均财政补助标准', { asOf: '2025-06-01' })).hits.map(hit => hit.document.id), ['annual-2025'])
+  assert.deepEqual((await retrieve({ ...workspace.principal, userId: 'other', groups: [] }, '2024年人均财政补助标准', { docIds: ['annual-2024'] })).hits.map(hit => hit.document.id), ['annual-2024'])
+  await query(`UPDATE documents SET acl_principals='["user:u_owner"]' WHERE id='annual-2024'`)
+  assert.equal((await retrieve({ ...workspace.principal, userId: 'other', groups: [] }, '2024年人均财政补助标准', { docIds: ['annual-2024'] })).hits.length, 0)
+})
+
 for (const [current, relation] of [['earlier', 'continued_by'], ['later', 'continues']] as const) {
   test(`inserting via ${relation} preserves the neighboring effective dates and continuation metadata`, async () => {
     for (const id of ['first', 'earlier', 'inserted', 'later']) {

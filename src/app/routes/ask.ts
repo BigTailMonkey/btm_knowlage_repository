@@ -184,7 +184,9 @@ export async function askRoutes(app: FastifyInstance): Promise<void> {
     }
     for (const item of items) {
       for (const citation of item.citations as Array<Record<string, unknown>>) {
-        citation.doc_title = titles.get(String(citation.doc_id)) ?? ''
+        const memory = citation.doc_id === null && citation.chunk_id === null
+        citation.doc_title = memory ? '个人记忆' : titles.get(String(citation.doc_id)) ?? ''
+        if (memory) citation.source = 'memory'
       }
     }
     return { id: conversation.id, title: conversation.title, archived_at: conversation.archived_at, messages: items }

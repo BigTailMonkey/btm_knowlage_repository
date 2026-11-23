@@ -6,7 +6,7 @@ import { settings } from '../../config.js'
 import { authenticate, currentPrincipal } from '../server.js'
 import { query, queryOne } from '../../db/index.js'
 import { harness } from '../../adapters/harness/index.js'
-import { retrieve } from '../../core/retrieval.js'
+import { retrieve, normalizeAsOf } from '../../core/retrieval.js'
 import { newId, todayLocal } from '../../core/ids.js'
 import { requireAdmin } from '../../core/security.js'
 import { tokenPrice } from '../../core/tracing.js'
@@ -186,7 +186,7 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
   app.post('/traces/:trace_id/replay', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
     const { trace_id: traceId } = request.params as { trace_id: string }
-    const payload = request.body as { target_stage?: string; top_k?: number; as_of?: string }
+    const payload = (request.body ?? {}) as { target_stage?: string; top_k?: number; as_of?: string }
     const trace = await queryOne<TraceRow>('SELECT * FROM traces WHERE id = $1', [traceId])
     if (!trace || trace.tenant_id !== principal.tenantId) throw Object.assign(new Error('轨迹不存在'), { statusCode: 404 })
     if ((payload.target_stage ?? 'retrieve') !== 'retrieve') {
@@ -194,7 +194,7 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
     }
     const previous = (trace.meta?.evidence_ids as string[]) ?? []
     const result = await retrieve(principal, trace.question, {
-      topK: payload.top_k ?? 8,
+      topK: integerParam(payload.top_k, 'top_k', 8, 1, 100),
       asOf: payload.as_of ?? null,
       mode: (trace.meta?.mode as string) ?? 'quick',
     })
@@ -217,7 +217,7 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/costs/summary', { preHandler: authenticate }, async (request) => {
     const principal = currentPrincipal(request)
-    const days = Math.min(365, Math.max(1, Number((request.query as { days?: string }).days ?? 30)))
+    const days = integerParam((request.query as { days?: string }).days, 'days', 30, 1, 365)
     const rows = await query<{
       feature: string
       provider: string
@@ -303,18 +303,38 @@ export async function opsRoutes(app: FastifyInstance): Promise<void> {
       currency?: string
       effective_from?: string
     }
+    if (!payload || typeof payload.provider !== 'string' || !payload.provider.trim()
+      || typeof payload.model !== 'string' || !payload.model.trim()) {
+      throw Object.assign(new Error('provider 和 model 必须为非空字符串'), { statusCode: 400 })
+    }
+    if (Object.keys(payload).some(key => !['provider', 'model', 'input_per_1m', 'output_per_1m', 'currency', 'effective_from'].includes(key))) {
+      throw Object.assign(new Error('价格字段无效；请使用 input_per_1m 和 output_per_1m'), { statusCode: 400 })
+    }
+    for (const name of ['input_per_1m', 'output_per_1m'] as const) {
+      const value = payload[name]
+      if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
+        throw Object.assign(new Error(`${name} 必须为非负有限数值`), { statusCode: 400 })
+      }
+    }
+    if (payload.currency !== undefined && (typeof payload.currency !== 'string' || !/^[A-Z]{3}$/.test(payload.currency))) {
+      throw Object.assign(new Error('currency 必须为三个大写字母的货币代码'), { statusCode: 400 })
+    }
+    if (payload.effective_from !== undefined && (typeof payload.effective_from !== 'string' || !payload.effective_from.trim())) {
+      throw Object.assign(new Error('effective_from 必须为 YYYY-MM-DD 日期'), { statusCode: 400 })
+    }
+    const effectiveFrom = normalizeAsOf(payload.effective_from) ?? todayLocal(settings.timezone)
     const id = newId('price')
     await query(
       `INSERT INTO model_prices (id, provider, model, input_per_1m, output_per_1m, currency, effective_from)
        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [
         id,
-        payload.provider,
-        payload.model,
+        payload.provider.trim(),
+        payload.model.trim(),
         payload.input_per_1m ?? 0,
         payload.output_per_1m ?? 0,
         payload.currency ?? 'CNY',
-        payload.effective_from || todayLocal(settings.timezone),
+        effectiveFrom,
       ],
     )
     return { id, status: 'created' }

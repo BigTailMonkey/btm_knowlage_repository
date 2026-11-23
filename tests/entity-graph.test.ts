@@ -128,7 +128,7 @@ test('entity graph focuses on one entity, keeps hops on the ring and values as a
     assert.equal(tenHops.body.hops, 10)
     assert.equal(tenHops.body.nodes.find((node: { id: string }) => node.id === 'chain-10')?.hop, 10)
     assert.ok(!tenHops.body.nodes.some((node: { id: string }) => node.id === 'chain-11'))
-    assert.deepEqual((await inject('/graph?focus=metric&hops=11')).body, tenHops.body)
+    assert.equal((await inject('/graph?focus=metric&hops=11')).status, 400)
     assert.equal((await inject('/graph?focus=metric&hops=1.5')).status, 400)
   } finally {
     await app.close()

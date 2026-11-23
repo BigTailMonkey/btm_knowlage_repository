@@ -1,4 +1,4 @@
-import { fetchPublicUrl } from '../util/public-url.js'
+import { fetchPublicUrl, resolvePublicUrl } from '../util/public-url.js'
 import { documentEmbeddingInput } from './embedding-input.js'
 import { createHash } from 'node:crypto'
 
@@ -20,9 +20,27 @@ function sha256(data: Buffer | string): string {
   return createHash('sha256').update(data).digest('hex')
 }
 
-function resolveAcl(acl?: string[] | null): string[] {
-  const cleaned = (acl ?? []).map((value) => value.trim()).filter(Boolean)
-  return cleaned.length ? cleaned : ['tenant:public']
+async function resolveAcl(principal: Principal, acl?: string[] | null): Promise<string[]> {
+  if (acl == null) return ['tenant:public']
+  const invalid = (message: string) => Object.assign(new Error(message), { statusCode: 400 })
+  if (!Array.isArray(acl) || !acl.length || acl.some(value => typeof value !== 'string' || !value.trim())) {
+    throw invalid('acl 必须为非空字符串数组；私有文档请显式授权当前用户')
+  }
+  const cleaned = [...new Set(acl.map(value => value.trim()))]
+  const users = await query<{ id: string; groups: string[] }>(
+    "SELECT id, groups FROM users WHERE tenant_id=$1 AND status='active'", [principal.tenantId],
+  )
+  const subjects = new Set(['tenant:public', ...users.map(user => `user:${user.id}`),
+    ...users.flatMap(user => (user.groups ?? []).map(group => `group:${group}`))])
+  if (cleaned.some(value => !subjects.has(value))) throw invalid('acl 含不存在或不属于本租户的用户、组或授权主体')
+  if (!canRead(principal, cleaned)) throw invalid('acl 必须保留上传者的访问权限')
+  return cleaned
+}
+
+function validateTitle(title: unknown): void {
+  if (title != null && (typeof title !== 'string' || title.length > 500)) {
+    throw Object.assign(new Error('title 必须为不超过 500 字符的字符串'), { statusCode: 400 })
+  }
 }
 
 /** 写入解析结构块。恢复回收站文档时复用同一写入路径。 */
@@ -206,6 +224,8 @@ async function ingestParsedVersion(
   options: IngestOptions,
 ): Promise<Record<string, unknown>> {
   const started = Date.now()
+  validateTitle(parsed.title)
+  const requestedAcl = options.acl == null ? null : await resolveAcl(principal, options.acl)
   const fullText = parsed.blocks.map((block) => block.text).join('\n\n')
   if (!fullText.trim()) throw Object.assign(new Error('未解析到可索引的文本内容'), { statusCode: 422 })
   const contentHash = sha256(fullText)
@@ -267,7 +287,7 @@ async function ingestParsedVersion(
     if (existing && !latest) throw new Error('目标文档已在回收站，请先恢复后再更新版本')
     const versionNumber = latest ? latest.current_version + 1 : 1
     // Updating content does not implicitly change an existing document's ACL.
-    const acl = options.acl == null && latest ? latest.acl_principals : resolveAcl(options.acl)
+    const acl = requestedAcl ?? latest?.acl_principals ?? ['tenant:public']
     const aclVersion = latest ? latest.acl_version + (JSON.stringify(acl) === JSON.stringify(latest.acl_principals) ? 0 : 1) : 1
     if (latest) {
       await client.query(
@@ -344,6 +364,18 @@ export async function submitIngest(
     confirmDuplicates?: boolean
   },
 ): Promise<Record<string, unknown>> {
+  validateTitle(options.title)
+  if (options.acl != null) options = { ...options, acl: await resolveAcl(principal, options.acl) }
+  if (source === 'text' && (typeof options.text !== 'string' || !options.text.trim())) {
+    throw Object.assign(new Error('text 必须为非空字符串'), { statusCode: 400 })
+  }
+  if (source === 'url') {
+    try {
+      await resolvePublicUrl(options.url ?? '')
+    } catch (error) {
+      throw Object.assign(new Error(`URL 无法导入：${(error as Error).message}`), { statusCode: 400 })
+    }
+  }
   prune()
   if (options.text != null) options = { ...options, text: cleanParsedText(options.text) }
   const jobId = newId('job')

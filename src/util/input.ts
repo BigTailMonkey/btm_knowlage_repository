@@ -5,5 +5,9 @@ export function integerParam(value: unknown, name: string, initial: number, min:
     || !/^\d+$/.test(String(value)) || !Number.isSafeInteger(Number(value))) {
     throw Object.assign(new Error(`${name} 必须为整数`), { statusCode: 400 })
   }
-  return Math.min(max, Math.max(min, Number(value)))
+  const parsed = Number(value)
+  if (parsed < min || parsed > max) {
+    throw Object.assign(new Error(`${name} 必须在 ${min}–${max} 之间`), { statusCode: 400 })
+  }
+  return parsed
 }

@@ -81,9 +81,10 @@ export function claimSentences(answer: string): string[] {
       }
     }
     if (text.startsWith('|')) { units.push(text); continue }
-    units.push(...text.replace(/([。！？!?])\s*((?:\[\d+\]\s*)+)/g, '$2$1')
+    // Closing emphasis markers belong to the sentence before a trailing citation.
+    units.push(...text.replace(/([。！？!?])([*_~]*)\s*((?:\[\d+\]\s*)+)([*_~]*)/g, '$2$4$3$1')
       .split(/(?<=[。！？!?])\s*|(?<=\.)\s+(?=[A-Z])/)
-      .map((part) => part.trim()).filter(Boolean))
+      .map((part) => part.trim()).filter(part => part.replace(/[*_~]/g, '').trim()))
   }
   return units
 }
